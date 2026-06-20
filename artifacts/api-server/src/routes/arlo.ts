@@ -93,6 +93,65 @@ router.post('/journal', async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/tasks
+router.post('/tasks', async (req: Request, res: Response) => {
+  try {
+    const { text, category } = req.body;
+    if (!text?.trim()) {
+      res.status(400).json({ error: 'Task text is required' });
+      return;
+    }
+    const [row] = await db
+      .insert(tasks)
+      .values({ text: text.trim(), category: category?.trim() || '', partial: false, done: false })
+      .returning();
+    res.json(row);
+  } catch (err) {
+    req.log?.error({ err }, 'Error creating task');
+    res.status(500).json({ error: 'Failed to create task' });
+  }
+});
+
+// PATCH /api/tasks/:id
+router.patch('/tasks/:id', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id as string, 10);
+    if (isNaN(id)) {
+      res.status(400).json({ error: 'Invalid task id' });
+      return;
+    }
+    const { done, partial } = req.body;
+    const updates: Partial<{ done: boolean; partial: boolean }> = {};
+    if (typeof done === 'boolean') updates.done = done;
+    if (typeof partial === 'boolean') updates.partial = partial;
+    if (Object.keys(updates).length === 0) {
+      res.status(400).json({ error: 'No valid fields to update' });
+      return;
+    }
+    await db.update(tasks).set(updates).where(eq(tasks.id, id));
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error updating task');
+    res.status(500).json({ error: 'Failed to update task' });
+  }
+});
+
+// DELETE /api/tasks/:id
+router.delete('/tasks/:id', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id as string, 10);
+    if (isNaN(id)) {
+      res.status(400).json({ error: 'Invalid task id' });
+      return;
+    }
+    await db.delete(tasks).where(eq(tasks.id, id));
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error deleting task');
+    res.status(500).json({ error: 'Failed to delete task' });
+  }
+});
+
 // POST /api/chat
 router.post('/chat', async (req: Request, res: Response) => {
   try {

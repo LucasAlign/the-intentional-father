@@ -176,12 +176,16 @@
 
 .taskItem {
   display: flex;
-  justify-content: space-between;
   align-items: flex-start;
+  gap: 0.5rem;
   padding: 0.75rem;
   background: rgba(122, 78, 44, 0.1);
   border-radius: 6px;
   border-left: 3px solid #9A7420;
+}
+
+.taskText {
+  flex: 1;
 }
 
 .taskText p {
@@ -196,12 +200,25 @@
 }
 
 .stuck {
-  color: #D8AA3E;
-  font-weight: 600;
+  color: #9C9272;
+  font-weight: 500;
   padding: 0.25rem 0.5rem;
-  background: rgba(216, 170, 62, 0.1);
+  background: transparent;
+  border: 1px solid rgba(216, 170, 62, 0.15);
   border-radius: 4px;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  flex-shrink: 0;
+  font-family: 'Calibri', 'Segoe UI', 'Gill Sans MT', 'Helvetica Neue', sans-serif;
+  transition: all 0.2s ease;
+  line-height: 1;
+}
+
+.stuckActive {
+  color: #D8AA3E;
+  background: rgba(216, 170, 62, 0.1);
+  border-color: rgba(216, 170, 62, 0.4);
+  font-weight: 600;
 }
 
 .noData {
@@ -315,6 +332,145 @@
 
 .chatMessages::-webkit-scrollbar-thumb:hover {
   background: rgba(216, 170, 62, 0.5);
+}
+
+/* Task complete button */
+.completeBtn {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid rgba(216, 170, 62, 0.35);
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  margin-top: 3px;
+  transition: all 0.2s ease;
+  padding: 0;
+}
+
+.completeBtn:hover {
+  background: rgba(216, 170, 62, 0.2);
+  border-color: #D8AA3E;
+}
+
+/* Add task form */
+.addTaskForm {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(216, 170, 62, 0.1);
+}
+
+.addTaskInput {
+  flex: 1;
+  background: rgba(12, 14, 7, 0.6);
+  border: 1px solid rgba(216, 170, 62, 0.15);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  color: #EEE4C4;
+  font-size: 0.9rem;
+  font-family: 'Calibri', 'Segoe UI', 'Gill Sans MT', 'Helvetica Neue', sans-serif;
+  transition: border-color 0.2s ease;
+}
+
+.addTaskInput::placeholder {
+  color: #6E664C;
+}
+
+.addTaskInput:focus {
+  outline: none;
+  border-color: rgba(216, 170, 62, 0.4);
+}
+
+.addTaskCategory {
+  width: 90px;
+  background: rgba(12, 14, 7, 0.6);
+  border: 1px solid rgba(216, 170, 62, 0.15);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  color: #EEE4C4;
+  font-size: 0.9rem;
+  font-family: 'Calibri', 'Segoe UI', 'Gill Sans MT', 'Helvetica Neue', sans-serif;
+  transition: border-color 0.2s ease;
+}
+
+.addTaskCategory::placeholder {
+  color: #6E664C;
+}
+
+.addTaskCategory:focus {
+  outline: none;
+  border-color: rgba(216, 170, 62, 0.4);
+}
+
+.addTaskBtn {
+  padding: 0.5rem 0.875rem;
+  background: rgba(216, 170, 62, 0.15);
+  border: 1px solid rgba(216, 170, 62, 0.3);
+  border-radius: 6px;
+  color: #D8AA3E;
+  font-size: 1.2rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: 'Calibri', 'Segoe UI', 'Gill Sans MT', 'Helvetica Neue', sans-serif;
+  line-height: 1;
+}
+
+.addTaskBtn:hover:not(:disabled) {
+  background: rgba(216, 170, 62, 0.25);
+  border-color: #D8AA3E;
+}
+
+.addTaskBtn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* Skeleton loading */
+@keyframes pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.6; }
+}
+
+.skeletonVerse {
+  height: 3.5rem;
+  background: rgba(216, 170, 62, 0.1);
+  border-radius: 6px;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.skeletonInput {
+  height: 42px;
+  background: rgba(216, 170, 62, 0.07);
+  border: 1px solid rgba(216, 170, 62, 0.1);
+  border-radius: 6px;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.skeletonTask {
+  height: 58px;
+  background: rgba(122, 78, 44, 0.08);
+  border-radius: 6px;
+  border-left: 3px solid rgba(154, 116, 32, 0.15);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.skeletonTextarea {
+  height: 96px;
+  background: rgba(216, 170, 62, 0.07);
+  border: 1px solid rgba(216, 170, 62, 0.1);
+  border-radius: 6px;
+  margin-top: 0.5rem;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.skeletonChat {
+  flex: 1;
+  background: rgba(216, 170, 62, 0.04);
+  border-radius: 6px;
+  animation: pulse 1.5s ease-in-out infinite;
 }
 
 /* Responsive */

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /home/runner/workspace show --stat 359f77c)",
+      "Bash(pnpm *)"
+    ]
+  }
+}
