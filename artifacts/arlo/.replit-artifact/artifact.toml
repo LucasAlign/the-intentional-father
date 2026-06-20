@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Arlo"
+version = "1.0.0"
+id = "artifacts/arlo"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 22384
+
+[services.development]
+run = "pnpm --filter @workspace/arlo run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/arlo", "run", "build" ]
+publicDir = "artifacts/arlo/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22384"
+BASE_PATH = "/"

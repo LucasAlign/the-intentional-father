@@ -1,0 +1,65 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --parchment-bright: #EEE4C4;
+  --parchment-body: #D2C7A2;
+  --parchment-dim: #9C9272;
+  --parchment-faint: #6E664C;
+
+  --brass-bright: #D8AA3E;
+  --brass-soft: #C89A34;
+  --brass-deep: #9A7420;
+
+  --walnut-light: #9C6840;
+  --walnut-med: #7A4E2C;
+  --walnut-dark: #5A3A20;
+
+  --ink: #0C0E07;
+}
+
+html, body {
+  font-family: 'Calibri', 'Segoe UI', 'Gill Sans MT', 'Helvetica Neue', sans-serif;
+  color: var(--parchment-body);
+  background-color: var(--ink);
+  line-height: 1.6;
+}
+
+body {
+  background: linear-gradient(135deg, var(--ink) 0%, #1a1410 50%, var(--ink) 100%);
+  min-height: 100vh;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+input {
+  font-family: inherit;
+}
+
+textarea {
+  font-family: inherit;
+  resize: vertical;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(216, 170, 62, 0.3);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(216, 170, 62, 0.5);
+}
