@@ -1,4 +1,4 @@
-import { pgTable, text, serial, boolean, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, boolean, timestamp, integer } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -18,6 +18,7 @@ export const tasks = pgTable("tasks", {
   id: serial("id").primaryKey(),
   text: text("text").notNull(),
   category: text("category").notNull().default(""),
+  notes: text("notes").notNull().default(""),
   partial: boolean("partial").notNull().default(false),
   done: boolean("done").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -38,3 +39,44 @@ export const chatMessages = pgTable("chat_messages", {
 export const insertChatMessageSchema = createInsertSchema(chatMessages).omit({ id: true, createdAt: true });
 export type InsertChatMessage = z.infer<typeof insertChatMessageSchema>;
 export type ChatMessage = typeof chatMessages.$inferSelect;
+
+export const commits = pgTable("commits", {
+  id: serial("id").primaryKey(),
+  text: text("text").notNull(),
+  madeDate: text("made_date").notNull(),
+  done: boolean("done").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertCommitSchema = createInsertSchema(commits).omit({ id: true, createdAt: true });
+export type InsertCommit = z.infer<typeof insertCommitSchema>;
+export type Commit = typeof commits.$inferSelect;
+
+export const jobs = pgTable("jobs", {
+  id: serial("id").primaryKey(),
+  biz: text("biz").notNull(),
+  name: text("name").notNull(),
+  stage: text("stage").notNull().default(""),
+  due: text("due").notNull().default(""),
+  pct: integer("pct").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertJobSchema = createInsertSchema(jobs).omit({ id: true, createdAt: true });
+export type InsertJob = z.infer<typeof insertJobSchema>;
+export type Job = typeof jobs.$inferSelect;
+
+export const comingUp = pgTable("coming_up", {
+  id: serial("id").primaryKey(),
+  date: text("date").notNull(),
+  time: text("time").notNull(),
+  title: text("title").notNull(),
+  sub: text("sub").notNull().default(""),
+  tag: text("tag").notNull().default(""),
+  kind: text("kind").notNull().default("work"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertComingUpSchema = createInsertSchema(comingUp).omit({ id: true, createdAt: true });
+export type InsertComingUp = z.infer<typeof insertComingUpSchema>;
+export type ComingUp = typeof comingUp.$inferSelect;

@@ -24,9 +24,9 @@ Personal OS for the ADD entrepreneur — a daily dashboard featuring a scripture
 
 ## Where things live
 
-- `artifacts/arlo/src/pages/Home.tsx` — main app UI (all cards)
-- `artifacts/arlo/src/pages/Home.module.css` — CSS Module styles
-- `artifacts/arlo/src/index.css` — global CSS (colors, scrollbars)
+- `artifacts/arlo/src/pages/Home.tsx` — main app UI: full 5-tab mobile redesign (Today / Her / Work / Arlo / Week), inline-style maps (R/S/M), woodgrain theme
+- `artifacts/arlo/src/index.css` — global CSS (palette `:root` vars, fonts)
+- `artifacts/arlo/public/woodgrain.png` — woodgrain background image (referenced via `import.meta.env.BASE_URL`)
 - `artifacts/api-server/src/routes/arlo.ts` — all API routes (verse, tasks, chat, journal)
 - `lib/db/src/schema/arlo.ts` — DB schema (journal_entries, tasks, chat_messages)
 
@@ -36,16 +36,16 @@ Personal OS for the ADD entrepreneur — a daily dashboard featuring a scripture
 - All data was previously stored in Supabase; now uses Replit's built-in PostgreSQL via Drizzle ORM
 - Verse of the day is computed deterministically from day-of-year — no DB needed
 - Anthropic API called directly from Express route (no SDK, just fetch)
-- CSS Modules used for the main page to preserve exact original styles
+- The home page is a single-file 5-tab mobile app (graduated from the approved canvas mockup). Styles are inline `CSSProperties` maps (`R` root/nav, `S` screens, `M` modal) to preserve exact mockup fidelity — woodgrain + brass/parchment theme
 
 ## Product
 
-Arlo is Bryant's daily personal OS:
-- **Verse card** — rotating scripture verse for daily grounding
-- **Her card** — daily marriage intention input (persisted to journal)
-- **Top 3** — top open tasks from the DB (not done, most recent 3)
-- **Reflect** — daily journal textarea (persisted on blur)
-- **Message Arlo** — chat with an AI accountability partner that knows Bryant's tasks, journal, and conversation history
+Arlo is Bryant's daily personal OS, a 5-tab mobile app:
+- **Today** — greeting, verse of the day, editable marriage intention (journal `commit_text`), Top 3 priorities (tasks: tap number to complete, dashed button to add), Coming Up (today's `coming_up` events), daily journal prompt (Write reveals `reflect` textarea), and a Message Arlo bar that jumps to the Arlo tab
+- **Her** — commitments CRUD (`commits` table: log + tap dot to mark kept) so promises to his wife don't disappear
+- **Work** — active jobs grouped by business (`jobs` table) with progress bars + a multi-step "Add new job" intake modal
+- **Arlo** — chat with an AI accountability partner that knows Bryant's tasks, journal, and conversation history
+- **Week** — Mon–Sun overview derived from `coming_up` events in the current week, today highlighted
 
 ## User preferences
 
