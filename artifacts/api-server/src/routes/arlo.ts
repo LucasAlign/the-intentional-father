@@ -4,6 +4,25 @@ import { journalEntries, chatMessages, tasks, commits, jobs, comingUp } from "@w
 import { eq, desc, asc, gte, lte, and } from "drizzle-orm";
 
 const router = Router();
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
+
+type OpenAIResponsesApiResponse = {
+  output_text?: string;
+  output?: Array<{
+    content?: Array<{
+      text?: string;
+    }>;
+  }>;
+};
+
+function getOpenAIMessage(data: OpenAIResponsesApiResponse): string | undefined {
+  if (data.output_text) return data.output_text;
+
+  return data.output
+    ?.flatMap((item) => item.content ?? [])
+    .map((content) => content.text)
+    .find((text): text is string => Boolean(text));
+}
 
 const VERSES = [
   'Ephesians 5:25 — Husbands, love your wives, just as Christ loved the church and gave himself up for her.',
@@ -336,9 +355,9 @@ Guidelines:
 
 You are a tool, not a pastor or counselor or substitute for his wife.`;
 
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
+      res.status(500).json({ error: 'OPENAI_API_KEY not configured' });
       return;
     }
 
@@ -350,30 +369,35 @@ You are a tool, not a pastor or counselor or substitute for his wife.`;
       { role: 'user' as const, content: message },
     ];
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const response = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'claude-3-5-sonnet-20241022',
-        max_tokens: 1024,
-        system: ARLO_SYSTEM_PROMPT + (context ? `\n\n## Today's context:\n${context}` : ''),
-        messages: apiMessages,
+        model: OPENAI_MODEL,
+        instructions: ARLO_SYSTEM_PROMPT + (context ? `\n\n## Today's context:\n${context}` : ''),
+        input: apiMessages,
+        max_output_tokens: 700,
       }),
     });
 
     if (!response.ok) {
       const error = await response.text();
-      req.log?.error({ error }, 'Anthropic API error');
+      req.log?.error({ error, model: OPENAI_MODEL }, 'OpenAI API error');
       res.status(500).json({ error: 'Failed to get response from Arlo' });
       return;
     }
 
-    const data = await response.json() as { content: Array<{ text: string }> };
-    const assistantMessage = data.content[0].text;
+    const data = await response.json() as OpenAIResponsesApiResponse;
+    const assistantMessage = getOpenAIMessage(data);
+
+    if (!assistantMessage) {
+      req.log?.error({ data, model: OPENAI_MODEL }, 'OpenAI response missing assistant message');
+      res.status(500).json({ error: 'Failed to get response from Arlo' });
+      return;
+    }
 
     await Promise.all([
       db.insert(chatMessages).values({ role: 'user', content: message, date: today }),

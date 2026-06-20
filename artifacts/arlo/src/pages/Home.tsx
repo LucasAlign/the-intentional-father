@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { CSSProperties, ReactElement } from "react";
+import { useAuth } from "@workspace/replit-auth-web";
 
 declare global {
   interface Window {
@@ -112,6 +113,7 @@ function weekDays() {
 
 // ── Root ──────────────────────────────────────────────────────────────────────
 export default function Home() {
+  const { isLoading, isAuthenticated, login, logout } = useAuth();
   const [tab, setTab] = useState<TabId>("today");
 
   const [verse, setVerse] = useState("");
@@ -177,6 +179,8 @@ export default function Home() {
     }
   }
 
+  if (!isAuthenticated) return <AuthGate loading={isLoading} onLogin={login} />;
+
   return (
     <div style={R.root}>
       <style>{`*{box-sizing:border-box}::-webkit-scrollbar{display:none}input::placeholder,textarea::placeholder{color:${C.parchmentLow}}@keyframes micPulse{0%,100%{box-shadow:0 0 14px ${C.brassGlow}}50%{box-shadow:0 0 26px ${C.brassGlow},0 0 40px rgba(216,170,62,0.2)}}`}</style>
@@ -188,7 +192,7 @@ export default function Home() {
           <div style={R.logo}><span style={R.logoText}>Arlo</span><span style={R.logoDot}>.</span></div>
           <div style={R.tagline}>FOCUSED. FAITHFUL. FREE.</div>
         </div>
-        <div style={R.avatar}><Icon name="user" size={20} color={C.parchmentDim} /></div>
+        <button style={{ ...R.avatar, padding: 0, cursor: "pointer" }} onClick={logout} title="Log out" aria-label="Log out"><Icon name="user" size={20} color={C.parchmentDim} /></button>
       </div>
 
       <div style={R.screen}>
@@ -568,6 +572,36 @@ function JobModal({ onClose, onCreated }: { onClose: () => void; onCreated: () =
     </div>
   );
 }
+
+// ── Auth gate ───────────────────────────────────────────────────────────────────
+function AuthGate({ loading, onLogin }: { loading: boolean; onLogin: () => void }) {
+  return (
+    <div style={R.root}>
+      <div style={R.woodLayer} />
+      <div style={R.ambient} />
+      <div style={G.wrap}>
+        <div style={R.logo}><span style={R.logoText}>Arlo</span><span style={R.logoDot}>.</span></div>
+        <div style={{ ...R.tagline, textAlign: "center", marginBottom: 38 }}>FOCUSED. FAITHFUL. FREE.</div>
+        {loading ? (
+          <div style={G.loading}>Loading…</div>
+        ) : (
+          <>
+            <div style={G.welcome}>Welcome back.</div>
+            <div style={G.sub}>Sign in to open your day.</div>
+            <button style={G.btn} onClick={onLogin}>Log in</button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+const G: Record<string, CSSProperties> = {
+  wrap: { position: "relative", zIndex: 10, flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px" },
+  loading: { color: C.parchmentLow, fontSize: 14, letterSpacing: "0.04em" },
+  welcome: { fontSize: 26, fontWeight: 400, color: C.parchment, textShadow: "0 2px 8px rgba(0,0,0,0.5)" },
+  sub: { fontSize: 14, color: C.parchmentLow, marginTop: 8, marginBottom: 30 },
+  btn: { padding: "14px 48px", borderRadius: 14, border: `1px solid ${C.brass}`, cursor: "pointer", fontFamily: F, fontSize: 15, fontWeight: 600, letterSpacing: "0.03em", color: C.ink, background: `radial-gradient(circle at 35% 28%,${C.brass},${C.brassDeep})`, boxShadow: `0 4px 18px ${C.brassGlow},inset 0 1px 0 rgba(255,240,200,0.3)` },
+};
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 const R: Record<string, CSSProperties> = {

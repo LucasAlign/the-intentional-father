@@ -1,0 +1,1 @@
+- [replit-auth-web lib setup](replit-auth-web-lib.md) — new web auth lib needs composite:true + ambient import.meta.env d.ts or typecheck:libs fails.
