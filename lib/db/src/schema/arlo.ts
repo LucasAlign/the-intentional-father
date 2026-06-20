@@ -80,3 +80,18 @@ export const comingUp = pgTable("coming_up", {
 export const insertComingUpSchema = createInsertSchema(comingUp).omit({ id: true, createdAt: true });
 export type InsertComingUp = z.infer<typeof insertComingUpSchema>;
 export type ComingUp = typeof comingUp.$inferSelect;
+
+
+export const googleCalendarConnections = pgTable("google_calendar_connections", {
+  userId: text("user_id").primaryKey(),
+  accessToken: text("access_token").notNull(),
+  refreshToken: text("refresh_token").notNull(),
+  scope: text("scope").notNull().default(""),
+  expiresAt: timestamp("expires_at").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertGoogleCalendarConnectionSchema = createInsertSchema(googleCalendarConnections).omit({ createdAt: true, updatedAt: true });
+export type InsertGoogleCalendarConnection = z.infer<typeof insertGoogleCalendarConnectionSchema>;
+export type GoogleCalendarConnection = typeof googleCalendarConnections.$inferSelect;

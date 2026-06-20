@@ -45,6 +45,7 @@ interface Job { id: number; biz: string; name: string; stage: string; due: strin
 interface Event { id: number; date: string; time: string; title: string; sub: string; tag: string; kind: string; }
 interface Message { role: "user" | "assistant"; content: string; }
 interface Journal { reflect: string; commit_text: string; }
+interface CalendarStatus { connected: boolean; }
 
 const API = "/api";
 const WOOD = `${import.meta.env.BASE_URL}woodgrain.png`;
@@ -128,6 +129,7 @@ export default function Home() {
   const [ci, setCi] = useState("");
   const [sending, setSending] = useState(false);
   const [jobModal, setJobModal] = useState(false);
+  const [calendarConnected, setCalendarConnected] = useState(false);
 
   const refreshTasks = useCallback(() => {
     fetch(`${API}/tasks`).then(r => r.ok ? r.json() : []).then(setTasks).catch(() => {});
@@ -138,6 +140,9 @@ export default function Home() {
   const refreshJobs = useCallback(() => {
     fetch(`${API}/jobs`).then(r => r.ok ? r.json() : []).then(setJobs).catch(() => {});
   }, []);
+  const refreshCalendarStatus = useCallback(() => {
+    fetch(`${API}/google-calendar/status`).then(r => r.ok ? r.json() : { connected: false }).then((d: CalendarStatus) => setCalendarConnected(Boolean(d.connected))).catch(() => setCalendarConnected(false));
+  }, []);
 
   useEffect(() => {
     const days = weekDays();
@@ -147,8 +152,8 @@ export default function Home() {
     fetch(`${API}/coming-up`).then(r => r.ok ? r.json() : []).then(setToday).catch(() => {});
     fetch(`${API}/coming-up?start=${start}&end=${end}`).then(r => r.ok ? r.json() : []).then(setWeek).catch(() => {});
     fetch(`${API}/chat-history`).then(r => r.ok ? r.json() : []).then((m: Message[]) => setChat(prev => prev.length ? prev : m)).catch(() => {});
-    refreshTasks(); refreshCommits(); refreshJobs();
-  }, [refreshTasks, refreshCommits, refreshJobs]);
+    refreshTasks(); refreshCommits(); refreshJobs(); refreshCalendarStatus();
+  }, [refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus]);
 
   async function saveJournal(next: Journal) {
     setJournal(next);
@@ -200,7 +205,7 @@ export default function Home() {
         {tab === "her" && <Her commits={commits} refresh={refreshCommits} />}
         {tab === "work" && <Work jobs={jobs} onJob={() => setJobModal(true)} />}
         {tab === "arlo" && <ArloChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} />}
-        {tab === "week" && <WeekView events={week} />}
+        {tab === "week" && <WeekView events={week} calendarConnected={calendarConnected} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} />}
       </div>
 
       <div style={R.navWrap}>
@@ -490,13 +495,20 @@ function ArloChatBar({ input, setInput, send, sending }: { input: string; setInp
 }
 
 // ── Week ───────────────────────────────────────────────────────────────────
-function WeekView({ events }: { events: Event[] }) {
+function WeekView({ events, calendarConnected, onConnectCalendar }: { events: Event[]; calendarConnected: boolean; onConnectCalendar: () => void }) {
   const days = weekDays();
   const todayKey = ymd(new Date());
   return (
     <div style={S.scroll}>
       <div style={S.pageTitle}>This Week</div>
       <div style={S.pageSub}>One week ahead. No surprises.</div>
+      <div style={S.calendarCard}>
+        <div>
+          <div style={S.calendarTitle}>Google Calendar</div>
+          <div style={S.prioSub}>{calendarConnected ? "Connected. Events appear in Today and Week." : "Connect your calendar to pull upcoming events into Arlo."}</div>
+        </div>
+        {!calendarConnected && <button style={S.calendarBtn} onClick={onConnectCalendar}>Connect</button>}
+      </div>
       {days.map(d => {
         const items = events.filter(e => e.date === d.key);
         const isToday = d.key === todayKey;
@@ -687,6 +699,9 @@ const S: Record<string, CSSProperties> = {
   bubbleText: { ...glass, padding: "13px 15px", fontSize: 14, lineHeight: 1.65, color: C.parchment, display: "inline-block", whiteSpace: "pre-wrap", borderTopLeftRadius: 5 },
   bubbleTextU: { background: `linear-gradient(135deg,${C.walnut},${C.walnutMid})`, border: `1px solid ${C.walnutLite}50`, borderTopLeftRadius: 18, borderTopRightRadius: 5 },
   chatBar: { display: "flex", gap: 8, padding: "10px 18px 16px", borderTop: "1px solid rgba(210,190,130,0.12)", alignItems: "center" },
+  calendarCard: { ...glass, padding: "14px 16px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
+  calendarTitle: { fontSize: 14, color: C.parchment, fontWeight: 700, marginBottom: 3 },
+  calendarBtn: { background: `linear-gradient(135deg,${C.walnutMid},${C.walnut})`, border: "none", borderRadius: 12, color: C.parchment, fontSize: 13, fontWeight: 700, padding: "10px 14px", cursor: "pointer", fontFamily: F, flexShrink: 0, boxShadow: "0 2px 8px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,220,160,0.15)" },
   weekRow: { display: "flex", gap: 14, alignItems: "flex-start", paddingBottom: 14, marginBottom: 14, borderBottom: "1px solid rgba(210,190,130,0.12)" },
   weekToday: { ...glass, padding: "14px", border: `1px solid ${C.brass}50`, boxShadow: `0 0 18px ${C.brassGlow}`, margin: "0 -2px 14px" },
   weekL: { width: 42, flexShrink: 0 },

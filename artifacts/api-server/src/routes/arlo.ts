@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { db } from "@workspace/db";
 import { journalEntries, chatMessages, tasks, commits, jobs, comingUp } from "@workspace/db";
 import { eq, desc, asc, gte, lte, and } from "drizzle-orm";
+import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
 
 const router = Router();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
@@ -268,7 +269,11 @@ router.get('/coming-up', async (req: Request, res: Response) => {
   try {
     const { start, end } = req.query;
     let rows;
+    let rangeStart: string;
+    let rangeEnd: string;
     if (typeof start === 'string' && typeof end === 'string') {
+      rangeStart = start;
+      rangeEnd = end;
       rows = await db
         .select()
         .from(comingUp)
@@ -276,9 +281,17 @@ router.get('/coming-up', async (req: Request, res: Response) => {
         .orderBy(asc(comingUp.date), asc(comingUp.createdAt));
     } else {
       const today = new Date().toISOString().split('T')[0];
+      rangeStart = today;
+      rangeEnd = today;
       rows = await db.select().from(comingUp).where(eq(comingUp.date, today)).orderBy(asc(comingUp.createdAt));
     }
-    res.json(rows);
+    let calendarRows: CalendarEvent[] = [];
+    try {
+      calendarRows = await fetchGoogleCalendarEventsForUser(req.user!.id, rangeStart, rangeEnd);
+    } catch (err) {
+      req.log?.warn({ err }, 'Failed to merge Google Calendar events');
+    }
+    res.json([...rows, ...calendarRows].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time)));
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch coming up' });
   }
