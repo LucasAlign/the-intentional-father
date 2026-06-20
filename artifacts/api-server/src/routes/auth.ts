@@ -6,7 +6,7 @@ import {
   ExchangeMobileAuthorizationCodeResponse,
   LogoutMobileSessionResponse,
 } from "@workspace/api-zod";
-import { db, usersTable } from "@workspace/db";
+import { db, googleCalendarConnections, usersTable } from "@workspace/db";
 import {
   clearSession,
   getOidcConfig,
@@ -51,19 +51,64 @@ function setOidcCookie(res: Response, name: string, value: string) {
 }
 
 function getSafeReturnTo(value: unknown): string {
-  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) {
+  if (
+    typeof value !== "string" ||
+    !value.startsWith("/") ||
+    value.startsWith("//")
+  ) {
     return "/";
   }
   return value;
+}
+
+function tokenExpiry(expiresIn = 3600): Date {
+  return new Date(Date.now() + Math.max(expiresIn - 60, 60) * 1000);
+}
+
+async function storeGoogleCalendarConnection(
+  userId: string,
+  tokens: oidc.TokenEndpointResponse & oidc.TokenEndpointResponseHelpers,
+) {
+  if (!tokens.access_token || !tokens.refresh_token) return;
+  const grantedScope =
+    tokens.scope ??
+    "openid email profile https://www.googleapis.com/auth/calendar.readonly";
+  if (
+    !grantedScope
+      .split(" ")
+      .includes("https://www.googleapis.com/auth/calendar.readonly")
+  )
+    return;
+
+  await db
+    .insert(googleCalendarConnections)
+    .values({
+      userId,
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token,
+      scope: grantedScope,
+      expiresAt: tokenExpiry(tokens.expiresIn()),
+      updatedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: googleCalendarConnections.userId,
+      set: {
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token,
+        scope: grantedScope,
+        expiresAt: tokenExpiry(tokens.expiresIn()),
+        updatedAt: new Date(),
+      },
+    });
 }
 
 async function upsertUser(claims: Record<string, unknown>) {
   const userData = {
     id: claims.sub as string,
     email: (claims.email as string) || null,
-    firstName: (claims.first_name as string) || null,
-    lastName: (claims.last_name as string) || null,
-    profileImageUrl: (claims.profile_image_url || claims.picture) as
+    firstName: ((claims.given_name || claims.first_name) as string) || null,
+    lastName: ((claims.family_name || claims.last_name) as string) || null,
+    profileImageUrl: (claims.picture || claims.profile_image_url) as
       | string
       | null,
   };
@@ -103,10 +148,13 @@ router.get("/login", async (req: Request, res: Response) => {
 
   const redirectTo = oidc.buildAuthorizationUrl(config, {
     redirect_uri: callbackUrl,
-    scope: "openid email profile offline_access",
+    scope:
+      "openid email profile https://www.googleapis.com/auth/calendar.readonly",
+    access_type: "offline",
+    include_granted_scopes: "true",
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
-    prompt: "login consent",
+    prompt: "consent select_account",
     state,
     nonce,
   });
@@ -164,9 +212,7 @@ router.get("/callback", async (req: Request, res: Response) => {
     return;
   }
 
-  const dbUser = await upsertUser(
-    claims as unknown as Record<string, unknown>,
-  );
+  const dbUser = await upsertUser(claims as unknown as Record<string, unknown>);
 
   const now = Math.floor(Date.now() / 1000);
   const sessionData: SessionData = {
@@ -182,24 +228,17 @@ router.get("/callback", async (req: Request, res: Response) => {
     expires_at: tokens.expiresIn() ? now + tokens.expiresIn()! : claims.exp,
   };
 
+  await storeGoogleCalendarConnection(dbUser.id, tokens);
+
   const sid = await createSession(sessionData);
   setSessionCookie(res, sid);
   res.redirect(returnTo);
 });
 
 router.get("/logout", async (req: Request, res: Response) => {
-  const config = await getOidcConfig();
-  const origin = getOrigin(req);
-
   const sid = getSessionId(req);
   await clearSession(res, sid);
-
-  const endSessionUrl = oidc.buildEndSessionUrl(config, {
-    client_id: process.env.REPL_ID!,
-    post_logout_redirect_uri: origin,
-  });
-
-  res.redirect(endSessionUrl.href);
+  res.redirect("/");
 });
 
 router.post(
@@ -251,6 +290,8 @@ router.post(
         refresh_token: tokens.refresh_token,
         expires_at: tokens.expiresIn() ? now + tokens.expiresIn()! : claims.exp,
       };
+
+      await storeGoogleCalendarConnection(dbUser.id, tokens);
 
       const sid = await createSession(sessionData);
       res.json(ExchangeMobileAuthorizationCodeResponse.parse({ token: sid }));
