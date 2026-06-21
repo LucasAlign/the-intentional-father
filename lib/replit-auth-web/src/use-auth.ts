@@ -43,7 +43,10 @@ export function useAuth(): AuthState {
 
   const login = useCallback(() => {
     const base = import.meta.env.BASE_URL.replace(/\/+$/, "") || "/";
-    window.location.href = `/api/login?returnTo=${encodeURIComponent(base)}`;
+    // Pass the browser's real origin so the server can build the correct
+    // redirect_uri regardless of what proxy headers say.
+    const appOrigin = window.location.origin;
+    window.location.href = `/api/login?returnTo=${encodeURIComponent(base)}&appOrigin=${encodeURIComponent(appOrigin)}`;
   }, []);
 
   const logout = useCallback(() => {

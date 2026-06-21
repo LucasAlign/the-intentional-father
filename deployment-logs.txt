@@ -1,0 +1,22 @@
+Production deployment logs (fetched 2026-06-21)
+================================================
+
+[startup]
+- starting artifact processes for monorepo deployment
+- registered static handler for artifact publicDir=artifacts/arlo/dist/public path=/
+- starting artifact process artifact=artifacts/api-server args=[node --enable-source-maps artifacts/api-server/dist/index.mjs] port=8080
+- all artifact ports detected (initial /api healthchecks returned 500 until the process bound)
+
+[normal traffic]
+- GET /api/auth/user -> 304/200
+- GET /api/tasks|journal|verse|commits|coming-up|jobs|chat-history|google-calendar/status -> 401 (not logged in)
+- GET /api/login -> 302
+
+[!!! PRODUCTION ERROR — login callback fails]
+- GET /api/callback -> 500
+  upsertUser (artifacts/api-server/src/routes/auth.ts:119) fails on:
+    insert into "users" (...) values (...) on conflict ("id") do update set ... returning ...
+  Cause: the PRODUCTION database is missing the auth tables (users / sessions).
+  The dev schema push (pnpm --filter @workspace/db run push) only updated the DEV database.
+
+- Postgres SSL deprecation warning (pg-connection-string): non-fatal, informational only.

@@ -5,7 +5,7 @@ import { eq, desc, asc, gte, lte, and } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
 
 const router = Router();
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
 
 type OpenAIResponsesApiResponse = {
   output_text?: string;

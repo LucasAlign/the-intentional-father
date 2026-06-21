@@ -140,7 +140,18 @@ router.get("/auth/user", (req: Request, res: Response) => {
 
 router.get("/login", async (req: Request, res: Response) => {
   const config = await getOidcConfig();
-  const callbackUrl = `${getOrigin(req)}/api/callback`;
+
+  // Priority: PUBLIC_URL (explicit config) → browser-reported origin → server headers.
+  // The browser value is the most reliable on mobile because x-forwarded-host can
+  // resolve to a Replit dev tunnel URL instead of the published app domain.
+  const rawClientOrigin = typeof req.query.appOrigin === "string" ? req.query.appOrigin : "";
+  const clientOrigin = /^https?:\/\/[a-zA-Z0-9][a-zA-Z0-9.-]*(:\d+)?$/.test(rawClientOrigin)
+    ? rawClientOrigin
+    : null;
+  const origin = process.env.PUBLIC_URL?.replace(/\/+$/, "")
+    ?? clientOrigin
+    ?? getOrigin(req);
+  const callbackUrl = `${origin}/api/callback`;
 
   const returnTo = getSafeReturnTo(req.query.returnTo);
 
@@ -166,6 +177,9 @@ router.get("/login", async (req: Request, res: Response) => {
   setOidcCookie(res, "nonce", nonce);
   setOidcCookie(res, "state", state);
   setOidcCookie(res, "return_to", returnTo);
+  // Store the origin so /api/callback uses the exact same redirect_uri
+  // and redirects the user back to the correct domain after login.
+  setOidcCookie(res, "app_origin", origin);
 
   res.redirect(redirectTo.href);
 });
@@ -174,7 +188,12 @@ router.get("/login", async (req: Request, res: Response) => {
 // parameters not expressed in the schema.
 router.get("/callback", async (req: Request, res: Response) => {
   const config = await getOidcConfig();
-  const callbackUrl = `${getOrigin(req)}/api/callback`;
+
+  // Use the origin stored during /api/login so the redirect_uri matches exactly.
+  const storedOrigin = req.cookies?.app_origin;
+  const callbackUrl = storedOrigin
+    ? `${storedOrigin}/api/callback`
+    : `${getOrigin(req)}/api/callback`;
 
   const codeVerifier = req.cookies?.code_verifier;
   const nonce = req.cookies?.nonce;
@@ -208,6 +227,7 @@ router.get("/callback", async (req: Request, res: Response) => {
   res.clearCookie("nonce", { path: "/" });
   res.clearCookie("state", { path: "/" });
   res.clearCookie("return_to", { path: "/" });
+  res.clearCookie("app_origin", { path: "/" });
 
   const claims = tokens.claims();
   if (!claims) {
@@ -254,7 +274,10 @@ router.get("/callback", async (req: Request, res: Response) => {
   }
 
   setSessionCookie(res, sid);
-  res.redirect(returnTo);
+  // Redirect to the full origin + path so mobile users land back on the
+  // correct domain, not the Replit dev tunnel URL.
+  const redirectTarget = storedOrigin ? `${storedOrigin}${returnTo}` : returnTo;
+  res.redirect(redirectTarget);
 });
 
 router.get("/logout", async (req: Request, res: Response) => {
