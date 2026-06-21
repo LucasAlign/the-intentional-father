@@ -6,6 +6,7 @@ import {
   ExchangeMobileAuthorizationCodeResponse,
   LogoutMobileSessionResponse,
 } from "@workspace/api-zod";
+import { eq } from "drizzle-orm";
 import { db, googleCalendarConnections, usersTable } from "@workspace/db";
 import {
   clearSession,
@@ -116,18 +117,30 @@ async function upsertUser(claims: Record<string, unknown>) {
       | null,
   };
 
-  const [user] = await db
-    .insert(usersTable)
-    .values(userData)
-    .onConflictDoUpdate({
-      target: usersTable.id,
-      set: {
-        ...userData,
-        updatedAt: new Date(),
-      },
-    })
-    .returning();
-  return user;
+  try {
+    const [user] = await db
+      .insert(usersTable)
+      .values(userData)
+      .onConflictDoUpdate({
+        target: usersTable.id,
+        set: {
+          ...userData,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return user;
+  } catch {
+    // Email unique-constraint conflict: a stale record exists with the same email
+    // but a different id (e.g. leftover from a previous auth system).
+    // Update that record in-place, adopting the new canonical id.
+    const [updated] = await db
+      .update(usersTable)
+      .set({ ...userData, updatedAt: new Date() })
+      .where(eq(usersTable.email, userData.email!))
+      .returning();
+    return updated;
+  }
 }
 
 router.get("/auth/user", (req: Request, res: Response) => {
