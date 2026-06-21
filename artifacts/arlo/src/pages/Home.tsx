@@ -118,8 +118,11 @@ const NAV: { id: TabId; icon: IconName | "arloA"; label: string }[] = [
 ];
 type TabId = "today" | "her" | "work" | "arlo" | "week";
 
-const BIZ_ORDER = ["Signs", "Wraparound", "Farm", "Personal"];
-function bizC(b: string) { return ({ Signs: "#8AB46A", Wraparound: "#6AAEC8", Farm: "#C89840", Personal: "#B080C0" } as Record<string, string>)[b] || "#8AB46A"; }
+const BIZ_PALETTE = ["#8AB46A", "#6AAEC8", "#C89840", "#B080C0", "#C87060", "#60A8B4", "#A890C0"];
+function bizC(b: string, bizList: string[]) {
+  const i = bizList.indexOf(b);
+  return BIZ_PALETTE[i >= 0 ? i % BIZ_PALETTE.length : 0];
+}
 
 // ── Date helpers ───────────────────────────────────────────────────────────────
 const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -150,6 +153,7 @@ export default function Home() {
   const [ci, setCi] = useState("");
   const [sending, setSending] = useState(false);
   const [jobModal, setJobModal] = useState(false);
+  const [editJob, setEditJob] = useState<Job | null>(null);
   const [calendarConnected, setCalendarConnected] = useState(false);
 
   const refreshTasks = useCallback(() => {
@@ -224,7 +228,7 @@ export default function Home() {
       <div style={R.screen}>
         {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} />}
         {tab === "her" && <Her commits={commits} refresh={refreshCommits} />}
-        {tab === "work" && <Work jobs={jobs} onJob={() => setJobModal(true)} />}
+        {tab === "work" && <Work jobs={jobs} onJob={() => setJobModal(true)} onEdit={setEditJob} />}
         {tab === "arlo" && <ArloChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} />}
         {tab === "week" && <WeekView events={week} calendarConnected={calendarConnected} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} />}
       </div>
@@ -243,7 +247,8 @@ export default function Home() {
         </nav>
       </div>
 
-      {jobModal && <JobModal onClose={() => setJobModal(false)} onCreated={refreshJobs} />}
+      {jobModal && <JobModal onClose={() => setJobModal(false)} onCreated={refreshJobs} bizSuggestions={[...new Set(jobs.map(j => j.biz))]} />}
+      {editJob && <JobEditModal job={editJob} onClose={() => setEditJob(null)} onSaved={refreshJobs} onDeleted={refreshJobs} />}
     </div>
   );
 }
@@ -449,20 +454,18 @@ function Her({ commits, refresh }: { commits: Commit[]; refresh: () => void }) {
 }
 
 // ── Work ───────────────────────────────────────────────────────────────────
-function Work({ jobs, onJob }: { jobs: Job[]; onJob: () => void }) {
-  const present = BIZ_ORDER.filter(b => jobs.some(j => j.biz === b));
-  const others = [...new Set(jobs.map(j => j.biz))].filter(b => !BIZ_ORDER.includes(b));
-  const groups = [...present, ...others];
+function Work({ jobs, onJob, onEdit }: { jobs: Job[]; onJob: () => void; onEdit: (j: Job) => void }) {
+  const groups = [...new Set(jobs.map(j => j.biz))];
   return (
     <div style={S.scroll}>
       <div style={S.pageTitle}>Work</div>
-      <div style={S.pageSub}>Active across all your businesses.</div>
+      <div style={S.pageSub}>Active across all your businesses. Tap a job to edit.</div>
       {groups.length === 0 && <div style={S.card}><div style={S.empty}>No active jobs yet. Add one to start planning ahead.</div></div>}
       {groups.map(biz => (
         <div key={biz} style={S.card}>
-          <div style={S.eyebrow}><Icon name="work" color={bizC(biz)} /><span style={{ ...S.eyeText, color: bizC(biz) }}>{biz.toUpperCase()}</span></div>
+          <div style={S.eyebrow}><Icon name="work" color={bizC(biz, groups)} /><span style={{ ...S.eyeText, color: bizC(biz, groups) }}>{biz.toUpperCase()}</span></div>
           {jobs.filter(j => j.biz === biz).map(j => (
-            <div key={j.id} style={S.jobRow}>
+            <div key={j.id} style={{ ...S.jobRow, cursor: "pointer" }} onClick={() => onEdit(j)}>
               <div style={S.jobTop}><div style={S.prioTitle}>{j.name}</div>{j.due && <div style={{ ...S.prioSub, color: C.brass }}>{j.due}</div>}</div>
               {j.stage && <div style={{ ...S.prioSub, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>{j.stage}</div>}
               <div style={S.trackRow}>
@@ -550,9 +553,9 @@ function WeekView({ events, calendarConnected, onConnectCalendar }: { events: Ev
 }
 
 // ── Job intake modal ─────────────────────────────────────────────────────────
-function JobModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+function JobModal({ onClose, onCreated, bizSuggestions }: { onClose: () => void; onCreated: () => void; bizSuggestions: string[] }) {
   const Qs = [
-    { q: "Which business?", type: "choice" as const, opts: ["Signs", "Farm", "Wraparound", "Personal"], key: "biz" },
+    { q: "Which business?", type: "text" as const, ph: "Business name", key: "biz" },
     { q: "What's the job?", type: "text" as const, ph: "e.g. First Baptist — monument sign", key: "name" },
     { q: "When does it need to be done?", type: "text" as const, ph: "e.g. June 20, end of month", key: "due" },
     { q: "Materials needed?", type: "text" as const, ph: "e.g. 4×8 aluminum, vinyl", key: "materials" },
@@ -571,7 +574,7 @@ function JobModal({ onClose, onCreated }: { onClose: () => void; onCreated: () =
     try {
       const r = await fetch(`${API}/jobs`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ biz: final.biz || "Signs", name: final.name || "Untitled job", due: final.due || "", stage: "New", pct: 0 }),
+        body: JSON.stringify({ biz: final.biz || "General", name: final.name || "Untitled job", due: final.due || "", stage: "New", pct: 0 }),
       });
       if (r.ok) { onCreated(); onClose(); }
       else { setErr("Couldn't save the job. Try again."); setSaving(false); }
@@ -591,15 +594,89 @@ function JobModal({ onClose, onCreated }: { onClose: () => void; onCreated: () =
         <div style={M.head}><div style={M.title}>New Job</div><div style={S.prioSub}>{step + 1} / {Qs.length}</div></div>
         <div style={M.track}><div style={{ ...M.fill, width: ((step + 1) / Qs.length * 100) + "%" }} /></div>
         <div style={M.q}>{q.q}</div>
-        {q.type === "choice" ? (
-          <div style={M.grid}>{q.opts!.map(o => <button key={o} style={M.choice} onClick={() => advance(o)}>{o}</button>)}</div>
-        ) : (
-          <>
-            <input style={M.input} value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => e.key === "Enter" && advance(val)} placeholder={q.ph} autoFocus />
-            <button style={M.next} disabled={saving} onClick={() => advance(val)}>{step < Qs.length - 1 ? "Next →" : saving ? "Saving…" : "Add Job ✓"}</button>
-          </>
-        )}
+        <>
+          <input style={M.input} value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => e.key === "Enter" && val.trim() && advance(val)} placeholder={q.ph} autoFocus />
+          {step === 0 && bizSuggestions.length > 0 && (
+            <div style={E.chipRow}>
+              {bizSuggestions.map(b => (
+                <button key={b} style={E.chip} onClick={() => advance(b)}>{b}</button>
+              ))}
+            </div>
+          )}
+          <button style={M.next} disabled={saving} onClick={() => advance(val)}>{step < Qs.length - 1 ? "Next →" : saving ? "Saving…" : "Add Job ✓"}</button>
+        </>
         {err && <div style={{ ...S.empty, color: "#D4A090", marginTop: 4 }}>{err}</div>}
+        <button style={M.cancel} onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Job edit modal ────────────────────────────────────────────────────────────
+function JobEditModal({ job, onClose, onSaved, onDeleted }: { job: Job; onClose: () => void; onSaved: () => void; onDeleted: () => void }) {
+  const [name, setName] = useState(job.name);
+  const [biz, setBiz] = useState(job.biz);
+  const [stage, setStage] = useState(job.stage);
+  const [due, setDue] = useState(job.due);
+  const [pct, setPct] = useState(job.pct);
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function save() {
+    if (!name.trim() || !biz.trim()) { setErr("Name and business are required."); return; }
+    setSaving(true); setErr("");
+    try {
+      const r = await fetch(`${API}/jobs/${job.id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim(), biz: biz.trim(), stage: stage.trim(), due: due.trim(), pct }),
+      });
+      if (r.ok) { onSaved(); onClose(); }
+      else { setErr("Couldn't save. Try again."); setSaving(false); }
+    } catch { setErr("Couldn't reach the server."); setSaving(false); }
+  }
+
+  async function del() {
+    setDeleting(true);
+    try {
+      const r = await fetch(`${API}/jobs/${job.id}`, { method: "DELETE" });
+      if (r.ok) { onDeleted(); onClose(); }
+      else { setErr("Couldn't delete. Try again."); setDeleting(false); }
+    } catch { setErr("Couldn't reach the server."); setDeleting(false); }
+  }
+
+  return (
+    <div style={M.overlay}>
+      <div style={M.sheet}>
+        <div style={M.strip} />
+        <div style={M.head}><div style={M.title}>Edit Job</div></div>
+
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Job name</div>
+          <input style={M.input} value={name} onChange={e => setName(e.target.value)} placeholder="Job name" />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Business</div>
+          <input style={M.input} value={biz} onChange={e => setBiz(e.target.value)} placeholder="Business name" />
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <div style={{ ...E.fieldGroup, flex: 1 }}>
+            <div style={E.label}>Stage</div>
+            <input style={M.input} value={stage} onChange={e => setStage(e.target.value)} placeholder="e.g. In progress" />
+          </div>
+          <div style={{ ...E.fieldGroup, flex: 1 }}>
+            <div style={E.label}>Due</div>
+            <input style={M.input} value={due} onChange={e => setDue(e.target.value)} placeholder="e.g. June 30" />
+          </div>
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Progress — {pct}%</div>
+          <input type="range" min={0} max={100} value={pct} onChange={e => setPct(Number(e.target.value))} style={E.slider} />
+        </div>
+
+        {err && <div style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{err}</div>}
+        <button style={M.next} disabled={saving} onClick={save}>{saving ? "Saving…" : "Save Changes"}</button>
+        <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete Job"}</button>
         <button style={M.cancel} onClick={onClose}>Cancel</button>
       </div>
     </div>
@@ -743,4 +820,11 @@ const M: Record<string, CSSProperties> = {
   input: { width: "100%", background: "rgba(8,10,5,0.7)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 12, color: C.parchment, fontSize: 15, fontFamily: F, padding: "14px", outline: "none", marginBottom: 12, boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
   next: { width: "100%", background: `linear-gradient(135deg,${C.brass},${C.brassDeep})`, border: "none", borderRadius: 12, color: C.ink, fontSize: 15, fontWeight: 700, padding: "15px", cursor: "pointer", marginBottom: 8, fontFamily: F, boxShadow: `0 4px 18px ${C.brassGlow}` },
   cancel: { width: "100%", background: "none", border: "none", color: C.parchmentDim, fontSize: 13, cursor: "pointer", padding: "10px", fontFamily: F },
+};
+const E: Record<string, CSSProperties> = {
+  fieldGroup: { marginBottom: 12 },
+  label: { fontSize: 11, letterSpacing: "0.1em", color: C.brassSoft, fontWeight: 600, marginBottom: 6 },
+  chipRow: { display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14, marginTop: -4 },
+  chip: { background: "rgba(34,30,18,0.9)", border: "1px solid rgba(210,190,130,0.22)", borderRadius: 20, color: C.parchmentMid, fontSize: 13, padding: "7px 14px", cursor: "pointer", fontFamily: F },
+  slider: { width: "100%", accentColor: C.brass, marginBottom: 12 },
 };
