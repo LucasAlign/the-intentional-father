@@ -15,7 +15,7 @@ import {
   deleteSession,
   SESSION_COOKIE,
   SESSION_TTL,
-  ISSUER_URL,
+  GOOGLE_ISSUER_URL,
   type SessionData,
 } from "../lib/auth";
 
@@ -258,7 +258,7 @@ router.post(
       const callbackUrl = new URL(redirect_uri);
       callbackUrl.searchParams.set("code", code);
       callbackUrl.searchParams.set("state", state);
-      callbackUrl.searchParams.set("iss", ISSUER_URL);
+      callbackUrl.searchParams.set("iss", GOOGLE_ISSUER_URL);
 
       const tokens = await oidc.authorizationCodeGrant(config, callbackUrl, {
         pkceCodeVerifier: code_verifier,
