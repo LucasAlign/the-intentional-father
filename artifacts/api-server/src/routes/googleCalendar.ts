@@ -139,8 +139,13 @@ export async function fetchGoogleCalendarEventsForUser(userId: string, start: st
 }
 
 router.get("/google-calendar/status", async (req: Request, res: Response) => {
-  const [connection] = await db.select({ userId: googleCalendarConnections.userId }).from(googleCalendarConnections).where(eq(googleCalendarConnections.userId, req.user!.id)).limit(1);
-  res.json({ connected: Boolean(connection) });
+  try {
+    const [connection] = await db.select({ userId: googleCalendarConnections.userId }).from(googleCalendarConnections).where(eq(googleCalendarConnections.userId, req.user!.id)).limit(1);
+    res.json({ connected: Boolean(connection) });
+  } catch (err) {
+    req.log.error({ err }, "Failed to fetch Google Calendar status");
+    res.status(500).json({ error: "Failed to fetch calendar status" });
+  }
 });
 
 router.get("/google-calendar/connect", (req: Request, res: Response) => {
@@ -161,56 +166,61 @@ router.get("/google-calendar/connect", (req: Request, res: Response) => {
 });
 
 router.get("/google-calendar/callback", async (req: Request, res: Response) => {
-  const code = typeof req.query.code === "string" ? req.query.code : "";
-  const state = typeof req.query.state === "string" ? req.query.state : "";
-  if (!code || !state || state !== req.cookies?.[STATE_COOKIE]) {
-    res.status(400).send("Invalid Google Calendar authorization response.");
-    return;
-  }
+  try {
+    const code = typeof req.query.code === "string" ? req.query.code : "";
+    const state = typeof req.query.state === "string" ? req.query.state : "";
+    if (!code || !state || state !== req.cookies?.[STATE_COOKIE]) {
+      res.status(400).send("Invalid Google Calendar authorization response.");
+      return;
+    }
 
-  const { clientId, clientSecret } = getGoogleConfig();
-  const body = new URLSearchParams({
-    code,
-    client_id: clientId,
-    client_secret: clientSecret,
-    redirect_uri: callbackUrl(req),
-    grant_type: "authorization_code",
-  });
-  const response = await fetch(GOOGLE_TOKEN_URL, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body });
-  const tokens = await response.json() as GoogleTokenResponse;
-  if (!response.ok || !tokens.access_token) {
-    req.log.error({ tokens }, "Google Calendar token exchange failed");
-    res.status(502).send("Google Calendar connection failed.");
-    return;
-  }
+    const { clientId, clientSecret } = getGoogleConfig();
+    const body = new URLSearchParams({
+      code,
+      client_id: clientId,
+      client_secret: clientSecret,
+      redirect_uri: callbackUrl(req),
+      grant_type: "authorization_code",
+    });
+    const response = await fetch(GOOGLE_TOKEN_URL, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body });
+    const tokens = await response.json() as GoogleTokenResponse;
+    if (!response.ok || !tokens.access_token) {
+      req.log.error({ tokens }, "Google Calendar token exchange failed");
+      res.status(502).send("Google Calendar connection failed.");
+      return;
+    }
 
-  const existing = await db.select().from(googleCalendarConnections).where(eq(googleCalendarConnections.userId, req.user!.id)).limit(1);
-  const refreshToken = tokens.refresh_token || existing[0]?.refreshToken;
-  if (!refreshToken) {
-    res.status(400).send("Google did not return a refresh token. Disconnect and try again with consent.");
-    return;
-  }
+    const existing = await db.select().from(googleCalendarConnections).where(eq(googleCalendarConnections.userId, req.user!.id)).limit(1);
+    const refreshToken = tokens.refresh_token || existing[0]?.refreshToken;
+    if (!refreshToken) {
+      res.status(400).send("Google did not return a refresh token. Disconnect and try again with consent.");
+      return;
+    }
 
-  await db.insert(googleCalendarConnections).values({
-    userId: req.user!.id,
-    accessToken: tokens.access_token,
-    refreshToken,
-    scope: tokens.scope || CALENDAR_SCOPE,
-    expiresAt: tokenExpiry(tokens.expires_in),
-    updatedAt: new Date(),
-  }).onConflictDoUpdate({
-    target: googleCalendarConnections.userId,
-    set: {
+    await db.insert(googleCalendarConnections).values({
+      userId: req.user!.id,
       accessToken: tokens.access_token,
       refreshToken,
       scope: tokens.scope || CALENDAR_SCOPE,
       expiresAt: tokenExpiry(tokens.expires_in),
       updatedAt: new Date(),
-    },
-  });
+    }).onConflictDoUpdate({
+      target: googleCalendarConnections.userId,
+      set: {
+        accessToken: tokens.access_token,
+        refreshToken,
+        scope: tokens.scope || CALENDAR_SCOPE,
+        expiresAt: tokenExpiry(tokens.expires_in),
+        updatedAt: new Date(),
+      },
+    });
 
-  res.clearCookie(STATE_COOKIE, { path: "/" });
-  res.redirect("/?calendar=connected");
+    res.clearCookie(STATE_COOKIE, { path: "/" });
+    res.redirect("/?calendar=connected");
+  } catch (err) {
+    req.log.error({ err }, "Google Calendar callback error");
+    res.status(500).send("Google Calendar connection failed. Please try again.");
+  }
 });
 
 router.get("/google-calendar/events", async (req: Request, res: Response) => {
@@ -225,16 +235,21 @@ router.get("/google-calendar/events", async (req: Request, res: Response) => {
 });
 
 router.post("/google-calendar/disconnect", async (req: Request, res: Response) => {
-  const [connection] = await db.select().from(googleCalendarConnections).where(eq(googleCalendarConnections.userId, req.user!.id)).limit(1);
-  if (connection) {
-    await fetch(GOOGLE_REVOKE_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ token: connection.refreshToken }),
-    }).catch(() => undefined);
-    await db.delete(googleCalendarConnections).where(eq(googleCalendarConnections.userId, req.user!.id));
+  try {
+    const [connection] = await db.select().from(googleCalendarConnections).where(eq(googleCalendarConnections.userId, req.user!.id)).limit(1);
+    if (connection) {
+      await fetch(GOOGLE_REVOKE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ token: connection.refreshToken }),
+      }).catch(() => undefined);
+      await db.delete(googleCalendarConnections).where(eq(googleCalendarConnections.userId, req.user!.id));
+    }
+    res.json({ success: true });
+  } catch (err) {
+    req.log.error({ err }, "Failed to disconnect Google Calendar");
+    res.status(500).json({ error: "Failed to disconnect calendar" });
   }
-  res.json({ success: true });
 });
 
 export default router;

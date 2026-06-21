@@ -215,7 +215,14 @@ router.get("/callback", async (req: Request, res: Response) => {
     return;
   }
 
-  const dbUser = await upsertUser(claims as unknown as Record<string, unknown>);
+  let dbUser: Awaited<ReturnType<typeof upsertUser>>;
+  try {
+    dbUser = await upsertUser(claims as unknown as Record<string, unknown>);
+  } catch (err) {
+    req.log?.error({ err }, "Failed to upsert user during login");
+    res.status(500).json({ error: "Login failed — could not save user." });
+    return;
+  }
 
   const now = Math.floor(Date.now() / 1000);
   const sessionData: SessionData = {
@@ -237,7 +244,15 @@ router.get("/callback", async (req: Request, res: Response) => {
     req.log?.warn({ err }, "Failed to store Google Calendar connection during login");
   }
 
-  const sid = await createSession(sessionData);
+  let sid: string;
+  try {
+    sid = await createSession(sessionData);
+  } catch (err) {
+    req.log?.error({ err }, "Failed to create session during login");
+    res.status(500).json({ error: "Login failed — could not create session." });
+    return;
+  }
+
   setSessionCookie(res, sid);
   res.redirect(returnTo);
 });
