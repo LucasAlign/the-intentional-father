@@ -45,10 +45,31 @@ interface Job { id: number; biz: string; name: string; stage: string; due: strin
 interface Event { id: number; date: string; time: string; title: string; sub: string; tag: string; kind: string; }
 interface Message { role: "user" | "assistant"; content: string; }
 interface Journal { reflect: string; commit_text: string; }
-interface CalendarStatus { connected: boolean; }
 
 const API = "/api";
 const WOOD = `${import.meta.env.BASE_URL}woodgrain.png`;
+
+function asList<T>(value: unknown): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function getJson(url: string, fallback: unknown) {
+  try {
+    const response = await fetch(url, { credentials: "include" });
+    if (!response.ok) return fallback;
+    return await response.json();
+  } catch {
+    return fallback;
+  }
+}
+
+async function getList<T>(url: string): Promise<T[]> {
+  return asList<T>(await getJson(url, []));
+}
 
 // ── Palette ──────────────────────────────────────────────────────────────────
 const C = {
@@ -132,26 +153,26 @@ export default function Home() {
   const [calendarConnected, setCalendarConnected] = useState(false);
 
   const refreshTasks = useCallback(() => {
-    fetch(`${API}/tasks`).then(r => r.ok ? r.json() : []).then(setTasks).catch(() => {});
+    getList<Task>(`${API}/tasks`).then(setTasks);
   }, []);
   const refreshCommits = useCallback(() => {
-    fetch(`${API}/commits`).then(r => r.ok ? r.json() : []).then(setCommits).catch(() => {});
+    getList<Commit>(`${API}/commits`).then(setCommits);
   }, []);
   const refreshJobs = useCallback(() => {
-    fetch(`${API}/jobs`).then(r => r.ok ? r.json() : []).then(setJobs).catch(() => {});
+    getList<Job>(`${API}/jobs`).then(setJobs);
   }, []);
   const refreshCalendarStatus = useCallback(() => {
-    fetch(`${API}/google-calendar/status`).then(r => r.ok ? r.json() : { connected: false }).then((d: CalendarStatus) => setCalendarConnected(Boolean(d.connected))).catch(() => setCalendarConnected(false));
+    getJson(`${API}/google-calendar/status`, { connected: false }).then((d) => setCalendarConnected(Boolean(isRecord(d) && d.connected)));
   }, []);
 
   useEffect(() => {
     const days = weekDays();
     const start = days[0].key, end = days[6].key;
     fetch(`${API}/verse`).then(r => r.ok ? r.text() : "").then(v => v && setVerse(v)).catch(() => {});
-    fetch(`${API}/journal`).then(r => r.ok ? r.json() : null).then(d => d && setJournal({ reflect: d.reflect || "", commit_text: d.commitText ?? d.commit_text ?? "" })).catch(() => {});
-    fetch(`${API}/coming-up`).then(r => r.ok ? r.json() : []).then(setToday).catch(() => {});
-    fetch(`${API}/coming-up?start=${start}&end=${end}`).then(r => r.ok ? r.json() : []).then(setWeek).catch(() => {});
-    fetch(`${API}/chat-history`).then(r => r.ok ? r.json() : []).then((m: Message[]) => setChat(prev => prev.length ? prev : m)).catch(() => {});
+    getJson(`${API}/journal`, null).then((d) => { if (isRecord(d)) setJournal({ reflect: String(d.reflect || ""), commit_text: String(d.commitText ?? d.commit_text ?? "") }); });
+    getList<Event>(`${API}/coming-up`).then(setToday);
+    getList<Event>(`${API}/coming-up?start=${start}&end=${end}`).then(setWeek);
+    getList<Message>(`${API}/chat-history`).then((m) => setChat(prev => prev.length ? prev : m));
     refreshTasks(); refreshCommits(); refreshJobs(); refreshCalendarStatus();
   }, [refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus]);
 

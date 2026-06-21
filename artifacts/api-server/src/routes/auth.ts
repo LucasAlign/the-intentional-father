@@ -228,7 +228,11 @@ router.get("/callback", async (req: Request, res: Response) => {
     expires_at: tokens.expiresIn() ? now + tokens.expiresIn()! : claims.exp,
   };
 
-  await storeGoogleCalendarConnection(dbUser.id, tokens);
+  try {
+    await storeGoogleCalendarConnection(dbUser.id, tokens);
+  } catch (err) {
+    req.log?.warn({ err }, "Failed to store Google Calendar connection during login");
+  }
 
   const sid = await createSession(sessionData);
   setSessionCookie(res, sid);
@@ -291,7 +295,11 @@ router.post(
         expires_at: tokens.expiresIn() ? now + tokens.expiresIn()! : claims.exp,
       };
 
-      await storeGoogleCalendarConnection(dbUser.id, tokens);
+      try {
+        await storeGoogleCalendarConnection(dbUser.id, tokens);
+      } catch (err) {
+        req.log.warn({ err }, "Failed to store Google Calendar connection during mobile login");
+      }
 
       const sid = await createSession(sessionData);
       res.json(ExchangeMobileAuthorizationCodeResponse.parse({ token: sid }));
