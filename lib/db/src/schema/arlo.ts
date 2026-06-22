@@ -1,4 +1,4 @@
-import { pgTable, text, serial, boolean, timestamp, integer } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, boolean, timestamp, integer, unique, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -83,15 +83,37 @@ export type ComingUp = typeof comingUp.$inferSelect;
 
 
 export const googleCalendarConnections = pgTable("google_calendar_connections", {
-  userId: text("user_id").primaryKey(),
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  googleEmail: text("google_email").notNull(),
   accessToken: text("access_token").notNull(),
   refreshToken: text("refresh_token").notNull(),
   scope: text("scope").notNull().default(""),
   expiresAt: timestamp("expires_at").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (table) => [
+  unique("gcal_user_email_unique").on(table.userId, table.googleEmail),
+]);
 
 export const insertGoogleCalendarConnectionSchema = createInsertSchema(googleCalendarConnections).omit({ createdAt: true, updatedAt: true });
 export type InsertGoogleCalendarConnection = z.infer<typeof insertGoogleCalendarConnectionSchema>;
 export type GoogleCalendarConnection = typeof googleCalendarConnections.$inferSelect;
+
+export const profile = pgTable("profile", {
+  userId: text("user_id").primaryKey(),
+  data: jsonb("data"),
+  onboarded: boolean("onboarded").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export type Profile = typeof profile.$inferSelect;
+
+export const interviewMessages = pgTable("interview_messages", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  role: text("role").notNull(),
+  content: text("content").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});

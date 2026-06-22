@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { CSSProperties, ReactElement } from "react";
 import { useAuth } from "@workspace/replit-auth-web";
+import { useLocation } from "wouter";
 
 declare global {
   interface Window {
@@ -139,6 +140,7 @@ function weekDays() {
 // ── Root ──────────────────────────────────────────────────────────────────────
 export default function Home() {
   const { isLoading, isAuthenticated, login, logout } = useAuth();
+  const [, setLocation] = useLocation();
   const [tab, setTab] = useState<TabId>("today");
 
   const [verse, setVerse] = useState("");
@@ -154,7 +156,7 @@ export default function Home() {
   const [sending, setSending] = useState(false);
   const [jobModal, setJobModal] = useState(false);
   const [editJob, setEditJob] = useState<Job | null>(null);
-  const [calendarConnected, setCalendarConnected] = useState(false);
+  const [calendarAccounts, setCalendarAccounts] = useState<string[]>([]);
 
   const refreshTasks = useCallback(() => {
     getList<Task>(`${API}/tasks`).then(setTasks);
@@ -166,10 +168,21 @@ export default function Home() {
     getList<Job>(`${API}/jobs`).then(setJobs);
   }, []);
   const refreshCalendarStatus = useCallback(() => {
-    getJson(`${API}/google-calendar/status`, { connected: false }).then((d) => setCalendarConnected(Boolean(isRecord(d) && d.connected)));
+    getJson(`${API}/google-calendar/status`, { accounts: [] }).then((d) => {
+      setCalendarAccounts(isRecord(d) && Array.isArray(d.accounts) ? d.accounts as string[] : []);
+    });
   }, []);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
+    // Check onboarding before loading data
+    fetch(`${API}/interview/status`, { credentials: "include" })
+      .then(r => r.ok ? r.json() : null)
+      .then((d: { onboarded?: boolean } | null) => {
+        if (d && d.onboarded === false) { setLocation("/interview"); }
+      })
+      .catch(() => {});
+
     const days = weekDays();
     const start = days[0].key, end = days[6].key;
     fetch(`${API}/verse`).then(r => r.ok ? r.text() : "").then(v => v && setVerse(v)).catch(() => {});
@@ -178,7 +191,7 @@ export default function Home() {
     getList<Event>(`${API}/coming-up?start=${start}&end=${end}`).then(setWeek);
     getList<Message>(`${API}/chat-history`).then((m) => setChat(prev => prev.length ? prev : m));
     refreshTasks(); refreshCommits(); refreshJobs(); refreshCalendarStatus();
-  }, [refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus]);
+  }, [isAuthenticated, setLocation, refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus]);
 
   async function saveJournal(next: Journal) {
     setJournal(next);
@@ -230,7 +243,7 @@ export default function Home() {
         {tab === "her" && <Her commits={commits} refresh={refreshCommits} />}
         {tab === "work" && <Work jobs={jobs} onJob={() => setJobModal(true)} onEdit={setEditJob} />}
         {tab === "arlo" && <ArloChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} />}
-        {tab === "week" && <WeekView events={week} calendarConnected={calendarConnected} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} />}
+        {tab === "week" && <WeekView events={week} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await fetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
       </div>
 
       <div style={R.navWrap}>
@@ -519,19 +532,28 @@ function ArloChatBar({ input, setInput, send, sending }: { input: string; setInp
 }
 
 // ── Week ───────────────────────────────────────────────────────────────────
-function WeekView({ events, calendarConnected, onConnectCalendar }: { events: Event[]; calendarConnected: boolean; onConnectCalendar: () => void }) {
+function WeekView({ events, calendarAccounts, onConnectCalendar, onDisconnectCalendar }: { events: Event[]; calendarAccounts: string[]; onConnectCalendar: () => void; onDisconnectCalendar: (email: string) => void }) {
   const days = weekDays();
   const todayKey = ymd(new Date());
   return (
     <div style={S.scroll}>
       <div style={S.pageTitle}>This Week</div>
       <div style={S.pageSub}>One week ahead. No surprises.</div>
-      <div style={S.calendarCard}>
-        <div>
+      <div style={{ ...S.calendarCard, flexDirection: "column", alignItems: "stretch" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: calendarAccounts.length > 0 ? 10 : 0 }}>
           <div style={S.calendarTitle}>Google Calendar</div>
-          <div style={S.prioSub}>{calendarConnected ? "Connected. Events appear in Today and Week." : "Connect your calendar to pull upcoming events into Arlo."}</div>
+          <button style={S.calendarBtn} onClick={onConnectCalendar}>{calendarAccounts.length > 0 ? "Add account" : "Connect"}</button>
         </div>
-        {!calendarConnected && <button style={S.calendarBtn} onClick={onConnectCalendar}>Connect</button>}
+        {calendarAccounts.length === 0 ? (
+          <div style={S.prioSub}>Connect your calendar to pull upcoming events into Arlo.</div>
+        ) : (
+          calendarAccounts.map(email => (
+            <div key={email} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+              <div style={{ ...S.prioSub, color: C.parchmentMid }}>{email}</div>
+              <button style={S.calendarRemoveBtn} onClick={() => onDisconnectCalendar(email)}>Remove</button>
+            </div>
+          ))
+        )}
       </div>
       {days.map(d => {
         const items = events.filter(e => e.date === d.key);
@@ -800,6 +822,7 @@ const S: Record<string, CSSProperties> = {
   calendarCard: { ...glass, padding: "14px 16px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
   calendarTitle: { fontSize: 14, color: C.parchment, fontWeight: 700, marginBottom: 3 },
   calendarBtn: { background: `linear-gradient(135deg,${C.walnutMid},${C.walnut})`, border: "none", borderRadius: 12, color: C.parchment, fontSize: 13, fontWeight: 700, padding: "10px 14px", cursor: "pointer", fontFamily: F, flexShrink: 0, boxShadow: "0 2px 8px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,220,160,0.15)" },
+  calendarRemoveBtn: { background: "none", border: `1px solid rgba(200,112,96,0.4)`, borderRadius: 8, color: "#C87060", fontSize: 11, fontWeight: 600, padding: "4px 10px", cursor: "pointer", fontFamily: F, flexShrink: 0 },
   weekRow: { display: "flex", gap: 14, alignItems: "flex-start", paddingBottom: 14, marginBottom: 14, borderBottom: "1px solid rgba(210,190,130,0.12)" },
   weekToday: { ...glass, padding: "14px", border: `1px solid ${C.brass}50`, boxShadow: `0 0 18px ${C.brassGlow}`, margin: "0 -2px 14px" },
   weekL: { width: 42, flexShrink: 0 },
