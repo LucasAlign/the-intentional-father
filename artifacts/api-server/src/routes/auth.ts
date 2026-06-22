@@ -71,6 +71,7 @@ function tokenExpiry(expiresIn = 3600): Date {
 
 async function storeGoogleCalendarConnection(
   userId: string,
+  googleEmail: string,
   tokens: oidc.TokenEndpointResponse & oidc.TokenEndpointResponseHelpers,
 ) {
   if (!tokens.access_token || !tokens.refresh_token) return;
@@ -88,6 +89,7 @@ async function storeGoogleCalendarConnection(
     .insert(googleCalendarConnections)
     .values({
       userId,
+      googleEmail,
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token,
       scope: grantedScope,
@@ -95,7 +97,7 @@ async function storeGoogleCalendarConnection(
       updatedAt: new Date(),
     })
     .onConflictDoUpdate({
-      target: googleCalendarConnections.userId,
+      target: [googleCalendarConnections.userId, googleCalendarConnections.googleEmail],
       set: {
         accessToken: tokens.access_token,
         refreshToken: tokens.refresh_token,
@@ -272,7 +274,7 @@ router.get("/callback", async (req: Request, res: Response) => {
   };
 
   try {
-    await storeGoogleCalendarConnection(dbUser.id, tokens);
+    await storeGoogleCalendarConnection(dbUser.id, dbUser.email ?? dbUser.id, tokens);
   } catch (err) {
     req.log?.warn({ err }, "Failed to store Google Calendar connection during login");
   }
@@ -350,7 +352,7 @@ router.post(
       };
 
       try {
-        await storeGoogleCalendarConnection(dbUser.id, tokens);
+        await storeGoogleCalendarConnection(dbUser.id, dbUser.email ?? dbUser.id, tokens);
       } catch (err) {
         req.log.warn({ err }, "Failed to store Google Calendar connection during mobile login");
       }

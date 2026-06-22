@@ -199,13 +199,14 @@ router.get("/google-calendar/callback", async (req: Request, res: Response) => {
 
     await db.insert(googleCalendarConnections).values({
       userId: req.user!.id,
+      googleEmail: req.user!.email ?? req.user!.id,
       accessToken: tokens.access_token,
       refreshToken,
       scope: tokens.scope || CALENDAR_SCOPE,
       expiresAt: tokenExpiry(tokens.expires_in),
       updatedAt: new Date(),
     }).onConflictDoUpdate({
-      target: googleCalendarConnections.userId,
+      target: [googleCalendarConnections.userId, googleCalendarConnections.googleEmail],
       set: {
         accessToken: tokens.access_token,
         refreshToken,
