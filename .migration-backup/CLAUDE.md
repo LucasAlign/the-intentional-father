@@ -170,10 +170,22 @@ reuse its patterns for the API routes and the memory-context assembly.
 
 ## Current status
 
-- [ ] Phase 1 — Today screen, fully alive
-- [ ] Phase 2 — Onboarding interview
+- [~] Phase 1 — Today screen, fully alive — **code-complete, builds clean; awaiting
+      Bryant's local end-to-end smoke test** (verse, intention, top-3, reflection,
+      Arlo chat with memory, journal persistence). Sign-off steps in
+      `docs/phase-2-kickoff.md`.
+- [ ] Phase 2 — Onboarding interview — **ready to start**; kickoff prompt in
+      `docs/phase-2-kickoff.md`.
 - [ ] Phase 3 — Job intake + planning brain
 - [ ] Phase 4 — Remaining tabs
 - [ ] Phase 5 — Polish + product decision
 
 _Update this checklist as phases complete._
+
+### Phase 1 implementation notes
+- Arlo chat model: `claude-sonnet-4-6` (Sonnet for cost; replaced the retired
+  `claude-3-5-sonnet-20241022`). Verify model strings against current Anthropic docs.
+- Verse: curated rotating array (no `verses` table in schema); rotates by day-of-year,
+  `/api/verse` forced dynamic so it doesn't freeze at build.
+- Security: single-user dev mode (anon key, no RLS) per the schema's security note.
+  Lock down before any deployment (Phase 5).
