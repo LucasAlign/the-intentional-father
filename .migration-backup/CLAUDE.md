@@ -158,6 +158,13 @@ reuse its patterns for the API routes and the memory-context assembly.
 ## Backlog (capture ideas here instead of building them early)
 
 - (Arlo: add items here as they come up so they don't derail the current phase)
+- **Arlo for Kids** — guarded, parent-governed mode. Two tiers (journal for the
+  14yo, fitness for the 12yo). Safety enforced in CODE (access gate, allowlist
+  topic gate, output filter, full logging), not just prompts. Parent reads
+  everything; hard time/frequency caps; deliberately thin memory to prevent
+  attachment; encrypted minor data; parent-approval queue for fitness routines.
+  **Do not start until core Arlo (Phases 1–4) is in daily use.** Full plan:
+  `docs/arlo-for-kids-plan.md`.
 
 ---
 
