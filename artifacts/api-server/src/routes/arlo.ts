@@ -399,7 +399,7 @@ You are a tool, not a pastor or counselor or substitute for his wife.`;
     if (!response.ok) {
       const error = await response.text();
       req.log?.error({ error, model: OPENAI_MODEL }, 'OpenAI API error');
-      res.status(500).json({ error: 'Failed to get response from Arlo' });
+      res.status(500).json({ error: 'Failed to get response from Arlo', detail: error, model: OPENAI_MODEL });
       return;
     }
 
