@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import { getVerseOfTheDay } from '@/lib/supabase';
 
+// Recompute per request so the verse rotates daily instead of freezing at build time.
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   try {
     const verse = await getVerseOfTheDay();
