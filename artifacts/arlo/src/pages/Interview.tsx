@@ -121,7 +121,11 @@ export default function Interview() {
         credentials: "include",
         body: JSON.stringify({ message: "" }),
       });
-      if (!r.ok) return;
+      if (!r.ok) {
+        const errorText = await r.text();
+        setMessages([{ role: "assistant", content: "Arlo is connected, but onboarding failed (" + r.status + "): " + (errorText || "No error details returned.") }]);
+        return;
+      }
       const d = await r.json() as { message: string; questionNumber: number; complete?: boolean };
       setMessages([{ role: "assistant", content: d.message }]);
       setQuestionNumber(d.questionNumber);
@@ -148,7 +152,8 @@ export default function Interview() {
         body: JSON.stringify({ message: text }),
       });
       if (!r.ok) {
-        setMessages(prev => [...prev, { role: "assistant", content: "I couldn't reach the server. Try again." }]);
+        const errorText = await r.text();
+        setMessages(prev => [...prev, { role: "assistant", content: "Arlo is connected, but onboarding failed (" + r.status + "): " + (errorText || "No error details returned.") }]);
         return;
       }
       const d = await r.json() as { message: string; questionNumber: number; complete?: boolean };

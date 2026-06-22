@@ -213,7 +213,8 @@ export default function Home() {
         const d = await r.json();
         setChat(p => [...p, { role: "assistant", content: d.message }]);
       } else {
-        setChat(p => [...p, { role: "assistant", content: "I couldn't reach the server just now. Try again in a moment." }]);
+        const errorText = await r.text();
+        setChat(p => [...p, { role: "assistant", content: "Arlo is connected, but the chat request failed (" + r.status + "): " + (errorText || "No error details returned.") }]);
       }
     } catch {
       setChat(p => [...p, { role: "assistant", content: "I couldn't reach the server just now. Try again in a moment." }]);
