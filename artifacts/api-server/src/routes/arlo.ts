@@ -362,7 +362,8 @@ Guidelines:
 - Root things in Scripture. Hold him to Ephesians 5:25 — love his wife as Christ loved the church, sacrificially, without keeping score.
 - Cut through excuses with pointed questions.
 - Warm but honest — a brother who loves him enough to tell the truth.
-- Conversational, not sermon-length.
+- Default to 1-3 short paragraphs. Be concise unless Bryant explicitly asks for depth or the situation warrants more.
+- Prefer one clear next action or one pointed question over a long list.
 - Use memory: call back to what he said before, name patterns, notice when a commitment hasn't moved.
 - Encourage real relationships and real action, never foster dependence on the app.
 
@@ -392,7 +393,7 @@ You are a tool, not a pastor or counselor or substitute for his wife.`;
         model: OPENAI_MODEL,
         instructions: ARLO_SYSTEM_PROMPT + (context ? `\n\n## Today's context:\n${context}` : ''),
         input: apiMessages,
-        max_output_tokens: 700,
+        max_output_tokens: 350,
       }),
     });
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { CSSProperties, ReactElement } from "react";
+import type { CSSProperties, ReactElement, PointerEvent } from "react";
 import { useAuth } from "@workspace/replit-auth-web";
 import { useLocation } from "wouter";
 
@@ -137,6 +137,75 @@ function weekDays() {
   });
 }
 
+
+const JOURNAL_PROMPTS = [
+  "What's one specific way I can love my wife better today?",
+  "Where do my kids need patience, attention, or encouragement from me today?",
+  "What's been bothering me that I need to name honestly instead of carrying quietly?",
+  "What am I thankful for today, and how can I say it out loud?",
+  "What would make my wife feel seen before the day is over?",
+  "What's one small moment I can create with my kids today?",
+  "Where am I tempted to withdraw, and what would love do instead?",
+];
+
+const EXERCISE_PROMPTS = [
+  "Walk outside, move your body, or stretch before the day starts.",
+  "Get 20 minutes of movement in before the work takes over.",
+  "Do something simple: walk, pushups, mobility, or a steady sweat.",
+  "Move early so your body is not the last thing you remember.",
+];
+
+function dayOfYear(date = new Date()) {
+  return Math.floor((date.getTime() - new Date(date.getFullYear(), 0, 0).getTime()) / 86400000);
+}
+
+function rotatingItem(items: string[]) {
+  return items[dayOfYear() % items.length];
+}
+
+function parseJobDueDate(due: string): string | null {
+  const value = due.trim();
+  if (!value) return null;
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+
+  const currentYear = new Date().getFullYear();
+  const numeric = value.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2}|\d{4}))?$/);
+  if (numeric) {
+    const month = Number(numeric[1]);
+    const day = Number(numeric[2]);
+    const year = numeric[3] ? Number(numeric[3].length === 2 ? "20" + numeric[3] : numeric[3]) : currentYear;
+    const date = new Date(year, month - 1, day);
+    if (date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day) return ymd(date);
+  }
+
+  const monthName = value.match(/^(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+(\d{1,2})(?:,\s*(\d{4}))?$/i);
+  if (monthName) {
+    const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    const month = months.findIndex(m => monthName[1].toLowerCase().startsWith(m));
+    const day = Number(monthName[2]);
+    const year = monthName[3] ? Number(monthName[3]) : currentYear;
+    const date = new Date(year, month, day);
+    if (date.getFullYear() === year && date.getMonth() === month && date.getDate() === day) return ymd(date);
+  }
+
+  return null;
+}
+
+function jobCalendarEvent(job: Job): Event | null {
+  const date = parseJobDueDate(job.due);
+  if (!date) return null;
+  return {
+    id: -100000 - job.id,
+    date,
+    time: "Due",
+    title: job.name,
+    sub: job.stage,
+    tag: job.biz,
+    kind: "work",
+  };
+}
+
 // ── Root ──────────────────────────────────────────────────────────────────────
 export default function Home() {
   const { isLoading, isAuthenticated, login, logout } = useAuth();
@@ -169,7 +238,7 @@ export default function Home() {
   }, []);
   const refreshCalendarStatus = useCallback(() => {
     getJson(`${API}/google-calendar/status`, { accounts: [] }).then((d) => {
-      setCalendarAccounts(isRecord(d) && Array.isArray(d.accounts) ? d.accounts as string[] : []);
+      setCalendarAccounts(isRecord(d) && Array.isArray(d.accounts) ? d.accounts as string[] : isRecord(d) && d.connected ? ["Google Calendar"] : []);
     });
   }, []);
 
@@ -244,7 +313,7 @@ export default function Home() {
         {tab === "her" && <Her commits={commits} refresh={refreshCommits} />}
         {tab === "work" && <Work jobs={jobs} onJob={() => setJobModal(true)} onEdit={setEditJob} />}
         {tab === "arlo" && <ArloChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} />}
-        {tab === "week" && <WeekView events={week} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await fetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
+        {tab === "week" && <WeekView events={week} jobs={jobs} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await fetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
       </div>
 
       <div style={R.navWrap}>
@@ -278,6 +347,8 @@ function Today({ verse, tasks, journal, events, onSend, ci, setCi, sending, onSa
   const [writing, setWriting] = useState(false);
   const [adding, setAdding] = useState(false);
   const [newTask, setNewTask] = useState("");
+  const [deletingIds, setDeletingIds] = useState<number[]>([]);
+  const [exerciseDone, setExerciseDone] = useState(false);
   useEffect(() => { setIntent(journal.commit_text); setReflect(journal.reflect); }, [journal.commit_text, journal.reflect]);
 
   const hr = new Date().getHours();
@@ -285,7 +356,9 @@ function Today({ verse, tasks, journal, events, onSend, ci, setCi, sending, onSa
   const sep = verse.indexOf(" — ");
   const vRef = sep === -1 ? "" : verse.slice(0, sep);
   const vText = sep === -1 ? verse : verse.slice(sep + 3);
-  const top3 = tasks.slice(0, 3);
+  const top3 = tasks.filter(t => !deletingIds.includes(t.id)).slice(0, 3);
+  const journalPrompt = rotatingItem(JOURNAL_PROMPTS);
+  const exercisePrompt = rotatingItem(EXERCISE_PROMPTS);
 
   async function addTask() {
     const t = newTask.trim();
@@ -301,6 +374,16 @@ function Today({ verse, tasks, journal, events, onSend, ci, setCi, sending, onSa
       const r = await fetch(`${API}/tasks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: true }) });
       if (r.ok) refreshTasks();
     } catch { /* ignore */ }
+  }
+  async function deleteTask(id: number) {
+    setDeletingIds(prev => prev.includes(id) ? prev : [...prev, id]);
+    try {
+      const r = await fetch(`${API}/tasks/${id}`, { method: "DELETE" });
+      if (r.ok) refreshTasks();
+      else setDeletingIds(prev => prev.filter(item => item !== id));
+    } catch {
+      setDeletingIds(prev => prev.filter(item => item !== id));
+    }
   }
 
   return (
@@ -328,6 +411,14 @@ function Today({ verse, tasks, journal, events, onSend, ci, setCi, sending, onSa
         />
       </div>
 
+      <div style={{ ...S.exerciseCard, ...(exerciseDone ? S.exerciseDone : {}) }}>
+        <div style={{ flex: 1 }}>
+          <div style={S.eyebrow}><Icon name="clock" /><span style={S.eyeText}>MORNING 20 MIN</span></div>
+          <div style={S.exerciseText}>{exerciseDone ? "Movement logged for today." : exercisePrompt}</div>
+        </div>
+        <button style={{ ...S.exerciseBtn, ...(exerciseDone ? S.exerciseBtnDone : {}) }} onClick={() => setExerciseDone(done => !done)}>{exerciseDone ? "Done" : "Log"}</button>
+      </div>
+
       <div style={S.card}>
         <div style={S.eyebrow}><Icon name="target" /><span style={S.eyeText}>TOP 3 PRIORITIES</span></div>
         {top3.length === 0 ? (
@@ -336,13 +427,7 @@ function Today({ verse, tasks, journal, events, onSend, ci, setCi, sending, onSa
           <div style={{ position: "relative", marginTop: 4 }}>
             <div style={S.prioLine} />
             {top3.map((t, i) => (
-              <div key={t.id} style={{ ...S.prioRow, marginBottom: i < top3.length - 1 ? 20 : 0 }}>
-                <button style={S.prioNum} title="Mark done" onClick={() => complete(t.id)}>{i + 1}</button>
-                <div style={{ flex: 1, paddingTop: 3 }}>
-                  <div style={S.prioTitle}>{t.text}</div>
-                  {t.category && <div style={S.prioSub}>{t.category}</div>}
-                </div>
-              </div>
+              <SwipePriority key={t.id} task={t} index={i} isLast={i === top3.length - 1} onComplete={complete} onDelete={deleteTask} />
             ))}
           </div>
         )}
@@ -377,7 +462,7 @@ function Today({ verse, tasks, journal, events, onSend, ci, setCi, sending, onSa
       <div style={S.journalCard}>
         <div style={{ flex: 1 }}>
           <div style={S.eyebrow}><Icon name="pen" /><span style={S.eyeText}>DAILY JOURNAL PROMPT</span></div>
-          <div style={S.journalText}>What's one way I can love her better today?</div>
+          <div style={S.journalText}>{journalPrompt}</div>
           {writing && (
             <textarea
               style={S.journalInput}
@@ -397,6 +482,47 @@ function Today({ verse, tasks, journal, events, onSend, ci, setCi, sending, onSa
 
       <div style={S.bottomTag}>FAITH. FOCUS. FOLLOW THROUGH.</div>
       <div style={{ height: 8 }} />
+    </div>
+  );
+}
+
+function SwipePriority({ task, index, isLast, onComplete, onDelete }: { task: Task; index: number; isLast: boolean; onComplete: (id: number) => void; onDelete: (id: number) => void }) {
+  const [startX, setStartX] = useState<number | null>(null);
+  const [offset, setOffset] = useState(0);
+  const [dragging, setDragging] = useState(false);
+
+  function down(e: PointerEvent<HTMLDivElement>) {
+    setStartX(e.clientX);
+    setDragging(true);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+  function move(e: PointerEvent<HTMLDivElement>) {
+    if (startX === null) return;
+    setOffset(Math.min(0, Math.max(-104, e.clientX - startX)));
+  }
+  function up() {
+    if (offset <= -72) onDelete(task.id);
+    setStartX(null);
+    setOffset(0);
+    setDragging(false);
+  }
+
+  return (
+    <div style={{ ...S.swipeWrap, marginBottom: isLast ? 0 : 20 }}>
+      <div style={S.deleteCue}>Delete</div>
+      <div
+        style={{ ...S.prioRow, ...S.swipeFront, transform: "translateX(" + offset + "px)", transition: dragging ? "none" : "transform 0.18s ease" }}
+        onPointerDown={down}
+        onPointerMove={move}
+        onPointerUp={up}
+        onPointerCancel={up}
+      >
+        <button style={S.prioNum} title="Mark done" onClick={() => onComplete(task.id)}>{index + 1}</button>
+        <div style={{ flex: 1, paddingTop: 3 }}>
+          <div style={S.prioTitle}>{task.text}</div>
+          {task.category && <div style={S.prioSub}>{task.category}</div>}
+        </div>
+      </div>
     </div>
   );
 }
@@ -469,28 +595,37 @@ function Her({ commits, refresh }: { commits: Commit[]; refresh: () => void }) {
 
 // ── Work ───────────────────────────────────────────────────────────────────
 function Work({ jobs, onJob, onEdit }: { jobs: Job[]; onJob: () => void; onEdit: (j: Job) => void }) {
-  const groups = [...new Set(jobs.map(j => j.biz))];
+  const sortedJobs = [...jobs].sort((a, b) => a.biz.localeCompare(b.biz) || a.due.localeCompare(b.due) || a.name.localeCompare(b.name));
+  const groups = [...new Set(sortedJobs.map(j => j.biz))];
+  let lastBiz = "";
   return (
     <div style={S.scroll}>
       <div style={S.pageTitle}>Work</div>
-      <div style={S.pageSub}>Active across all your businesses. Tap a job to edit.</div>
-      {groups.length === 0 && <div style={S.card}><div style={S.empty}>No active jobs yet. Add one to start planning ahead.</div></div>}
-      {groups.map(biz => (
-        <div key={biz} style={S.card}>
-          <div style={S.eyebrow}><Icon name="work" color={bizC(biz, groups)} /><span style={{ ...S.eyeText, color: bizC(biz, groups) }}>{biz.toUpperCase()}</span></div>
-          {jobs.filter(j => j.biz === biz).map(j => (
-            <div key={j.id} style={{ ...S.jobRow, cursor: "pointer" }} onClick={() => onEdit(j)}>
-              <div style={S.jobTop}><div style={S.prioTitle}>{j.name}</div>{j.due && <div style={{ ...S.prioSub, color: C.brass }}>{j.due}</div>}</div>
-              {j.stage && <div style={{ ...S.prioSub, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>{j.stage}</div>}
-              <div style={S.trackRow}>
-                <div style={S.track}><div style={{ ...S.trackFill, width: j.pct + "%", background: j.pct >= 80 ? `linear-gradient(90deg,${C.brassDeep},${C.brass})` : "linear-gradient(90deg,#2E3A1C,#5A8A40)", boxShadow: j.pct >= 80 ? `0 0 6px ${C.brassGlow}` : "none" }} /></div>
-                <span style={S.prioSub}>{j.pct}%</span>
+      <div style={S.pageSub}>Active jobs by category. Tap a row to edit.</div>
+      {sortedJobs.length === 0 ? (
+        <div style={S.card}><div style={S.empty}>No active jobs yet. Add one to start planning ahead.</div></div>
+      ) : (
+        <div style={S.workList}>
+          {sortedJobs.map(j => {
+            const showHeader = j.biz !== lastBiz;
+            lastBiz = j.biz;
+            return (
+              <div key={j.id}>
+                {showHeader && <div style={{ ...S.workGroup, color: bizC(j.biz, groups) }}>{j.biz.toUpperCase()}</div>}
+                <button style={S.workRow} onClick={() => onEdit(j)}>
+                  <div style={S.workMain}>
+                    <div style={S.workName}>{j.name}</div>
+                    <div style={S.workMeta}>{[j.stage, j.due].filter(Boolean).join("  •  ") || "No stage or due date"}</div>
+                  </div>
+                  <div style={S.workPct}>{j.pct}%</div>
+                  <div style={S.workTrack}><div style={{ ...S.workTrackFill, width: j.pct + "%", background: j.pct >= 80 ? C.brass : bizC(j.biz, groups) }} /></div>
+                </button>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
-      ))}
-      <button style={S.intakeBtn} onClick={onJob}>＋  Add new job</button>
+      )}
+      <button style={{ ...S.intakeBtn, marginTop: 12 }} onClick={onJob}>＋  Add new job</button>
       <div style={{ height: 32 }} />
     </div>
   );
@@ -533,43 +668,43 @@ function ArloChatBar({ input, setInput, send, sending }: { input: string; setInp
 }
 
 // ── Week ───────────────────────────────────────────────────────────────────
-function WeekView({ events, calendarAccounts, onConnectCalendar, onDisconnectCalendar }: { events: Event[]; calendarAccounts: string[]; onConnectCalendar: () => void; onDisconnectCalendar: (email: string) => void }) {
+function WeekView({ events, jobs, calendarAccounts, onConnectCalendar, onDisconnectCalendar }: { events: Event[]; jobs: Job[]; calendarAccounts: string[]; onConnectCalendar: () => void; onDisconnectCalendar: (email: string) => void }) {
   const days = weekDays();
   const todayKey = ymd(new Date());
+  const datedWork = jobs.map(jobCalendarEvent).filter((event): event is Event => Boolean(event));
+  const calendarEvents = [...events, ...datedWork].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
   return (
     <div style={S.scroll}>
       <div style={S.pageTitle}>This Week</div>
-      <div style={S.pageSub}>One week ahead. No surprises.</div>
-      <div style={{ ...S.calendarCard, flexDirection: "column", alignItems: "stretch" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: calendarAccounts.length > 0 ? 10 : 0 }}>
-          <div style={S.calendarTitle}>Google Calendar</div>
-          <button style={S.calendarBtn} onClick={onConnectCalendar}>{calendarAccounts.length > 0 ? "Add account" : "Connect"}</button>
-        </div>
-        {calendarAccounts.length === 0 ? (
-          <div style={S.prioSub}>Connect your calendar to pull upcoming events into Arlo.</div>
-        ) : (
-          calendarAccounts.map(email => (
-            <div key={email} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
-              <div style={{ ...S.prioSub, color: C.parchmentMid }}>{email}</div>
-              <button style={S.calendarRemoveBtn} onClick={() => onDisconnectCalendar(email)}>Remove</button>
-            </div>
-          ))
-        )}
-      </div>
+      <div style={S.pageSub}>Work, commitments, and calendar events in one pass.</div>
       {days.map(d => {
-        const items = events.filter(e => e.date === d.key);
+        const items = calendarEvents.filter(e => e.date === d.key);
         const isToday = d.key === todayKey;
         const past = d.key < todayKey;
         return (
           <div key={d.key} style={{ ...S.weekRow, ...(isToday ? S.weekToday : {}), ...(past ? { opacity: 0.3 } : {}) }}>
             <div style={S.weekL}><div style={{ ...S.weekDay, ...(isToday ? { color: C.brass } : {}) }}>{d.day}</div><div style={S.prioSub}>{d.label}</div></div>
             <div style={{ flex: 1 }}>
-              {items.length === 0 ? <div style={S.prioSub}>—</div> : items.map(it => <div key={it.id} style={S.prioTitle}>{it.title}</div>)}
+              {items.length === 0 ? <div style={S.prioSub}>—</div> : items.map(it => (
+                <div key={it.id} style={S.weekItem}>
+                  <div style={S.weekItemTop}><span style={S.prioTitle}>{it.title}</span>{it.time && <span style={S.weekTime}>{it.time}</span>}</div>
+                  {(it.sub || it.tag) && <div style={S.prioSub}>{[it.sub, it.tag].filter(Boolean).join("  •  ")}</div>}
+                </div>
+              ))}
             </div>
             {isToday && <div style={S.todayPill}>Today</div>}
           </div>
         );
       })}
+      <div style={S.calendarBottom}>
+        {calendarAccounts.length > 0 && calendarAccounts.map(email => (
+          <div key={email} style={S.calendarAccount}>
+            <span>{email}</span>
+            <button style={S.calendarRemoveBtn} onClick={() => onDisconnectCalendar(email)}>Remove</button>
+          </div>
+        ))}
+        <button style={S.calendarSmallBtn} onClick={onConnectCalendar}>Add Google Calendar</button>
+      </div>
       <div style={{ height: 32 }} />
     </div>
   );
@@ -708,6 +843,28 @@ function JobEditModal({ job, onClose, onSaved, onDeleted }: { job: Job; onClose:
 
 // ── Auth gate ───────────────────────────────────────────────────────────────────
 function AuthGate({ loading, onLogin }: { loading: boolean; onLogin: () => void }) {
+  const [email, setEmail] = useState("");
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const inviteRequired = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("auth") === "invite-required";
+
+  async function loginWithCode() {
+    const nextEmail = email.trim().toLowerCase();
+    if (!nextEmail || !code.trim()) return;
+    setBusy(true); setErr("");
+    try {
+      const r = await fetch(API + "/auth/email/verify", { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: nextEmail, code }) });
+      if (r.ok) window.location.href = import.meta.env.BASE_URL || "/";
+      else {
+        const d = await r.json().catch(() => ({}));
+        setErr(String(d.error || "That beta code did not work."));
+      }
+    } catch {
+      setErr("Could not reach Arlo. Try again.");
+    } finally { setBusy(false); }
+  }
+
   return (
     <div style={R.root}>
       <div style={R.woodLayer} />
@@ -716,12 +873,18 @@ function AuthGate({ loading, onLogin }: { loading: boolean; onLogin: () => void 
         <div style={R.logo}><span style={R.logoText}>Arlo</span><span style={R.logoDot}>.</span></div>
         <div style={{ ...R.tagline, textAlign: "center", marginBottom: 38 }}>FOCUSED. FAITHFUL. FREE.</div>
         {loading ? (
-          <div style={G.loading}>Loading…</div>
+          <div style={G.loading}>Loading...</div>
         ) : (
           <>
             <div style={G.welcome}>Welcome back.</div>
-            <div style={G.sub}>Sign in to open your day.</div>
-            <button style={G.btn} onClick={onLogin}>Log in</button>
+            <div style={G.sub}>Enter your email and beta code.</div>
+            {inviteRequired && <div style={G.notice}>This beta is invite-only. Ask for access with the email you use here.</div>}
+            <input style={G.input} value={email} type="email" autoComplete="email" placeholder="you@example.com" onChange={e => setEmail(e.target.value)} onKeyDown={e => e.key === "Enter" && loginWithCode()} />
+            <input style={G.input} value={code} autoComplete="one-time-code" placeholder="Beta code" onChange={e => setCode(e.target.value)} onKeyDown={e => e.key === "Enter" && loginWithCode()} />
+            <button style={G.btn} disabled={busy} onClick={loginWithCode}>{busy ? "Checking..." : "Log in"}</button>
+            {err && <div style={G.error}>{err}</div>}
+            <div style={G.divider}><span />or<span /></div>
+            <button style={G.googleBtn} onClick={onLogin}>Continue with Google</button>
           </>
         )}
       </div>
@@ -732,8 +895,14 @@ const G: Record<string, CSSProperties> = {
   wrap: { position: "relative", zIndex: 10, flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px" },
   loading: { color: C.parchmentLow, fontSize: 14, letterSpacing: "0.04em" },
   welcome: { fontSize: 26, fontWeight: 400, color: C.parchment, textShadow: "0 2px 8px rgba(0,0,0,0.5)" },
-  sub: { fontSize: 14, color: C.parchmentLow, marginTop: 8, marginBottom: 30 },
-  btn: { padding: "14px 48px", borderRadius: 14, border: `1px solid ${C.brass}`, cursor: "pointer", fontFamily: F, fontSize: 15, fontWeight: 600, letterSpacing: "0.03em", color: C.ink, background: `radial-gradient(circle at 35% 28%,${C.brass},${C.brassDeep})`, boxShadow: `0 4px 18px ${C.brassGlow},inset 0 1px 0 rgba(255,240,200,0.3)` },
+  sub: { fontSize: 14, color: C.parchmentLow, marginTop: 8, marginBottom: 22, textAlign: "center" },
+  notice: { width: "100%", background: "rgba(200,112,96,0.16)", border: "1px solid rgba(200,112,96,0.34)", borderRadius: 10, color: "#D4A090", fontSize: 12, lineHeight: 1.4, padding: "10px 12px", marginBottom: 12, textAlign: "center" },
+  input: { width: "100%", background: "rgba(8,10,5,0.62)", border: "1px solid rgba(210,190,130,0.2)", borderRadius: 12, color: C.parchment, fontSize: 15, fontFamily: F, padding: "14px", outline: "none", marginBottom: 10, textAlign: "center", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
+  btn: { width: "100%", padding: "14px 20px", borderRadius: 12, border: `1px solid ${C.brass}`, cursor: "pointer", fontFamily: F, fontSize: 15, fontWeight: 700, color: C.ink, background: `radial-gradient(circle at 35% 28%,${C.brass},${C.brassDeep})`, boxShadow: `0 4px 18px ${C.brassGlow},inset 0 1px 0 rgba(255,240,200,0.3)` },
+  linkBtn: { background: "none", border: "none", color: C.parchmentDim, fontSize: 12, cursor: "pointer", padding: "8px", fontFamily: F },
+  error: { color: "#D4A090", fontSize: 12, marginTop: 10, textAlign: "center", lineHeight: 1.4 },
+  divider: { width: "100%", display: "flex", alignItems: "center", gap: 10, color: C.parchmentLow, fontSize: 11, margin: "18px 0 12px", textTransform: "uppercase", letterSpacing: "0.12em" },
+  googleBtn: { width: "100%", background: "rgba(30,26,16,0.62)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 12, color: C.parchmentMid, fontSize: 14, fontWeight: 700, padding: "13px 16px", cursor: "pointer", fontFamily: F },
 };
 
 // ── Styles ────────────────────────────────────────────────────────────────────
@@ -778,6 +947,9 @@ const S: Record<string, CSSProperties> = {
   prioNum: { width: 40, height: 40, borderRadius: "50%", flexShrink: 0, background: `radial-gradient(circle at 35% 28%,${C.walnutMid},${C.walnut} 70%,#3E2814)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, color: C.parchment, boxShadow: `0 3px 10px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,220,160,0.25),inset 0 -2px 4px rgba(0,0,0,0.4),0 0 0 5px rgba(20,18,11,0.85)`, zIndex: 1, textShadow: "0 1px 2px rgba(0,0,0,0.5)", border: "none", cursor: "pointer" },
   prioTitle: { fontSize: 15, color: C.parchment, lineHeight: 1.4, marginBottom: 3 },
   prioSub: { fontSize: 12, color: C.parchmentDim, lineHeight: 1.4 },
+  swipeWrap: { position: "relative", overflow: "hidden", borderRadius: 12, touchAction: "pan-y" },
+  swipeFront: { background: "transparent", width: "100%" },
+  deleteCue: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: 18, background: "rgba(200,112,96,0.2)", color: "#D4A090", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" },
   upRow: { display: "flex" },
   upCol: { flex: 1, paddingRight: 12 },
   upBorder: { borderRight: "1px solid rgba(210,190,130,0.14)", marginRight: 12 },
@@ -790,6 +962,11 @@ const S: Record<string, CSSProperties> = {
   journalCard: { ...glass, padding: "16px 20px", marginBottom: 14, display: "flex", alignItems: "center", gap: 12 },
   journalText: { fontSize: 13, color: C.parchmentMid, marginTop: 2 },
   journalInput: { width: "100%", marginTop: 10, background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: "10px 12px", outline: "none", resize: "vertical", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
+  exerciseCard: { ...glass, padding: "14px 16px", marginBottom: 14, display: "flex", alignItems: "center", gap: 12, border: "1px solid rgba(138,180,106,0.28)" },
+  exerciseDone: { opacity: 0.72, borderColor: "rgba(138,180,106,0.42)" },
+  exerciseText: { fontSize: 13, color: C.parchmentMid, lineHeight: 1.45, marginTop: -2 },
+  exerciseBtn: { flexShrink: 0, background: "rgba(30,26,16,0.7)", border: "1px solid rgba(138,180,106,0.46)", borderRadius: 18, color: "#A8C888", fontSize: 12, fontWeight: 700, padding: "8px 13px", cursor: "pointer", fontFamily: F },
+  exerciseBtnDone: { background: "rgba(138,180,106,0.22)", color: C.parchment },
   writeBtn: { flexShrink: 0, alignSelf: "flex-start", background: "transparent", border: `1.5px solid ${C.brass}`, borderRadius: 24, color: C.brass, fontSize: 13, fontWeight: 600, padding: "10px 18px", cursor: "pointer", boxShadow: `0 0 16px ${C.brassGlow},inset 0 0 8px rgba(216,170,62,0.1)` },
   msgBar: { display: "flex", alignItems: "center", gap: 11, background: "rgba(8,10,5,0.55)", backdropFilter: "blur(8px)", borderRadius: 30, padding: "11px 11px 11px 17px", marginBottom: 14, border: "1px solid rgba(210,190,130,0.16)", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.5),0 2px 8px rgba(0,0,0,0.3)" },
   msgInput: { flex: 1, background: "none", border: "none", color: C.parchment, fontSize: 14, outline: "none", fontFamily: F },
@@ -806,6 +983,15 @@ const S: Record<string, CSSProperties> = {
   dot: { width: 22, height: 22, borderRadius: "50%", flexShrink: 0, marginTop: 1, background: "rgba(0,0,0,0.2)", border: `1.5px solid ${C.parchmentLow}`, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#7AB46A", boxShadow: "inset 0 1px 3px rgba(0,0,0,0.4)" },
   dotDone: { background: "rgba(120,180,106,0.25)", borderColor: "#7AB46A" },
   jobRow: { marginBottom: 14, paddingBottom: 14, borderBottom: "1px solid rgba(210,190,130,0.12)" },
+  workList: { ...glass, padding: "10px 0", marginBottom: 12 },
+  workGroup: { fontSize: 10, fontWeight: 800, letterSpacing: "0.13em", padding: "8px 16px 5px" },
+  workRow: { width: "100%", display: "grid", gridTemplateColumns: "1fr auto", gap: "2px 10px", alignItems: "center", background: "transparent", border: "none", borderTop: "1px solid rgba(210,190,130,0.09)", color: C.parchment, textAlign: "left", padding: "9px 16px 10px", cursor: "pointer", fontFamily: F },
+  workMain: { minWidth: 0 },
+  workName: { fontSize: 14, color: C.parchment, lineHeight: 1.25, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  workMeta: { fontSize: 11, color: C.parchmentDim, lineHeight: 1.35, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  workPct: { fontSize: 12, color: C.brassSoft, fontWeight: 700, gridColumn: "2", gridRow: "1 / span 2" },
+  workTrack: { gridColumn: "1 / -1", height: 3, background: "rgba(0,0,0,0.42)", borderRadius: 3, overflow: "hidden", marginTop: 6 },
+  workTrackFill: { height: "100%", borderRadius: 3, transition: "width 0.3s" },
   jobTop: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 2 },
   trackRow: { display: "flex", alignItems: "center", gap: 8 },
   track: { flex: 1, height: 5, background: "rgba(0,0,0,0.45)", borderRadius: 3, overflow: "hidden", boxShadow: "inset 0 1px 3px rgba(0,0,0,0.5)" },
@@ -829,6 +1015,12 @@ const S: Record<string, CSSProperties> = {
   weekL: { width: 42, flexShrink: 0 },
   weekDay: { fontSize: 12, fontWeight: 700, color: C.parchmentMid, textTransform: "uppercase" },
   todayPill: { fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", background: `linear-gradient(135deg,${C.brass},${C.brassDeep})`, color: C.ink, borderRadius: 6, padding: "3px 9px", fontWeight: 700, alignSelf: "center", flexShrink: 0, boxShadow: `0 2px 8px ${C.brassGlow}` },
+  weekItem: { marginBottom: 8 },
+  weekItemTop: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 },
+  weekTime: { fontSize: 11, color: C.brassSoft, flexShrink: 0 },
+  calendarBottom: { borderTop: "1px solid rgba(210,190,130,0.12)", marginTop: 8, paddingTop: 14, display: "flex", flexDirection: "column", gap: 8, alignItems: "stretch" },
+  calendarAccount: { display: "flex", justifyContent: "space-between", alignItems: "center", color: C.parchmentDim, fontSize: 12 },
+  calendarSmallBtn: { alignSelf: "stretch", background: "rgba(30,26,16,0.62)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 10, color: C.parchmentMid, fontSize: 12, fontWeight: 700, padding: "10px 12px", cursor: "pointer", fontFamily: F },
 };
 const M: Record<string, CSSProperties> = {
   overlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "flex-end", zIndex: 200, backdropFilter: "blur(6px)" },
