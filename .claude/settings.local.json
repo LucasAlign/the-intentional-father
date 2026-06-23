@@ -5,7 +5,15 @@
       "Bash(pnpm *)",
       "Bash(npx tsc *)",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(journalctl -u api-server --no-pager -n 50)",
+      "Bash(pm2 logs *)",
+      "Bash(curl -s http://localhost:22384/)",
+      "Bash(curl -sv http://localhost:22384/api/healthz)",
+      "Bash(curl *)",
+      "Bash(netstat -tlnp)",
+      "Bash(awk '{print $2}')"
     ]
   }
 }
