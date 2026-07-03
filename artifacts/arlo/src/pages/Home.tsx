@@ -843,28 +843,6 @@ function JobEditModal({ job, onClose, onSaved, onDeleted }: { job: Job; onClose:
 
 // ── Auth gate ───────────────────────────────────────────────────────────────────
 function AuthGate({ loading, onLogin }: { loading: boolean; onLogin: () => void }) {
-  const [email, setEmail] = useState("");
-  const [code, setCode] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  const inviteRequired = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("auth") === "invite-required";
-
-  async function loginWithCode() {
-    const nextEmail = email.trim().toLowerCase();
-    if (!nextEmail || !code.trim()) return;
-    setBusy(true); setErr("");
-    try {
-      const r = await fetch(API + "/auth/email/verify", { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: nextEmail, code }) });
-      if (r.ok) window.location.href = import.meta.env.BASE_URL || "/";
-      else {
-        const d = await r.json().catch(() => ({}));
-        setErr(String(d.error || "That beta code did not work."));
-      }
-    } catch {
-      setErr("Could not reach Arlo. Try again.");
-    } finally { setBusy(false); }
-  }
-
   return (
     <div style={R.root}>
       <div style={R.woodLayer} />
@@ -877,13 +855,6 @@ function AuthGate({ loading, onLogin }: { loading: boolean; onLogin: () => void 
         ) : (
           <>
             <div style={G.welcome}>Welcome back.</div>
-            <div style={G.sub}>Enter your email and beta code.</div>
-            {inviteRequired && <div style={G.notice}>This beta is invite-only. Ask for access with the email you use here.</div>}
-            <input style={G.input} value={email} type="email" autoComplete="email" placeholder="you@example.com" onChange={e => setEmail(e.target.value)} onKeyDown={e => e.key === "Enter" && loginWithCode()} />
-            <input style={G.input} value={code} autoComplete="one-time-code" placeholder="Beta code" onChange={e => setCode(e.target.value)} onKeyDown={e => e.key === "Enter" && loginWithCode()} />
-            <button style={G.btn} disabled={busy} onClick={loginWithCode}>{busy ? "Checking..." : "Log in"}</button>
-            {err && <div style={G.error}>{err}</div>}
-            <div style={G.divider}><span />or<span /></div>
             <button style={G.googleBtn} onClick={onLogin}>Continue with Google</button>
           </>
         )}
@@ -894,14 +865,7 @@ function AuthGate({ loading, onLogin }: { loading: boolean; onLogin: () => void 
 const G: Record<string, CSSProperties> = {
   wrap: { position: "relative", zIndex: 10, flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px" },
   loading: { color: C.parchmentLow, fontSize: 14, letterSpacing: "0.04em" },
-  welcome: { fontSize: 26, fontWeight: 400, color: C.parchment, textShadow: "0 2px 8px rgba(0,0,0,0.5)" },
-  sub: { fontSize: 14, color: C.parchmentLow, marginTop: 8, marginBottom: 22, textAlign: "center" },
-  notice: { width: "100%", background: "rgba(200,112,96,0.16)", border: "1px solid rgba(200,112,96,0.34)", borderRadius: 10, color: "#D4A090", fontSize: 12, lineHeight: 1.4, padding: "10px 12px", marginBottom: 12, textAlign: "center" },
-  input: { width: "100%", background: "rgba(8,10,5,0.62)", border: "1px solid rgba(210,190,130,0.2)", borderRadius: 12, color: C.parchment, fontSize: 15, fontFamily: F, padding: "14px", outline: "none", marginBottom: 10, textAlign: "center", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
-  btn: { width: "100%", padding: "14px 20px", borderRadius: 12, border: `1px solid ${C.brass}`, cursor: "pointer", fontFamily: F, fontSize: 15, fontWeight: 700, color: C.ink, background: `radial-gradient(circle at 35% 28%,${C.brass},${C.brassDeep})`, boxShadow: `0 4px 18px ${C.brassGlow},inset 0 1px 0 rgba(255,240,200,0.3)` },
-  linkBtn: { background: "none", border: "none", color: C.parchmentDim, fontSize: 12, cursor: "pointer", padding: "8px", fontFamily: F },
-  error: { color: "#D4A090", fontSize: 12, marginTop: 10, textAlign: "center", lineHeight: 1.4 },
-  divider: { width: "100%", display: "flex", alignItems: "center", gap: 10, color: C.parchmentLow, fontSize: 11, margin: "18px 0 12px", textTransform: "uppercase", letterSpacing: "0.12em" },
+  welcome: { fontSize: 26, fontWeight: 400, color: C.parchment, textShadow: "0 2px 8px rgba(0,0,0,0.5)", marginBottom: 22 },
   googleBtn: { width: "100%", background: "rgba(30,26,16,0.62)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 12, color: C.parchmentMid, fontSize: 14, fontWeight: 700, padding: "13px 16px", cursor: "pointer", fontFamily: F },
 };
 

@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import * as oidc from "openid-client";
 import { Router, type IRouter, type Request, type Response } from "express";
 import {
@@ -8,7 +7,7 @@ import {
   LogoutMobileSessionResponse,
 } from "@workspace/api-zod";
 import { eq } from "drizzle-orm";
-import { betaInvites, db, googleCalendarConnections, usersTable } from "@workspace/db";
+import { db, googleCalendarConnections, usersTable } from "@workspace/db";
 import {
   clearSession,
   getOidcConfig,
@@ -150,34 +149,6 @@ function normalizeEmail(value: unknown): string | null {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : null;
 }
 
-function betaLoginCode(): string {
-  return process.env.BETA_LOGIN_CODE || process.env.BETA_ACCESS_CODE || "arlo-beta";
-}
-
-function validBetaCode(value: unknown): boolean {
-  if (typeof value !== "string") return false;
-  const expected = Buffer.from(betaLoginCode());
-  const actual = Buffer.from(value.trim());
-  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
-}
-
-function betaAllowedEmails(): Set<string> {
-  return new Set((process.env.BETA_ALLOWED_EMAILS || "").split(",").map((email) => email.trim().toLowerCase()).filter(Boolean));
-}
-
-async function ensureBetaAccess(email: string): Promise<boolean> {
-  if (process.env.BETA_INVITE_REQUIRED === "false") return true;
-  if (betaAllowedEmails().has(email)) return true;
-
-  const [invite] = await db.select().from(betaInvites).where(eq(betaInvites.email, email)).limit(1);
-  if (!invite || invite.status !== "active") return false;
-
-  if (!invite.acceptedAt) {
-    await db.update(betaInvites).set({ acceptedAt: new Date() }).where(eq(betaInvites.id, invite.id));
-  }
-  return true;
-}
-
 async function upsertEmailUser(email: string) {
   const [existing] = await db.select().from(usersTable).where(eq(usersTable.email, email)).limit(1);
   if (existing) return existing;
@@ -309,12 +280,6 @@ router.get("/callback", async (req: Request, res: Response) => {
     return;
   }
 
-  const loginEmail = normalizeEmail(dbUser.email);
-  if (!loginEmail || !(await ensureBetaAccess(loginEmail))) {
-    res.redirect(storedOrigin ? `${storedOrigin}/?auth=invite-required` : "/?auth=invite-required");
-    return;
-  }
-
   const now = Math.floor(Date.now() / 1000);
   const sessionData: SessionData = {
     user: {
@@ -349,48 +314,6 @@ router.get("/callback", async (req: Request, res: Response) => {
   // correct domain, not the Replit dev tunnel URL.
   const redirectTarget = storedOrigin ? `${storedOrigin}${returnTo}` : returnTo;
   res.redirect(redirectTarget);
-});
-
-router.post("/auth/email/start", async (req: Request, res: Response) => {
-  const email = normalizeEmail(req.body?.email);
-  if (!email) {
-    res.status(400).json({ error: "Valid email is required" });
-    return;
-  }
-
-  try {
-    if (!(await ensureBetaAccess(email))) {
-      res.status(403).json({ error: "This beta is invite-only." });
-      return;
-    }
-    res.json({ success: true });
-  } catch (err) {
-    req.log?.error({ err }, "Failed to start beta login");
-    res.status(500).json({ error: "Could not start login." });
-  }
-});
-
-router.post("/auth/email/verify", async (req: Request, res: Response) => {
-  const email = normalizeEmail(req.body?.email);
-  if (!email || !validBetaCode(req.body?.code)) {
-    res.status(401).json({ error: "Invalid email or beta code." });
-    return;
-  }
-
-  try {
-    if (!(await ensureBetaAccess(email))) {
-      res.status(403).json({ error: "This beta is invite-only." });
-      return;
-    }
-
-    const dbUser = await upsertEmailUser(email);
-    const sid = await createSession({ user: buildSessionUser(dbUser), access_token: "beta-code" });
-    setSessionCookie(res, sid);
-    res.json({ user: buildSessionUser(dbUser) });
-  } catch (err) {
-    req.log?.error({ err }, "Failed to verify beta login");
-    res.status(500).json({ error: "Could not verify beta login." });
-  }
 });
 
 router.get("/logout", async (req: Request, res: Response) => {
@@ -434,12 +357,6 @@ router.post(
       const dbUser = await upsertUser(
         claims as unknown as Record<string, unknown>,
       );
-
-      const loginEmail = normalizeEmail(dbUser.email);
-      if (!loginEmail || !(await ensureBetaAccess(loginEmail))) {
-        res.status(403).json({ error: "This beta is invite-only." });
-        return;
-      }
 
       const now = Math.floor(Date.now() / 1000);
       const sessionData: SessionData = {
