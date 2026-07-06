@@ -1,40 +1,91 @@
 import * as client from "openid-client";
 import crypto from "crypto";
 import { type Request, type Response } from "express";
-import { db, sessionsTable } from "@workspace/db";
+import { db, sessionsTable, betaInvites } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import type { AuthUser } from "@workspace/api-zod";
 
 export const GOOGLE_ISSUER_URL =
   process.env.GOOGLE_ISSUER_URL ?? "https://accounts.google.com";
+export const MICROSOFT_ISSUER_URL =
+  process.env.MICROSOFT_ISSUER_URL ?? "https://login.microsoftonline.com/common/v2.0";
 export const SESSION_COOKIE = "sid";
 export const SESSION_TTL = 7 * 24 * 60 * 60 * 1000;
 
+export type Provider = "google" | "microsoft";
+
+const PROVIDER_CONFIG: Record<
+  Provider,
+  { issuer: string; clientIdEnv: string; clientSecretEnv: string }
+> = {
+  google: {
+    issuer: GOOGLE_ISSUER_URL,
+    clientIdEnv: "GOOGLE_CLIENT_ID",
+    clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+  },
+  microsoft: {
+    issuer: MICROSOFT_ISSUER_URL,
+    clientIdEnv: "MICROSOFT_CLIENT_ID",
+    clientSecretEnv: "MICROSOFT_CLIENT_SECRET",
+  },
+};
+
 export interface SessionData {
   user: AuthUser;
+  provider: Provider;
   access_token: string;
   refresh_token?: string;
   expires_at?: number;
 }
 
-let oidcConfig: client.Configuration | null = null;
+const oidcConfigs = new Map<Provider, client.Configuration>();
 
-export async function getOidcConfig(): Promise<client.Configuration> {
-  if (!oidcConfig) {
-    const clientId = process.env.GOOGLE_CLIENT_ID;
-    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-    if (!clientId || !clientSecret) {
-      throw new Error(
-        "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be configured",
-      );
-    }
-    oidcConfig = await client.discovery(
-      new URL(GOOGLE_ISSUER_URL),
-      clientId,
-      clientSecret,
-    );
+export async function getOidcConfig(provider: Provider): Promise<client.Configuration> {
+  const cached = oidcConfigs.get(provider);
+  if (cached) return cached;
+
+  const { issuer, clientIdEnv, clientSecretEnv } = PROVIDER_CONFIG[provider];
+  const clientId = process.env[clientIdEnv];
+  const clientSecret = process.env[clientSecretEnv];
+  if (!clientId || !clientSecret) {
+    throw new Error(`${clientIdEnv} and ${clientSecretEnv} must be configured`);
   }
-  return oidcConfig;
+
+  const config = await client.discovery(new URL(issuer), clientId, clientSecret);
+  oidcConfigs.set(provider, config);
+  return config;
+}
+
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+/**
+ * Looks up the invite status for an email, auto-creating a `pending` row for
+ * first-time sign-in attempts so unapproved users can be reviewed later.
+ */
+export async function resolveInviteStatus(email: string): Promise<string> {
+  const normalized = normalizeEmail(email);
+
+  const [existing] = await db
+    .select()
+    .from(betaInvites)
+    .where(eq(betaInvites.email, normalized));
+  if (existing) return existing.status;
+
+  const [created] = await db
+    .insert(betaInvites)
+    .values({ email: normalized, status: "pending" })
+    .onConflictDoNothing()
+    .returning();
+  if (created) return created.status;
+
+  // Lost an insert race with another concurrent sign-in attempt; re-read.
+  const [row] = await db
+    .select()
+    .from(betaInvites)
+    .where(eq(betaInvites.email, normalized));
+  return row?.status ?? "pending";
 }
 
 export async function createSession(data: SessionData): Promise<string> {

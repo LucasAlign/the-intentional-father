@@ -69,3 +69,16 @@ state?: string;
 iss?: string;
 };
 
+export type BeginMicrosoftLoginParams = {
+/**
+ * Relative path to redirect to after login (must start with `/`). Defaults to `/`.
+ */
+returnTo?: string;
+};
+
+export type HandleMicrosoftLoginCallbackParams = {
+code?: string;
+state?: string;
+iss?: string;
+};
+

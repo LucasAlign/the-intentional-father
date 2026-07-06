@@ -208,7 +208,7 @@ function jobCalendarEvent(job: Job): Event | null {
 
 // ── Root ──────────────────────────────────────────────────────────────────────
 export default function Home() {
-  const { isLoading, isAuthenticated, login, logout } = useAuth();
+  const { isLoading, isAuthenticated, pendingApproval, login, logout } = useAuth();
   const [, setLocation] = useLocation();
   const [tab, setTab] = useState<TabId>("today");
 
@@ -292,7 +292,7 @@ export default function Home() {
     }
   }
 
-  if (!isAuthenticated) return <AuthGate loading={isLoading} onLogin={login} />;
+  if (!isAuthenticated) return <AuthGate loading={isLoading} pendingApproval={pendingApproval} onLogin={login} />;
 
   return (
     <div style={R.root}>
@@ -842,7 +842,7 @@ function JobEditModal({ job, onClose, onSaved, onDeleted }: { job: Job; onClose:
 }
 
 // ── Auth gate ───────────────────────────────────────────────────────────────────
-function AuthGate({ loading, onLogin }: { loading: boolean; onLogin: () => void }) {
+function AuthGate({ loading, pendingApproval, onLogin }: { loading: boolean; pendingApproval: boolean; onLogin: (provider?: "google" | "microsoft") => void }) {
   return (
     <div style={R.root}>
       <div style={R.woodLayer} />
@@ -852,10 +852,13 @@ function AuthGate({ loading, onLogin }: { loading: boolean; onLogin: () => void 
         <div style={{ ...R.tagline, textAlign: "center", marginBottom: 38 }}>FOCUSED. FAITHFUL. FREE.</div>
         {loading ? (
           <div style={G.loading}>Loading...</div>
+        ) : pendingApproval ? (
+          <div style={G.welcome}>Thanks for signing up — you're on the list. We'll let you in soon.</div>
         ) : (
           <>
             <div style={G.welcome}>Welcome back.</div>
-            <button style={G.googleBtn} onClick={onLogin}>Continue with Google</button>
+            <button style={G.googleBtn} onClick={() => onLogin("google")}>Continue with Google</button>
+            <button style={{ ...G.googleBtn, marginTop: 10 }} onClick={() => onLogin("microsoft")}>Continue with Microsoft</button>
           </>
         )}
       </div>
@@ -865,7 +868,7 @@ function AuthGate({ loading, onLogin }: { loading: boolean; onLogin: () => void 
 const G: Record<string, CSSProperties> = {
   wrap: { position: "relative", zIndex: 10, flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px" },
   loading: { color: C.parchmentLow, fontSize: 14, letterSpacing: "0.04em" },
-  welcome: { fontSize: 26, fontWeight: 400, color: C.parchment, textShadow: "0 2px 8px rgba(0,0,0,0.5)", marginBottom: 22 },
+  welcome: { fontSize: 26, fontWeight: 400, color: C.parchment, textShadow: "0 2px 8px rgba(0,0,0,0.5)", marginBottom: 22, textAlign: "center" },
   googleBtn: { width: "100%", background: "rgba(30,26,16,0.62)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 12, color: C.parchmentMid, fontSize: 14, fontWeight: 700, padding: "13px 16px", cursor: "pointer", fontFamily: F },
 };
 

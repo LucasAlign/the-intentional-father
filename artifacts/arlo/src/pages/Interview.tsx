@@ -189,7 +189,7 @@ export default function Interview() {
         <div style={R.ambient} />
         <div style={R.loadWrap}>
           <div style={R.loadText}>Please sign in to continue.</div>
-          <button style={R.loginBtn} onClick={login}>Sign in</button>
+          <button style={R.loginBtn} onClick={() => login()}>Sign in</button>
         </div>
       </div>
     );

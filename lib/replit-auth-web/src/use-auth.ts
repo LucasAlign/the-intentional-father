@@ -3,17 +3,30 @@ import type { AuthUser } from "@workspace/api-client-react";
 
 export type { AuthUser };
 
+export type AuthProvider = "google" | "microsoft";
+
 interface AuthState {
   user: AuthUser | null;
   isLoading: boolean;
   isAuthenticated: boolean;
-  login: () => void;
+  pendingApproval: boolean;
+  login: (provider?: AuthProvider) => void;
   logout: () => void;
 }
 
 export function useAuth(): AuthState {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [pendingApproval, setPendingApproval] = useState(false);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("authError") === "pending_approval") {
+      setPendingApproval(true);
+      url.searchParams.delete("authError");
+      window.history.replaceState({}, "", url.toString());
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -41,12 +54,13 @@ export function useAuth(): AuthState {
     };
   }, []);
 
-  const login = useCallback(() => {
+  const login = useCallback((provider: AuthProvider = "google") => {
     const base = import.meta.env.BASE_URL.replace(/\/+$/, "") || "/";
     // Pass the browser's real origin so the server can build the correct
     // redirect_uri regardless of what proxy headers say.
     const appOrigin = window.location.origin;
-    window.location.href = `/api/login?returnTo=${encodeURIComponent(base)}&appOrigin=${encodeURIComponent(appOrigin)}`;
+    const loginPath = provider === "google" ? "/api/login" : `/api/login/${provider}`;
+    window.location.href = `${loginPath}?returnTo=${encodeURIComponent(base)}&appOrigin=${encodeURIComponent(appOrigin)}`;
   }, []);
 
   const logout = useCallback(() => {
@@ -57,6 +71,7 @@ export function useAuth(): AuthState {
     user,
     isLoading,
     isAuthenticated: !!user,
+    pendingApproval,
     login,
     logout,
   };

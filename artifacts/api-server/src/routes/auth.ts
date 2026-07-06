@@ -14,9 +14,11 @@ import {
   getSessionId,
   createSession,
   deleteSession,
+  resolveInviteStatus,
   SESSION_COOKIE,
   SESSION_TTL,
   GOOGLE_ISSUER_URL,
+  type Provider,
   type SessionData,
 } from "../lib/auth";
 
@@ -143,30 +145,6 @@ async function upsertUser(claims: Record<string, unknown>) {
   }
 }
 
-function normalizeEmail(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const email = value.trim().toLowerCase();
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : null;
-}
-
-async function upsertEmailUser(email: string) {
-  const [existing] = await db.select().from(usersTable).where(eq(usersTable.email, email)).limit(1);
-  if (existing) return existing;
-
-  const [user] = await db.insert(usersTable).values({ email }).returning();
-  return user;
-}
-
-function buildSessionUser(user: Awaited<ReturnType<typeof upsertEmailUser>>) {
-  return {
-    id: user.id,
-    email: user.email,
-    firstName: user.firstName,
-    lastName: user.lastName,
-    profileImageUrl: user.profileImageUrl,
-  };
-}
-
 router.get("/auth/user", (req: Request, res: Response) => {
   res.json(
     GetCurrentAuthUserResponse.parse({
@@ -175,146 +153,183 @@ router.get("/auth/user", (req: Request, res: Response) => {
   );
 });
 
-router.get("/login", async (req: Request, res: Response) => {
-  const config = await getOidcConfig();
+// Google keeps its original bare paths (/login, /callback) so the redirect_uri
+// already registered with the Google OAuth client doesn't need to change.
+// Additional providers get their own /login/:provider + /callback/:provider.
+function callbackPathFor(provider: Provider): string {
+  return provider === "google" ? "/api/callback" : `/api/callback/${provider}`;
+}
 
-  // Priority: PUBLIC_URL (explicit config) → browser-reported origin → server headers.
-  // The browser value is the most reliable on mobile because x-forwarded-host can
-  // resolve to a Replit dev tunnel URL instead of the published app domain.
-  const rawClientOrigin = typeof req.query.appOrigin === "string" ? req.query.appOrigin : "";
-  const clientOrigin = /^https?:\/\/[a-zA-Z0-9][a-zA-Z0-9.-]*(:\d+)?$/.test(rawClientOrigin)
-    ? rawClientOrigin
-    : null;
-  const origin = process.env.PUBLIC_URL?.replace(/\/+$/, "")
-    ?? clientOrigin
-    ?? getOrigin(req);
-  const callbackUrl = `${origin}/api/callback`;
+function appendAuthError(target: string, error: string): string {
+  const separator = target.includes("?") ? "&" : "?";
+  return `${target}${separator}authError=${encodeURIComponent(error)}`;
+}
 
-  const returnTo = getSafeReturnTo(req.query.returnTo);
+function makeLoginHandler(provider: Provider) {
+  return async (req: Request, res: Response) => {
+    const config = await getOidcConfig(provider);
 
-  const state = oidc.randomState();
-  const nonce = oidc.randomNonce();
-  const codeVerifier = oidc.randomPKCECodeVerifier();
-  const codeChallenge = await oidc.calculatePKCECodeChallenge(codeVerifier);
+    // Priority: PUBLIC_URL (explicit config) → browser-reported origin → server headers.
+    // The browser value is the most reliable on mobile because x-forwarded-host can
+    // resolve to a Replit dev tunnel URL instead of the published app domain.
+    const rawClientOrigin = typeof req.query.appOrigin === "string" ? req.query.appOrigin : "";
+    const clientOrigin = /^https?:\/\/[a-zA-Z0-9][a-zA-Z0-9.-]*(:\d+)?$/.test(rawClientOrigin)
+      ? rawClientOrigin
+      : null;
+    const origin = process.env.PUBLIC_URL?.replace(/\/+$/, "")
+      ?? clientOrigin
+      ?? getOrigin(req);
+    const callbackUrl = `${origin}${callbackPathFor(provider)}`;
 
-  const redirectTo = oidc.buildAuthorizationUrl(config, {
-    redirect_uri: callbackUrl,
-    scope: "openid email profile",
-    access_type: "offline",
-    include_granted_scopes: "true",
-    code_challenge: codeChallenge,
-    code_challenge_method: "S256",
-    prompt: "consent select_account",
-    state,
-    nonce,
-  });
+    const returnTo = getSafeReturnTo(req.query.returnTo);
 
-  setOidcCookie(res, "code_verifier", codeVerifier);
-  setOidcCookie(res, "nonce", nonce);
-  setOidcCookie(res, "state", state);
-  setOidcCookie(res, "return_to", returnTo);
-  // Store the origin so /api/callback uses the exact same redirect_uri
-  // and redirects the user back to the correct domain after login.
-  setOidcCookie(res, "app_origin", origin);
+    const state = oidc.randomState();
+    const nonce = oidc.randomNonce();
+    const codeVerifier = oidc.randomPKCECodeVerifier();
+    const codeChallenge = await oidc.calculatePKCECodeChallenge(codeVerifier);
 
-  res.redirect(redirectTo.href);
-});
+    const redirectTo = oidc.buildAuthorizationUrl(config, {
+      redirect_uri: callbackUrl,
+      scope: "openid email profile",
+      access_type: "offline",
+      include_granted_scopes: "true",
+      code_challenge: codeChallenge,
+      code_challenge_method: "S256",
+      prompt: "consent select_account",
+      state,
+      nonce,
+    });
+
+    setOidcCookie(res, "code_verifier", codeVerifier);
+    setOidcCookie(res, "nonce", nonce);
+    setOidcCookie(res, "state", state);
+    setOidcCookie(res, "return_to", returnTo);
+    // Store the origin so the callback uses the exact same redirect_uri
+    // and redirects the user back to the correct domain after login.
+    setOidcCookie(res, "app_origin", origin);
+
+    res.redirect(redirectTo.href);
+  };
+}
 
 // Query params are not validated because the OIDC provider may include
 // parameters not expressed in the schema.
-router.get("/callback", async (req: Request, res: Response) => {
-  const config = await getOidcConfig();
+function makeCallbackHandler(provider: Provider) {
+  return async (req: Request, res: Response) => {
+    const config = await getOidcConfig(provider);
+    const loginPath = provider === "google" ? "/api/login" : `/api/login/${provider}`;
 
-  // Use the origin stored during /api/login so the redirect_uri matches exactly.
-  const storedOrigin = req.cookies?.app_origin;
-  const callbackUrl = storedOrigin
-    ? `${storedOrigin}/api/callback`
-    : `${getOrigin(req)}/api/callback`;
+    // Use the origin stored during login so the redirect_uri matches exactly.
+    const storedOrigin = req.cookies?.app_origin;
+    const callbackUrl = storedOrigin
+      ? `${storedOrigin}${callbackPathFor(provider)}`
+      : `${getOrigin(req)}${callbackPathFor(provider)}`;
 
-  const codeVerifier = req.cookies?.code_verifier;
-  const nonce = req.cookies?.nonce;
-  const expectedState = req.cookies?.state;
+    const codeVerifier = req.cookies?.code_verifier;
+    const nonce = req.cookies?.nonce;
+    const expectedState = req.cookies?.state;
 
-  if (!codeVerifier || !expectedState) {
-    res.redirect("/api/login");
-    return;
-  }
+    if (!codeVerifier || !expectedState) {
+      res.redirect(loginPath);
+      return;
+    }
 
-  const currentUrl = new URL(
-    `${callbackUrl}?${new URL(req.url, `http://${req.headers.host}`).searchParams}`,
-  );
+    const currentUrl = new URL(
+      `${callbackUrl}?${new URL(req.url, `http://${req.headers.host}`).searchParams}`,
+    );
 
-  let tokens: oidc.TokenEndpointResponse & oidc.TokenEndpointResponseHelpers;
-  try {
-    tokens = await oidc.authorizationCodeGrant(config, currentUrl, {
-      pkceCodeVerifier: codeVerifier,
-      expectedNonce: nonce,
-      expectedState,
-      idTokenExpected: true,
-    });
-  } catch {
-    res.redirect("/api/login");
-    return;
-  }
+    let tokens: oidc.TokenEndpointResponse & oidc.TokenEndpointResponseHelpers;
+    try {
+      tokens = await oidc.authorizationCodeGrant(config, currentUrl, {
+        pkceCodeVerifier: codeVerifier,
+        expectedNonce: nonce,
+        expectedState,
+        idTokenExpected: true,
+      });
+    } catch {
+      res.redirect(loginPath);
+      return;
+    }
 
-  const returnTo = getSafeReturnTo(req.cookies?.return_to);
+    const returnTo = getSafeReturnTo(req.cookies?.return_to);
 
-  res.clearCookie("code_verifier", { path: "/" });
-  res.clearCookie("nonce", { path: "/" });
-  res.clearCookie("state", { path: "/" });
-  res.clearCookie("return_to", { path: "/" });
-  res.clearCookie("app_origin", { path: "/" });
+    res.clearCookie("code_verifier", { path: "/" });
+    res.clearCookie("nonce", { path: "/" });
+    res.clearCookie("state", { path: "/" });
+    res.clearCookie("return_to", { path: "/" });
+    res.clearCookie("app_origin", { path: "/" });
 
-  const claims = tokens.claims();
-  if (!claims) {
-    res.redirect("/api/login");
-    return;
-  }
+    const claims = tokens.claims();
+    if (!claims) {
+      res.redirect(loginPath);
+      return;
+    }
 
-  let dbUser: Awaited<ReturnType<typeof upsertUser>>;
-  try {
-    dbUser = await upsertUser(claims as unknown as Record<string, unknown>);
-  } catch (err) {
-    req.log?.error({ err }, "Failed to upsert user during login");
-    res.status(500).json({ error: "Login failed — could not save user." });
-    return;
-  }
+    let dbUser: Awaited<ReturnType<typeof upsertUser>>;
+    try {
+      dbUser = await upsertUser(claims as unknown as Record<string, unknown>);
+    } catch (err) {
+      req.log?.error({ err }, "Failed to upsert user during login");
+      res.status(500).json({ error: "Login failed — could not save user." });
+      return;
+    }
 
-  const now = Math.floor(Date.now() / 1000);
-  const sessionData: SessionData = {
-    user: {
-      id: dbUser.id,
-      email: dbUser.email,
-      firstName: dbUser.firstName,
-      lastName: dbUser.lastName,
-      profileImageUrl: dbUser.profileImageUrl,
-    },
-    access_token: tokens.access_token,
-    refresh_token: tokens.refresh_token,
-    expires_at: tokens.expiresIn() ? now + tokens.expiresIn()! : claims.exp,
+    const redirectTarget = storedOrigin ? `${storedOrigin}${returnTo}` : returnTo;
+
+    if (!dbUser.email) {
+      res.redirect(appendAuthError(redirectTarget, "pending_approval"));
+      return;
+    }
+
+    const inviteStatus = await resolveInviteStatus(dbUser.email);
+    if (inviteStatus !== "active") {
+      res.redirect(appendAuthError(redirectTarget, "pending_approval"));
+      return;
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const sessionData: SessionData = {
+      user: {
+        id: dbUser.id,
+        email: dbUser.email,
+        firstName: dbUser.firstName,
+        lastName: dbUser.lastName,
+        profileImageUrl: dbUser.profileImageUrl,
+      },
+      provider,
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      expires_at: tokens.expiresIn() ? now + tokens.expiresIn()! : claims.exp,
+    };
+
+    if (provider === "google") {
+      try {
+        await storeGoogleCalendarConnection(dbUser.id, dbUser.email, tokens);
+      } catch (err) {
+        req.log?.warn({ err }, "Failed to store Google Calendar connection during login");
+      }
+    }
+
+    let sid: string;
+    try {
+      sid = await createSession(sessionData);
+    } catch (err) {
+      req.log?.error({ err }, "Failed to create session during login");
+      res.status(500).json({ error: "Login failed — could not create session." });
+      return;
+    }
+
+    setSessionCookie(res, sid);
+    // Redirect to the full origin + path so mobile users land back on the
+    // correct domain, not the Replit dev tunnel URL.
+    res.redirect(redirectTarget);
   };
+}
 
-  try {
-    await storeGoogleCalendarConnection(dbUser.id, dbUser.email ?? dbUser.id, tokens);
-  } catch (err) {
-    req.log?.warn({ err }, "Failed to store Google Calendar connection during login");
-  }
-
-  let sid: string;
-  try {
-    sid = await createSession(sessionData);
-  } catch (err) {
-    req.log?.error({ err }, "Failed to create session during login");
-    res.status(500).json({ error: "Login failed — could not create session." });
-    return;
-  }
-
-  setSessionCookie(res, sid);
-  // Redirect to the full origin + path so mobile users land back on the
-  // correct domain, not the Replit dev tunnel URL.
-  const redirectTarget = storedOrigin ? `${storedOrigin}${returnTo}` : returnTo;
-  res.redirect(redirectTarget);
-});
+router.get("/login", makeLoginHandler("google"));
+router.get("/callback", makeCallbackHandler("google"));
+router.get("/login/microsoft", makeLoginHandler("microsoft"));
+router.get("/callback/microsoft", makeCallbackHandler("microsoft"));
 
 router.get("/logout", async (req: Request, res: Response) => {
   const sid = getSessionId(req);
@@ -334,7 +349,7 @@ router.post(
     const { code, code_verifier, redirect_uri, state, nonce } = parsed.data;
 
     try {
-      const config = await getOidcConfig();
+      const config = await getOidcConfig("google");
 
       const callbackUrl = new URL(redirect_uri);
       callbackUrl.searchParams.set("code", code);
@@ -358,6 +373,11 @@ router.post(
         claims as unknown as Record<string, unknown>,
       );
 
+      if (!dbUser.email || (await resolveInviteStatus(dbUser.email)) !== "active") {
+        res.status(401).json({ error: "Your account is pending approval." });
+        return;
+      }
+
       const now = Math.floor(Date.now() / 1000);
       const sessionData: SessionData = {
         user: {
@@ -367,6 +387,7 @@ router.post(
           lastName: dbUser.lastName,
           profileImageUrl: dbUser.profileImageUrl,
         },
+        provider: "google",
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
         expires_at: tokens.expiresIn() ? now + tokens.expiresIn()! : claims.exp,

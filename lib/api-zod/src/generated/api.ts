@@ -36,7 +36,7 @@ export const GetCurrentAuthUserResponse = zod.object({
 
 
 /**
- * @summary Start the browser OIDC login flow
+ * @summary Start the browser OIDC login flow (Google)
  */
 export const BeginBrowserLoginQueryParams = zod.object({
   "returnTo": zod.coerce.string().optional().describe('Relative path to redirect to after login (must start with `\/`). Defaults to `\/`.')
@@ -44,9 +44,27 @@ export const BeginBrowserLoginQueryParams = zod.object({
 
 
 /**
- * @summary Complete the browser OIDC login flow
+ * @summary Complete the browser OIDC login flow (Google)
  */
 export const HandleBrowserLoginCallbackQueryParams = zod.object({
+  "code": zod.coerce.string().optional(),
+  "state": zod.coerce.string().optional(),
+  "iss": zod.coerce.string().url().optional()
+})
+
+
+/**
+ * @summary Start the browser OIDC login flow (Microsoft)
+ */
+export const BeginMicrosoftLoginQueryParams = zod.object({
+  "returnTo": zod.coerce.string().optional().describe('Relative path to redirect to after login (must start with `\/`). Defaults to `\/`.')
+})
+
+
+/**
+ * @summary Complete the browser OIDC login flow (Microsoft)
+ */
+export const HandleMicrosoftLoginCallbackQueryParams = zod.object({
   "code": zod.coerce.string().optional(),
   "state": zod.coerce.string().optional(),
   "iss": zod.coerce.string().url().optional()

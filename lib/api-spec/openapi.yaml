@@ -45,7 +45,7 @@ paths:
     get:
       tags: [Auth]
       operationId: beginBrowserLogin
-      summary: Start the browser OIDC login flow
+      summary: Start the browser OIDC login flow (Google)
       parameters:
         - name: returnTo
           in: query
@@ -60,7 +60,7 @@ paths:
     get:
       tags: [Auth]
       operationId: handleBrowserLoginCallback
-      summary: Complete the browser OIDC login flow
+      summary: Complete the browser OIDC login flow (Google)
       parameters:
         - name: code
           in: query
@@ -80,7 +80,53 @@ paths:
             format: uri
       responses:
         '302':
-          description: Redirect to the `returnTo` path on success (defaults to `/`) or `/api/login` on failure.
+          description: >-
+            Redirect to the `returnTo` path (with `?authError=pending_approval`
+            appended if the account isn't approved yet) on success, or
+            `/api/login` on failure.
+  /login/microsoft:
+    get:
+      tags: [Auth]
+      operationId: beginMicrosoftLogin
+      summary: Start the browser OIDC login flow (Microsoft)
+      parameters:
+        - name: returnTo
+          in: query
+          required: false
+          description: Relative path to redirect to after login (must start with `/`). Defaults to `/`.
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirect to the OIDC authorization endpoint.
+  /callback/microsoft:
+    get:
+      tags: [Auth]
+      operationId: handleMicrosoftLoginCallback
+      summary: Complete the browser OIDC login flow (Microsoft)
+      parameters:
+        - name: code
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: iss
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uri
+      responses:
+        '302':
+          description: >-
+            Redirect to the `returnTo` path (with `?authError=pending_approval`
+            appended if the account isn't approved yet) on success, or
+            `/api/login/microsoft` on failure.
   /logout:
     get:
       tags: [Auth]

@@ -22,8 +22,10 @@ import type {
 import type {
   AuthUserEnvelope,
   BeginBrowserLoginParams,
+  BeginMicrosoftLoginParams,
   ErrorEnvelope,
   HandleBrowserLoginCallbackParams,
+  HandleMicrosoftLoginCallbackParams,
   HealthStatus,
   LogoutSuccess,
   MobileTokenExchangeRequest,
@@ -213,7 +215,7 @@ export const getBeginBrowserLoginUrl = (params?: BeginBrowserLoginParams,) => {
 }
 
 /**
- * @summary Start the browser OIDC login flow
+ * @summary Start the browser OIDC login flow (Google)
  */
 export const beginBrowserLogin = async (params?: BeginBrowserLoginParams, options?: RequestInit): Promise<unknown> => {
 
@@ -260,7 +262,7 @@ export type BeginBrowserLoginQueryError = ErrorType<void>
 
 
 /**
- * @summary Start the browser OIDC login flow
+ * @summary Start the browser OIDC login flow (Google)
  */
 
 export function useBeginBrowserLogin<TData = Awaited<ReturnType<typeof beginBrowserLogin>>, TError = ErrorType<void>>(
@@ -297,7 +299,7 @@ export const getHandleBrowserLoginCallbackUrl = (params?: HandleBrowserLoginCall
 }
 
 /**
- * @summary Complete the browser OIDC login flow
+ * @summary Complete the browser OIDC login flow (Google)
  */
 export const handleBrowserLoginCallback = async (params?: HandleBrowserLoginCallbackParams, options?: RequestInit): Promise<unknown> => {
 
@@ -344,7 +346,7 @@ export type HandleBrowserLoginCallbackQueryError = ErrorType<void>
 
 
 /**
- * @summary Complete the browser OIDC login flow
+ * @summary Complete the browser OIDC login flow (Google)
  */
 
 export function useHandleBrowserLoginCallback<TData = Awaited<ReturnType<typeof handleBrowserLoginCallback>>, TError = ErrorType<void>>(
@@ -353,6 +355,174 @@ export function useHandleBrowserLoginCallback<TData = Awaited<ReturnType<typeof 
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
   const queryOptions = getHandleBrowserLoginCallbackQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getBeginMicrosoftLoginUrl = (params?: BeginMicrosoftLoginParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : value.toString())
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/login/microsoft?${stringifiedParams}` : `/api/login/microsoft`
+}
+
+/**
+ * @summary Start the browser OIDC login flow (Microsoft)
+ */
+export const beginMicrosoftLogin = async (params?: BeginMicrosoftLoginParams, options?: RequestInit): Promise<unknown> => {
+
+  return customFetch<unknown>(getBeginMicrosoftLoginUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getBeginMicrosoftLoginQueryKey = (params?: BeginMicrosoftLoginParams,) => {
+    return [
+    `/api/login/microsoft`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getBeginMicrosoftLoginQueryOptions = <TData = Awaited<ReturnType<typeof beginMicrosoftLogin>>, TError = ErrorType<void>>(params?: BeginMicrosoftLoginParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof beginMicrosoftLogin>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getBeginMicrosoftLoginQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof beginMicrosoftLogin>>> = ({ signal }) => beginMicrosoftLogin(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof beginMicrosoftLogin>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type BeginMicrosoftLoginQueryResult = NonNullable<Awaited<ReturnType<typeof beginMicrosoftLogin>>>
+export type BeginMicrosoftLoginQueryError = ErrorType<void>
+
+
+/**
+ * @summary Start the browser OIDC login flow (Microsoft)
+ */
+
+export function useBeginMicrosoftLogin<TData = Awaited<ReturnType<typeof beginMicrosoftLogin>>, TError = ErrorType<void>>(
+ params?: BeginMicrosoftLoginParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof beginMicrosoftLogin>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getBeginMicrosoftLoginQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getHandleMicrosoftLoginCallbackUrl = (params?: HandleMicrosoftLoginCallbackParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : value.toString())
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/callback/microsoft?${stringifiedParams}` : `/api/callback/microsoft`
+}
+
+/**
+ * @summary Complete the browser OIDC login flow (Microsoft)
+ */
+export const handleMicrosoftLoginCallback = async (params?: HandleMicrosoftLoginCallbackParams, options?: RequestInit): Promise<unknown> => {
+
+  return customFetch<unknown>(getHandleMicrosoftLoginCallbackUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getHandleMicrosoftLoginCallbackQueryKey = (params?: HandleMicrosoftLoginCallbackParams,) => {
+    return [
+    `/api/callback/microsoft`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getHandleMicrosoftLoginCallbackQueryOptions = <TData = Awaited<ReturnType<typeof handleMicrosoftLoginCallback>>, TError = ErrorType<void>>(params?: HandleMicrosoftLoginCallbackParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof handleMicrosoftLoginCallback>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getHandleMicrosoftLoginCallbackQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof handleMicrosoftLoginCallback>>> = ({ signal }) => handleMicrosoftLoginCallback(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof handleMicrosoftLoginCallback>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type HandleMicrosoftLoginCallbackQueryResult = NonNullable<Awaited<ReturnType<typeof handleMicrosoftLoginCallback>>>
+export type HandleMicrosoftLoginCallbackQueryError = ErrorType<void>
+
+
+/**
+ * @summary Complete the browser OIDC login flow (Microsoft)
+ */
+
+export function useHandleMicrosoftLoginCallback<TData = Awaited<ReturnType<typeof handleMicrosoftLoginCallback>>, TError = ErrorType<void>>(
+ params?: HandleMicrosoftLoginCallbackParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof handleMicrosoftLoginCallback>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getHandleMicrosoftLoginCallbackQueryOptions(params,options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 
