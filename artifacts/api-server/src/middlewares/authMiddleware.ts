@@ -31,7 +31,7 @@ async function refreshIfExpired(
   session: SessionData,
 ): Promise<SessionData | null> {
   const now = Math.floor(Date.now() / 1000);
-  if (!session.expires_at || now <= session.expires_at) return session;
+  if (session.provider === "demo" || !session.expires_at || now <= session.expires_at) return session;
 
   if (!session.refresh_token) return null;
 

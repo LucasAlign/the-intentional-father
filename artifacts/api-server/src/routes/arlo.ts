@@ -49,12 +49,12 @@ router.get('/verse', (_req: Request, res: Response) => {
 });
 
 // GET /api/tasks
-router.get('/tasks', async (_req: Request, res: Response) => {
+router.get('/tasks', async (req: Request, res: Response) => {
   try {
     const rows = await db
       .select()
       .from(tasks)
-      .where(eq(tasks.done, false))
+      .where(and(eq(tasks.userId, req.user!.id), eq(tasks.done, false)))
       .orderBy(desc(tasks.createdAt))
       .limit(3);
     res.json(rows);
@@ -73,7 +73,7 @@ router.post('/tasks', async (req: Request, res: Response) => {
     }
     const [row] = await db
       .insert(tasks)
-      .values({ text: text.trim(), category: category?.trim() || '', notes: notes?.trim() || '', partial: false, done: false })
+      .values({ userId: req.user!.id, text: text.trim(), category: category?.trim() || '', notes: notes?.trim() || '', partial: false, done: false })
       .returning();
     res.json(row);
   } catch (err) {
@@ -93,7 +93,7 @@ router.patch('/tasks/:id', async (req: Request, res: Response) => {
     if (typeof partial === 'boolean') updates.partial = partial;
     if (typeof notes === 'string') updates.notes = notes;
     if (Object.keys(updates).length === 0) { res.status(400).json({ error: 'No valid fields to update' }); return; }
-    await db.update(tasks).set(updates).where(eq(tasks.id, id));
+    await db.update(tasks).set(updates).where(and(eq(tasks.id, id), eq(tasks.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
     req.log?.error({ err }, 'Error updating task');
@@ -106,7 +106,7 @@ router.delete('/tasks/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid task id' }); return; }
-    await db.delete(tasks).where(eq(tasks.id, id));
+    await db.delete(tasks).where(and(eq(tasks.id, id), eq(tasks.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
     req.log?.error({ err }, 'Error deleting task');
@@ -121,7 +121,7 @@ router.get('/chat-history', async (req: Request, res: Response) => {
     const rows = await db
       .select()
       .from(chatMessages)
-      .where(eq(chatMessages.date, today))
+      .where(and(eq(chatMessages.userId, req.user!.id), eq(chatMessages.date, today)))
       .orderBy(asc(chatMessages.createdAt));
     res.json(rows);
   } catch (err) {
@@ -134,7 +134,7 @@ router.get('/chat-history', async (req: Request, res: Response) => {
 router.get('/journal', async (req: Request, res: Response) => {
   try {
     const today = new Date().toISOString().split('T')[0];
-    const rows = await db.select().from(journalEntries).where(eq(journalEntries.date, today)).limit(1);
+    const rows = await db.select().from(journalEntries).where(and(eq(journalEntries.userId, req.user!.id), eq(journalEntries.date, today))).limit(1);
     res.json(rows[0] || null);
   } catch (err) {
     req.log?.error({ err }, 'Error fetching journal entry');
@@ -149,9 +149,9 @@ router.post('/journal', async (req: Request, res: Response) => {
     const { reflect, commit_text } = req.body;
     await db
       .insert(journalEntries)
-      .values({ date: today, reflect: reflect || '', commitText: commit_text || '' })
+      .values({ userId: req.user!.id, date: today, reflect: reflect || '', commitText: commit_text || '' })
       .onConflictDoUpdate({
-        target: journalEntries.date,
+        target: [journalEntries.userId, journalEntries.date],
         set: { reflect: reflect || '', commitText: commit_text || '' },
       });
     res.json({ success: true });
@@ -162,9 +162,9 @@ router.post('/journal', async (req: Request, res: Response) => {
 });
 
 // GET /api/commits
-router.get('/commits', async (_req: Request, res: Response) => {
+router.get('/commits', async (req: Request, res: Response) => {
   try {
-    const rows = await db.select().from(commits).orderBy(desc(commits.createdAt));
+    const rows = await db.select().from(commits).where(eq(commits.userId, req.user!.id)).orderBy(desc(commits.createdAt));
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch commits' });
@@ -177,7 +177,7 @@ router.post('/commits', async (req: Request, res: Response) => {
     const { text } = req.body;
     if (!text?.trim()) { res.status(400).json({ error: 'Commit text is required' }); return; }
     const madeDate = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    const [row] = await db.insert(commits).values({ text: text.trim(), madeDate, done: false }).returning();
+    const [row] = await db.insert(commits).values({ userId: req.user!.id, text: text.trim(), madeDate, done: false }).returning();
     res.json(row);
   } catch (err) {
     req.log?.error({ err }, 'Error creating commit');
@@ -191,7 +191,7 @@ router.patch('/commits/:id', async (req: Request, res: Response) => {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
     const { done } = req.body;
-    if (typeof done === 'boolean') await db.update(commits).set({ done }).where(eq(commits.id, id));
+    if (typeof done === 'boolean') await db.update(commits).set({ done }).where(and(eq(commits.id, id), eq(commits.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update commit' });
@@ -203,7 +203,7 @@ router.delete('/commits/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    await db.delete(commits).where(eq(commits.id, id));
+    await db.delete(commits).where(and(eq(commits.id, id), eq(commits.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete commit' });
@@ -211,9 +211,9 @@ router.delete('/commits/:id', async (req: Request, res: Response) => {
 });
 
 // GET /api/jobs
-router.get('/jobs', async (_req: Request, res: Response) => {
+router.get('/jobs', async (req: Request, res: Response) => {
   try {
-    const rows = await db.select().from(jobs).orderBy(asc(jobs.createdAt));
+    const rows = await db.select().from(jobs).where(eq(jobs.userId, req.user!.id)).orderBy(asc(jobs.createdAt));
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch jobs' });
@@ -225,7 +225,7 @@ router.post('/jobs', async (req: Request, res: Response) => {
   try {
     const { biz, name, stage, due, pct } = req.body;
     if (!biz || !name) { res.status(400).json({ error: 'biz and name are required' }); return; }
-    const [row] = await db.insert(jobs).values({ biz, name, stage: stage || '', due: due || '', pct: pct ?? 0 }).returning();
+    const [row] = await db.insert(jobs).values({ userId: req.user!.id, biz, name, stage: stage || '', due: due || '', pct: pct ?? 0 }).returning();
     res.json(row);
   } catch (err) {
     req.log?.error({ err }, 'Error creating job');
@@ -245,7 +245,7 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
     if (stage !== undefined) updates.stage = stage;
     if (due !== undefined) updates.due = due;
     if (typeof pct === 'number') updates.pct = pct;
-    if (Object.keys(updates).length > 0) await db.update(jobs).set(updates).where(eq(jobs.id, id));
+    if (Object.keys(updates).length > 0) await db.update(jobs).set(updates).where(and(eq(jobs.id, id), eq(jobs.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update job' });
@@ -257,7 +257,7 @@ router.delete('/jobs/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    await db.delete(jobs).where(eq(jobs.id, id));
+    await db.delete(jobs).where(and(eq(jobs.id, id), eq(jobs.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete job' });
@@ -277,13 +277,13 @@ router.get('/coming-up', async (req: Request, res: Response) => {
       rows = await db
         .select()
         .from(comingUp)
-        .where(and(gte(comingUp.date, start), lte(comingUp.date, end)))
+        .where(and(eq(comingUp.userId, req.user!.id), gte(comingUp.date, start), lte(comingUp.date, end)))
         .orderBy(asc(comingUp.date), asc(comingUp.createdAt));
     } else {
       const today = new Date().toISOString().split('T')[0];
       rangeStart = today;
       rangeEnd = today;
-      rows = await db.select().from(comingUp).where(eq(comingUp.date, today)).orderBy(asc(comingUp.createdAt));
+      rows = await db.select().from(comingUp).where(and(eq(comingUp.userId, req.user!.id), eq(comingUp.date, today))).orderBy(asc(comingUp.createdAt));
     }
     let calendarRows: CalendarEvent[] = [];
     try {
@@ -303,7 +303,7 @@ router.post('/coming-up', async (req: Request, res: Response) => {
     const { time, title, sub, tag, kind, date } = req.body;
     if (!time || !title) { res.status(400).json({ error: 'time and title are required' }); return; }
     const day = (typeof date === 'string' && date) || new Date().toISOString().split('T')[0];
-    const [row] = await db.insert(comingUp).values({ date: day, time, title, sub: sub || '', tag: tag || '', kind: kind || 'work' }).returning();
+    const [row] = await db.insert(comingUp).values({ userId: req.user!.id, date: day, time, title, sub: sub || '', tag: tag || '', kind: kind || 'work' }).returning();
     res.json(row);
   } catch (err) {
     res.status(500).json({ error: 'Failed to create coming up event' });
@@ -315,7 +315,7 @@ router.delete('/coming-up/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    await db.delete(comingUp).where(eq(comingUp.id, id));
+    await db.delete(comingUp).where(and(eq(comingUp.id, id), eq(comingUp.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete coming up event' });
@@ -326,12 +326,13 @@ router.delete('/coming-up/:id', async (req: Request, res: Response) => {
 router.post('/chat', async (req: Request, res: Response) => {
   try {
     const { message } = req.body;
+    const userId = req.user!.id;
     const today = new Date().toISOString().split('T')[0];
 
     const [recentJournal, openTasks, todayChat] = await Promise.all([
-      db.select().from(journalEntries).orderBy(desc(journalEntries.date)).limit(3),
-      db.select().from(tasks).where(eq(tasks.done, false)).orderBy(desc(tasks.createdAt)).limit(5),
-      db.select().from(chatMessages).where(eq(chatMessages.date, today)).orderBy(asc(chatMessages.createdAt)),
+      db.select().from(journalEntries).where(eq(journalEntries.userId, userId)).orderBy(desc(journalEntries.date)).limit(3),
+      db.select().from(tasks).where(and(eq(tasks.userId, userId), eq(tasks.done, false))).orderBy(desc(tasks.createdAt)).limit(5),
+      db.select().from(chatMessages).where(and(eq(chatMessages.userId, userId), eq(chatMessages.date, today))).orderBy(asc(chatMessages.createdAt)),
     ]);
 
     let context = '';
@@ -353,7 +354,7 @@ router.post('/chat', async (req: Request, res: Response) => {
       context += '\n';
     }
 
-    const ARLO_SYSTEM_PROMPT = `You are Arlo, a personal accountability partner and brother to Bryant. Your voice is direct, gospel-centered, in the style of Pastor Joby Martin.
+    const ARLO_SYSTEM_PROMPT = `You are Steward, a personal accountability partner and brother to Bryant. Your voice is direct, gospel-centered, in the style of Pastor Joby Martin.
 
 Bryant's core challenge: he's a strong executor but gets to the starting line without a full picture (budget, materials, time, contingencies). Reality hits and tasks stall at ~80%. Your job is to help him plan ahead of the work, with him.
 
@@ -400,7 +401,7 @@ You are a tool, not a pastor or counselor or substitute for his wife.`;
     if (!response.ok) {
       const error = await response.text();
       req.log?.error({ error, model: OPENAI_MODEL }, 'OpenAI API error');
-      res.status(500).json({ error: 'Failed to get response from Arlo', detail: error, model: OPENAI_MODEL });
+      res.status(500).json({ error: 'Failed to get response from Steward', detail: error, model: OPENAI_MODEL });
       return;
     }
 
@@ -409,13 +410,13 @@ You are a tool, not a pastor or counselor or substitute for his wife.`;
 
     if (!assistantMessage) {
       req.log?.error({ data, model: OPENAI_MODEL }, 'OpenAI response missing assistant message');
-      res.status(500).json({ error: 'Failed to get response from Arlo' });
+      res.status(500).json({ error: 'Failed to get response from Steward' });
       return;
     }
 
     await Promise.all([
-      db.insert(chatMessages).values({ role: 'user', content: message, date: today }),
-      db.insert(chatMessages).values({ role: 'assistant', content: assistantMessage, date: today }),
+      db.insert(chatMessages).values({ userId, role: 'user', content: message, date: today }),
+      db.insert(chatMessages).values({ userId, role: 'assistant', content: assistantMessage, date: today }),
     ]);
 
     res.json({ message: assistantMessage });

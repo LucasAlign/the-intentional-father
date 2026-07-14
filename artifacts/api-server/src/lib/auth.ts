@@ -12,10 +12,11 @@ export const MICROSOFT_ISSUER_URL =
 export const SESSION_COOKIE = "sid";
 export const SESSION_TTL = 7 * 24 * 60 * 60 * 1000;
 
-export type Provider = "google" | "microsoft";
+export type OidcProvider = "google" | "microsoft";
+export type Provider = OidcProvider | "demo";
 
 const PROVIDER_CONFIG: Record<
-  Provider,
+  OidcProvider,
   { issuer: string; clientIdEnv: string; clientSecretEnv: string }
 > = {
   google: {
@@ -40,7 +41,7 @@ export interface SessionData {
 
 const oidcConfigs = new Map<Provider, client.Configuration>();
 
-export async function getOidcConfig(provider: Provider): Promise<client.Configuration> {
+export async function getOidcConfig(provider: OidcProvider): Promise<client.Configuration> {
   const cached = oidcConfigs.get(provider);
   if (cached) return cached;
 

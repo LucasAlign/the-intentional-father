@@ -3,7 +3,7 @@ import type { AuthUser } from "@workspace/api-client-react";
 
 export type { AuthUser };
 
-export type AuthProvider = "google" | "microsoft";
+export type AuthProvider = "google" | "microsoft" | "demo";
 
 interface AuthState {
   user: AuthUser | null;

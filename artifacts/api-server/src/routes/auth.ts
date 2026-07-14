@@ -1,4 +1,5 @@
 import * as oidc from "openid-client";
+import crypto from "crypto";
 import { Router, type IRouter, type Request, type Response } from "express";
 import {
   GetCurrentAuthUserResponse,
@@ -18,7 +19,7 @@ import {
   SESSION_COOKIE,
   SESSION_TTL,
   GOOGLE_ISSUER_URL,
-  type Provider,
+  type OidcProvider,
   type SessionData,
 } from "../lib/auth";
 
@@ -156,7 +157,7 @@ router.get("/auth/user", (req: Request, res: Response) => {
 // Google keeps its original bare paths (/login, /callback) so the redirect_uri
 // already registered with the Google OAuth client doesn't need to change.
 // Additional providers get their own /login/:provider + /callback/:provider.
-function callbackPathFor(provider: Provider): string {
+function callbackPathFor(provider: OidcProvider): string {
   return provider === "google" ? "/api/callback" : `/api/callback/${provider}`;
 }
 
@@ -165,7 +166,7 @@ function appendAuthError(target: string, error: string): string {
   return `${target}${separator}authError=${encodeURIComponent(error)}`;
 }
 
-function makeLoginHandler(provider: Provider) {
+function makeLoginHandler(provider: OidcProvider) {
   return async (req: Request, res: Response) => {
     const config = await getOidcConfig(provider);
 
@@ -214,7 +215,7 @@ function makeLoginHandler(provider: Provider) {
 
 // Query params are not validated because the OIDC provider may include
 // parameters not expressed in the schema.
-function makeCallbackHandler(provider: Provider) {
+function makeCallbackHandler(provider: OidcProvider) {
   return async (req: Request, res: Response) => {
     const config = await getOidcConfig(provider);
     const loginPath = provider === "google" ? "/api/login" : `/api/login/${provider}`;
@@ -330,6 +331,59 @@ router.get("/login", makeLoginHandler("google"));
 router.get("/callback", makeCallbackHandler("google"));
 router.get("/login/microsoft", makeLoginHandler("microsoft"));
 router.get("/callback/microsoft", makeCallbackHandler("microsoft"));
+
+// No OAuth round-trip: creates a fresh throwaway user and session directly,
+// so anyone can try the app without a Google/Microsoft account. Bypasses the
+// beta-invite gate on purpose — that gate only protects the real providers.
+router.get("/login/demo", async (req: Request, res: Response) => {
+  const rawClientOrigin = typeof req.query.appOrigin === "string" ? req.query.appOrigin : "";
+  const clientOrigin = /^https?:\/\/[a-zA-Z0-9][a-zA-Z0-9.-]*(:\d+)?$/.test(rawClientOrigin)
+    ? rawClientOrigin
+    : null;
+  const origin = process.env.PUBLIC_URL?.replace(/\/+$/, "") ?? clientOrigin ?? getOrigin(req);
+  const returnTo = getSafeReturnTo(req.query.returnTo);
+
+  let dbUser: Awaited<ReturnType<typeof upsertUser>>;
+  try {
+    const [user] = await db
+      .insert(usersTable)
+      .values({
+        email: `demo-${crypto.randomUUID()}@demo.local`,
+        firstName: "Demo",
+        lastName: "User",
+      })
+      .returning();
+    dbUser = user;
+  } catch (err) {
+    req.log?.error({ err }, "Failed to create demo user");
+    res.status(500).json({ error: "Demo login failed — could not create user." });
+    return;
+  }
+
+  const sessionData: SessionData = {
+    user: {
+      id: dbUser.id,
+      email: dbUser.email,
+      firstName: dbUser.firstName,
+      lastName: dbUser.lastName,
+      profileImageUrl: dbUser.profileImageUrl,
+    },
+    provider: "demo",
+    access_token: "demo",
+  };
+
+  let sid: string;
+  try {
+    sid = await createSession(sessionData);
+  } catch (err) {
+    req.log?.error({ err }, "Failed to create session during demo login");
+    res.status(500).json({ error: "Demo login failed — could not create session." });
+    return;
+  }
+
+  setSessionCookie(res, sid);
+  res.redirect(`${origin}${returnTo}`);
+});
 
 router.get("/logout", async (req: Request, res: Response) => {
   const sid = getSessionId(req);

@@ -102,7 +102,7 @@ export default function Interview() {
           setQuestionNumber(d.questionNumber);
           setBooted(true);
         } else {
-          // Auto-trigger Arlo's greeting
+          // Auto-trigger Steward's greeting
           await triggerStart();
         }
       } catch {
@@ -123,7 +123,7 @@ export default function Interview() {
       });
       if (!r.ok) {
         const errorText = await r.text();
-        setMessages([{ role: "assistant", content: "Arlo is connected, but onboarding failed (" + r.status + "): " + (errorText || "No error details returned.") }]);
+        setMessages([{ role: "assistant", content: "Steward is connected, but onboarding failed (" + r.status + "): " + (errorText || "No error details returned.") }]);
         return;
       }
       const d = await r.json() as { message: string; questionNumber: number; complete?: boolean };
@@ -153,7 +153,7 @@ export default function Interview() {
       });
       if (!r.ok) {
         const errorText = await r.text();
-        setMessages(prev => [...prev, { role: "assistant", content: "Arlo is connected, but onboarding failed (" + r.status + "): " + (errorText || "No error details returned.") }]);
+        setMessages(prev => [...prev, { role: "assistant", content: "Steward is connected, but onboarding failed (" + r.status + "): " + (errorText || "No error details returned.") }]);
         return;
       }
       const d = await r.json() as { message: string; questionNumber: number; complete?: boolean };
@@ -204,7 +204,7 @@ export default function Interview() {
       {/* Header */}
       <div style={R.header}>
         <div>
-          <div style={R.logo}><span style={R.logoText}>Arlo</span><span style={R.logoDot}>.</span></div>
+          <div style={R.logo}><span style={R.logoText}>Steward</span><span style={R.logoDot}>.</span></div>
           <div style={R.tagline}>GETTING TO KNOW YOU</div>
         </div>
         <div style={R.progressWrap}>

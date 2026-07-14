@@ -114,7 +114,7 @@ const NAV: { id: TabId; icon: IconName | "arloA"; label: string }[] = [
   { id: "today", icon: "sun", label: "Today" },
   { id: "her", icon: "heart", label: "Her" },
   { id: "work", icon: "work", label: "Work" },
-  { id: "arlo", icon: "arloA", label: "Arlo" },
+  { id: "arlo", icon: "arloA", label: "Steward" },
   { id: "week", icon: "cal", label: "Week" },
 ];
 type TabId = "today" | "her" | "work" | "arlo" | "week";
@@ -283,7 +283,7 @@ export default function Home() {
         setChat(p => [...p, { role: "assistant", content: d.message }]);
       } else {
         const errorText = await r.text();
-        setChat(p => [...p, { role: "assistant", content: "Arlo is connected, but the chat request failed (" + r.status + "): " + (errorText || "No error details returned.") }]);
+        setChat(p => [...p, { role: "assistant", content: "Steward is connected, but the chat request failed (" + r.status + "): " + (errorText || "No error details returned.") }]);
       }
     } catch {
       setChat(p => [...p, { role: "assistant", content: "I couldn't reach the server just now. Try again in a moment." }]);
@@ -302,7 +302,7 @@ export default function Home() {
 
       <div style={R.header}>
         <div>
-          <div style={R.logo}><span style={R.logoText}>Arlo</span><span style={R.logoDot}>.</span></div>
+          <div style={R.logo}><span style={R.logoText}>Steward</span><span style={R.logoDot}>.</span></div>
           <div style={R.tagline}>FOCUSED. FAITHFUL. FREE.</div>
         </div>
         <button style={{ ...R.avatar, padding: 0, cursor: "pointer" }} onClick={logout} title="Log out" aria-label="Log out"><Icon name="user" size={20} color={C.parchmentDim} /></button>
@@ -532,7 +532,7 @@ function TodayMsgBar({ ci, setCi, sending, onSend }: { ci: string; setCi: (v: st
   return (
     <div style={S.msgBar}>
       <Icon name="chat" size={17} color={C.parchmentLow} />
-      <input style={S.msgInput} value={ci} onChange={e => setCi(e.target.value)} onKeyDown={e => e.key === "Enter" && onSend()} placeholder="Message Arlo..." />
+      <input style={S.msgInput} value={ci} onChange={e => setCi(e.target.value)} onKeyDown={e => e.key === "Enter" && onSend()} placeholder="Message Steward..." />
       <button style={{ ...S.micBtn, ...(listening ? S.micBtnOn : {}) }} onClick={toggle} title={listening ? "Stop" : "Voice input"}>
         <Icon name="mic" size={15} color={listening ? C.ink : C.parchmentDim} stroke={1.8} />
       </button>
@@ -637,16 +637,16 @@ function ArloChat({ messages, input, setInput, send, sending }: { messages: Mess
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
   return (
     <div style={S.chatWrap}>
-      <div style={{ padding: "4px 18px 0" }}><div style={S.pageTitle}>Arlo</div><div style={S.pageSub}>Your partner. Straight talk only.</div></div>
+      <div style={{ padding: "4px 18px 0" }}><div style={S.pageTitle}>Steward</div><div style={S.pageSub}>Your partner. Straight talk only.</div></div>
       <div style={S.chatMsgs}>
         {messages.length === 0 && <div style={{ ...S.empty, marginTop: 24 }}>No messages yet. Brain dump anything.</div>}
         {messages.map((m, i) => (
           <div key={i} style={{ ...S.bubble, ...(m.role === "user" ? S.bubbleU : S.bubbleA) }}>
-            {m.role === "assistant" && <div style={S.bubbleName}>ARLO</div>}
+            {m.role === "assistant" && <div style={S.bubbleName}>STEWARD</div>}
             <div style={{ ...S.bubbleText, ...(m.role === "user" ? S.bubbleTextU : {}) }}>{m.content}</div>
           </div>
         ))}
-        {sending && <div style={{ ...S.bubble, ...S.bubbleA }}><div style={S.bubbleName}>ARLO</div><div style={{ ...S.bubbleText, color: C.parchmentDim }}>…</div></div>}
+        {sending && <div style={{ ...S.bubble, ...S.bubbleA }}><div style={S.bubbleName}>STEWARD</div><div style={{ ...S.bubbleText, color: C.parchmentDim }}>…</div></div>}
         <div ref={endRef} />
       </div>
       <ArloChatBar input={input} setInput={setInput} send={send} sending={sending} />
@@ -842,13 +842,13 @@ function JobEditModal({ job, onClose, onSaved, onDeleted }: { job: Job; onClose:
 }
 
 // ── Auth gate ───────────────────────────────────────────────────────────────────
-function AuthGate({ loading, pendingApproval, onLogin }: { loading: boolean; pendingApproval: boolean; onLogin: (provider?: "google" | "microsoft") => void }) {
+function AuthGate({ loading, pendingApproval, onLogin }: { loading: boolean; pendingApproval: boolean; onLogin: (provider?: "google" | "microsoft" | "demo") => void }) {
   return (
     <div style={R.root}>
       <div style={R.woodLayer} />
       <div style={R.ambient} />
       <div style={G.wrap}>
-        <div style={R.logo}><span style={R.logoText}>Arlo</span><span style={R.logoDot}>.</span></div>
+        <div style={R.logo}><span style={R.logoText}>Steward</span><span style={R.logoDot}>.</span></div>
         <div style={{ ...R.tagline, textAlign: "center", marginBottom: 38 }}>FOCUSED. FAITHFUL. FREE.</div>
         {loading ? (
           <div style={G.loading}>Loading...</div>
@@ -859,6 +859,7 @@ function AuthGate({ loading, pendingApproval, onLogin }: { loading: boolean; pen
             <div style={G.welcome}>Welcome back.</div>
             <button style={G.googleBtn} onClick={() => onLogin("google")}>Continue with Google</button>
             <button style={{ ...G.googleBtn, marginTop: 10 }} onClick={() => onLogin("microsoft")}>Continue with Microsoft</button>
+            <button style={{ ...G.googleBtn, marginTop: 10 }} onClick={() => onLogin("demo")}>Try the demo</button>
           </>
         )}
       </div>

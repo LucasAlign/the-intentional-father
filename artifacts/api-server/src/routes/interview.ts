@@ -19,7 +19,7 @@ function getOpenAIMessage(data: OpenAIResponsesApiResponse): string | undefined 
     .find((t): t is string => Boolean(t));
 }
 
-const INTERVIEW_SYSTEM_PROMPT = `You are Arlo — a direct, gospel-centered planning partner meeting someone for the first time.
+const INTERVIEW_SYSTEM_PROMPT = `You are Steward — a direct, gospel-centered planning partner meeting someone for the first time.
 Your mission: get to know them well enough to be genuinely useful across all of life — work, marriage, family, faith.
 
 Work through these 6 areas naturally, like a mentor conversation — not a form or checklist:
@@ -274,7 +274,7 @@ router.post("/interview", async (req: Request, res: Response) => {
     res.json({ message: assistantText, questionNumber });
   } catch (err) {
     req.log?.error({ err }, "Interview error");
-    res.status(500).json({ error: "Failed to get response from Arlo" });
+    res.status(500).json({ error: "Failed to get response from Steward" });
   }
 });
 
