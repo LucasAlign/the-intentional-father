@@ -278,6 +278,24 @@ router.post("/interview", async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/interview/skip
+router.post("/interview/skip", async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    await db
+      .insert(profileTable)
+      .values({ userId, data: null, onboarded: true, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: profileTable.userId,
+        set: { onboarded: true, updatedAt: new Date() },
+      });
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, "Error skipping interview");
+    res.status(500).json({ error: "Failed to skip interview" });
+  }
+});
+
 // POST /api/test/complete-interview  — seeds a completed profile for testing
 router.post("/test/complete-interview", async (req: Request, res: Response) => {
   try {

@@ -172,6 +172,14 @@ export default function Interview() {
     setTimeout(() => setLocation("/"), 600);
   }
 
+  async function skip() {
+    try {
+      await fetch(`${API}/interview/skip`, { method: "POST", credentials: "include" });
+    } finally {
+      setLocation("/");
+    }
+  }
+
   if (isLoading || (!booted && isAuthenticated)) {
     return (
       <div style={R.root}>
@@ -212,6 +220,7 @@ export default function Interview() {
           <div style={R.progressBar}>
             <div style={{ ...R.progressFill, width: `${Math.min((questionNumber / 6) * 100, 100)}%` }} />
           </div>
+          {!complete && <button style={R.skipBtn} onClick={skip}>Skip for now</button>}
         </div>
       </div>
 
@@ -324,6 +333,11 @@ const R: Record<string, CSSProperties> = {
     background: `linear-gradient(90deg,${C.brassDeep},${C.brass})`,
     borderRadius: 2, transition: "width 0.5s ease",
     boxShadow: `0 0 6px ${C.brassGlow}`,
+  },
+  skipBtn: {
+    background: "none", border: "none", padding: 0, marginTop: 8,
+    color: C.parchmentLow, fontSize: 11, letterSpacing: "0.04em",
+    textDecoration: "underline", textUnderlineOffset: 2, cursor: "pointer", fontFamily: F,
   },
   chatArea: {
     flex: 1, overflowY: "auto", padding: "8px 18px 12px",
