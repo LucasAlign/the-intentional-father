@@ -868,7 +868,6 @@ function AuthGate({ loading, pendingApproval, onLogin }: { loading: boolean; pen
             <div style={G.welcome}>Welcome back.</div>
             <button style={G.googleBtn} onClick={() => onLogin("google")}>Continue with Google</button>
             <button style={{ ...G.googleBtn, marginTop: 10 }} onClick={() => onLogin("microsoft")}>Continue with Microsoft</button>
-            <button style={{ ...G.googleBtn, marginTop: 10 }} onClick={() => onLogin("demo")}>Try the demo</button>
           </>
         )}
       </div>
