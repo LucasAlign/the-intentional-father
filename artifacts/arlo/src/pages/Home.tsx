@@ -226,6 +226,7 @@ export default function Home() {
   const [jobModal, setJobModal] = useState(false);
   const [editJob, setEditJob] = useState<Job | null>(null);
   const [calendarAccounts, setCalendarAccounts] = useState<string[]>([]);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   const refreshTasks = useCallback(() => {
     getList<Task>(`${API}/tasks`).then(setTasks);
@@ -259,6 +260,7 @@ export default function Home() {
     getList<Event>(`${API}/coming-up`).then(setToday);
     getList<Event>(`${API}/coming-up?start=${start}&end=${end}`).then(setWeek);
     getList<Message>(`${API}/chat-history`).then((m) => setChat(prev => prev.length ? prev : m));
+    getJson(`${API}/admin/is-admin`, { isAdmin: false }).then((d) => setIsAdmin(isRecord(d) && d.isAdmin === true));
     refreshTasks(); refreshCommits(); refreshJobs(); refreshCalendarStatus();
   }, [isAuthenticated, setLocation, refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus]);
 
@@ -305,7 +307,14 @@ export default function Home() {
           <div style={R.logo}><span style={R.logoText}>Steward</span><span style={R.logoDot}>.</span></div>
           <div style={R.tagline}>FOCUSED. FAITHFUL. FREE.</div>
         </div>
-        <button style={{ ...R.avatar, padding: 0, cursor: "pointer" }} onClick={logout} title="Log out" aria-label="Log out"><Icon name="user" size={20} color={C.parchmentDim} /></button>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {isAdmin && (
+            <button style={{ ...R.avatar, padding: 0, cursor: "pointer" }} onClick={() => setLocation("/admin")} title="Sign-ups" aria-label="Sign-ups">
+              <Icon name="target" size={18} color={C.parchmentDim} />
+            </button>
+          )}
+          <button style={{ ...R.avatar, padding: 0, cursor: "pointer" }} onClick={logout} title="Log out" aria-label="Log out"><Icon name="user" size={20} color={C.parchmentDim} /></button>
+        </div>
       </div>
 
       <div style={R.screen}>
