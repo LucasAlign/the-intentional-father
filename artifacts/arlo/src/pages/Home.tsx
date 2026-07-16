@@ -868,6 +868,7 @@ function AuthGate({ loading, pendingApproval, onLogin }: { loading: boolean; pen
             <div style={G.welcome}>Welcome back.</div>
             <button style={G.googleBtn} onClick={() => onLogin("google")}>Continue with Google</button>
             <button style={{ ...G.googleBtn, marginTop: 10 }} onClick={() => onLogin("microsoft")}>Continue with Microsoft</button>
+            <div style={G.notice}>New here? Sign in above to request access.</div>
           </>
         )}
       </div>
@@ -879,6 +880,7 @@ const G: Record<string, CSSProperties> = {
   loading: { color: C.parchmentLow, fontSize: 14, letterSpacing: "0.04em" },
   welcome: { fontSize: 26, fontWeight: 400, color: C.parchment, textShadow: "0 2px 8px rgba(0,0,0,0.5)", marginBottom: 22, textAlign: "center" },
   googleBtn: { width: "100%", background: "rgba(30,26,16,0.62)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 12, color: C.parchmentMid, fontSize: 14, fontWeight: 700, padding: "13px 16px", cursor: "pointer", fontFamily: F },
+  notice: { fontSize: 12, color: C.parchmentLow, marginTop: 14, textAlign: "center" },
 };
 
 // ── Styles ────────────────────────────────────────────────────────────────────
