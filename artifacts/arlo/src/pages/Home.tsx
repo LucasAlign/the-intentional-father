@@ -871,16 +871,79 @@ function AuthGate({ loading, pendingApproval, onLogin }: { loading: boolean; pen
             <div style={G.notice}>New here? Sign in above to request access.</div>
           </>
         )}
+        <AddToHomeScreen />
       </div>
     </div>
   );
 }
+
+const ADD_HOME_STEPS: Record<"ios" | "android", string[]> = {
+  ios: [
+    "Open this page in Safari.",
+    "Tap the Share icon (square with an arrow) in the toolbar.",
+    'Scroll down and tap "Add to Home Screen".',
+    'Tap "Add" in the top right.',
+  ],
+  android: [
+    "Open this page in Chrome.",
+    "Tap the ⋮ menu icon in the toolbar.",
+    'Tap "Add to Home screen" (or "Install app").',
+    'Tap "Add" / "Install" to confirm.',
+  ],
+};
+
+function AddToHomeScreen() {
+  const [open, setOpen] = useState(false);
+  const [platform, setPlatform] = useState<"ios" | "android">(
+    () => (/iPhone|iPad|iPod/.test(navigator.userAgent) ? "ios" : "android"),
+  );
+  return (
+    <div style={G.addHome}>
+      <button style={G.addHomeToggle} onClick={() => setOpen(o => !o)}>
+        {open ? "Hide" : "📲 Add Steward to your Home Screen"}
+      </button>
+      {open && (
+        <div style={G.addHomePanel}>
+          <div style={G.addHomeTabs}>
+            <button
+              style={{ ...G.addHomeTab, ...(platform === "ios" ? G.addHomeTabOn : {}) }}
+              onClick={() => setPlatform("ios")}
+            >
+              iPhone
+            </button>
+            <button
+              style={{ ...G.addHomeTab, ...(platform === "android" ? G.addHomeTabOn : {}) }}
+              onClick={() => setPlatform("android")}
+            >
+              Android
+            </button>
+          </div>
+          {ADD_HOME_STEPS[platform].map((step, i) => (
+            <div key={i} style={G.addHomeStep}>
+              <span style={G.addHomeStepNum}>{i + 1}.</span>
+              <span>{step}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const G: Record<string, CSSProperties> = {
   wrap: { position: "relative", zIndex: 10, flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px" },
   loading: { color: C.parchmentLow, fontSize: 14, letterSpacing: "0.04em" },
   welcome: { fontSize: 26, fontWeight: 400, color: C.parchment, textShadow: "0 2px 8px rgba(0,0,0,0.5)", marginBottom: 22, textAlign: "center" },
   googleBtn: { width: "100%", background: "rgba(30,26,16,0.62)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 12, color: C.parchmentMid, fontSize: 14, fontWeight: 700, padding: "13px 16px", cursor: "pointer", fontFamily: F },
   notice: { fontSize: 12, color: C.parchmentLow, marginTop: 14, textAlign: "center" },
+  addHome: { marginTop: 18, width: "100%", textAlign: "center" },
+  addHomeToggle: { background: "none", border: "none", color: C.brassSoft, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: F, textDecoration: "underline", textUnderlineOffset: 3 },
+  addHomePanel: { marginTop: 12, background: "rgba(30,26,16,0.5)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, padding: "14px 16px", textAlign: "left" },
+  addHomeTabs: { display: "flex", gap: 8, marginBottom: 12 },
+  addHomeTab: { flex: 1, background: "rgba(20,18,11,0.6)", border: "1px solid rgba(210,190,130,0.14)", borderRadius: 8, color: C.parchmentDim, fontSize: 12, fontWeight: 600, padding: "7px 10px", cursor: "pointer", fontFamily: F, textAlign: "center" },
+  addHomeTabOn: { borderColor: C.brass, color: C.brass, boxShadow: `0 0 10px ${C.brassGlow}` },
+  addHomeStep: { fontSize: 12.5, color: C.parchmentMid, lineHeight: 1.5, marginBottom: 6, display: "flex", gap: 8 },
+  addHomeStepNum: { color: C.brassSoft, fontWeight: 700, flexShrink: 0 },
 };
 
 // ── Styles ────────────────────────────────────────────────────────────────────
