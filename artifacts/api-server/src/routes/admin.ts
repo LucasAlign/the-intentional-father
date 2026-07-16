@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { db, betaInvites } from "@workspace/db";
 import { desc, eq } from "drizzle-orm";
 import { isAdmin } from "../lib/auth";
+import { sendApprovalEmail } from "../lib/email";
 
 const router = Router();
 
@@ -33,12 +34,16 @@ router.patch('/admin/beta-invites/:id', async (req: Request, res: Response) => {
       res.status(400).json({ error: 'Status must be "active" or "pending"' });
       return;
     }
+    const [before] = await db.select().from(betaInvites).where(eq(betaInvites.id, id));
     const [row] = await db
       .update(betaInvites)
       .set({ status, acceptedAt: status === 'active' ? new Date() : null })
       .where(eq(betaInvites.id, id))
       .returning();
     if (!row) { res.status(404).json({ error: 'Invite not found' }); return; }
+    if (status === 'active' && before?.status !== 'active') {
+      sendApprovalEmail(row.email).catch((err) => req.log?.error({ err }, 'Error sending approval email'));
+    }
     res.json(row);
   } catch (err) {
     req.log?.error({ err }, 'Error updating beta invite');

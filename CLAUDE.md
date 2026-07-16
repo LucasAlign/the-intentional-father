@@ -16,6 +16,7 @@ Arlo — personal OS for the ADD entrepreneur: a daily dashboard with a scriptur
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate the Zod schemas and react-query client from `lib/api-spec/openapi.yaml` (runs `typecheck:libs` afterward)
 - Required env: `DATABASE_URL` (Postgres), `OPENAI_API_KEY` (Arlo AI chat)
 - Auth env: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`; optional `GOOGLE_ISSUER_URL` (defaults to `https://accounts.google.com`)
+- Email env: `RESEND_API_KEY` (approval emails via Resend; sending is skipped with a warning if unset); optional `RESEND_FROM_EMAIL` (defaults to `admin@lucasalign.com`)
 - No test suite exists yet — correctness is verified via `typecheck` plus manual exercise of the running app.
 
 ## Stack
@@ -47,6 +48,7 @@ Whenever the API surface changes, update `openapi.yaml` first, then run the `cod
 - `artifacts/api-server/src/routes/auth.ts` — Google OIDC + mobile auth exchange
 - `artifacts/api-server/src/routes/googleCalendar.ts` — Google Calendar OAuth connect/events (feeds the "Coming Up" tab)
 - `artifacts/api-server/src/routes/interview.ts` — AI-driven onboarding interview, backed by `profile`/`interview_messages`
+- `artifacts/api-server/src/routes/admin.ts` — beta-invite listing/approval (admin-only); `lib/email.ts` sends the approval email via Resend when a `pending` invite is set to `active`
 - `artifacts/api-server/src/middlewares/authMiddleware.ts` / `requireAuth.ts` — session-load vs. 401-gate, applied at different layers (see Request flow above)
 - `lib/replit-auth-web/` — browser `useAuth()` hook (login/logout/user state)
 - `lib/db/src/schema/arlo.ts` — app data tables; `schema/auth.ts` — session/user/beta-invite tables
