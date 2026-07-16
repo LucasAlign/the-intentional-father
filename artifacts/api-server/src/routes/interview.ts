@@ -5,6 +5,7 @@ import { eq, asc } from "drizzle-orm";
 
 const router = Router();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
+const TOTAL_INTERVIEW_QUESTIONS = 10;
 
 type OpenAIResponsesApiResponse = {
   output_text?: string;
@@ -22,7 +23,7 @@ function getOpenAIMessage(data: OpenAIResponsesApiResponse): string | undefined 
 const INTERVIEW_SYSTEM_PROMPT = `You are Steward — a direct, gospel-centered planning partner meeting someone for the first time.
 Your mission: get to know them well enough to be genuinely useful across all of life — work, marriage, family, faith.
 
-Work through these 6 areas naturally, like a mentor conversation — not a form or checklist:
+Work through these 6 areas naturally, like a mentor conversation — not a form or checklist. You have up to 10 questions total, so use any extras to push deeper with a follow-up before moving on:
 1. Name, role, and season of life (who are you right now?)
 2. Their #1 priority — what comes first? What's non-negotiable?
 3. Businesses or main work — what do they do, any patterns or common blockers?
@@ -37,7 +38,7 @@ Rules:
 - Acknowledge patterns you hear ("That sounds like your 80% problem, doesn't it?").
 - Reference Scripture naturally where it fits — not forced, not preachy.
 - Tone: direct and warm, like a brother who tells the truth and sees potential.
-- After all 6 areas are covered, give a clear summary of how you understand them and ask: "Does that sound right?"
+- By question 10 at the latest, give a clear summary of how you understand them and ask: "Does that sound right?"
 - When they confirm the summary is accurate, end your response with exactly this tag on its own line: [INTERVIEW_COMPLETE]`;
 
 const EXTRACT_SYSTEM_PROMPT = `You are a data extraction assistant. Given an interview conversation, extract a structured user profile as JSON.
@@ -138,7 +139,7 @@ router.get("/interview/history", async (req: Request, res: Response) => {
       .orderBy(asc(interviewMessages.createdAt));
 
     const userCount = msgs.filter((m) => m.role === "user").length;
-    const questionNumber = Math.min(userCount + 1, 6);
+    const questionNumber = Math.min(userCount + 1, TOTAL_INTERVIEW_QUESTIONS);
 
     const [profileRow] = await db
       .select()
@@ -193,7 +194,7 @@ router.post("/interview", async (req: Request, res: Response) => {
       const userCount = existing.filter((m) => m.role === "user").length;
       res.json({
         message: existing[existing.length - 1]?.content ?? "",
-        questionNumber: Math.min(userCount + 1, 6),
+        questionNumber: Math.min(userCount + 1, TOTAL_INTERVIEW_QUESTIONS),
       });
       return;
     }
@@ -215,10 +216,10 @@ router.post("/interview", async (req: Request, res: Response) => {
     });
 
     const userCount = existing.filter((m) => m.role === "user").length + (isStart ? 0 : 1);
-    const questionNumber = Math.min(userCount + 1, 6);
+    const questionNumber = Math.min(userCount + 1, TOTAL_INTERVIEW_QUESTIONS);
 
-    // Check if interview is complete
-    if (assistantText.includes("[INTERVIEW_COMPLETE]")) {
+    // Check if interview is complete, or force it once the question cap is hit
+    if (assistantText.includes("[INTERVIEW_COMPLETE]") || userCount >= TOTAL_INTERVIEW_QUESTIONS) {
       try {
         const allMessages = await db
           .select()
@@ -253,7 +254,7 @@ router.post("/interview", async (req: Request, res: Response) => {
           });
 
         const cleanMessage = assistantText.replace("[INTERVIEW_COMPLETE]", "").trimEnd();
-        res.json({ message: cleanMessage, questionNumber: 6, complete: true, profile: profileData });
+        res.json({ message: cleanMessage, questionNumber: TOTAL_INTERVIEW_QUESTIONS, complete: true, profile: profileData });
         return;
       } catch (extractErr) {
         req.log?.error({ extractErr }, "Profile extraction failed");
@@ -266,7 +267,7 @@ router.post("/interview", async (req: Request, res: Response) => {
             set: { onboarded: true, updatedAt: new Date() },
           });
         const cleanMessage = assistantText.replace("[INTERVIEW_COMPLETE]", "").trimEnd();
-        res.json({ message: cleanMessage, questionNumber: 6, complete: true });
+        res.json({ message: cleanMessage, questionNumber: TOTAL_INTERVIEW_QUESTIONS, complete: true });
         return;
       }
     }

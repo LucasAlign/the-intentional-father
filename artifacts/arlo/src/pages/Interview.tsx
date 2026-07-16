@@ -216,9 +216,9 @@ export default function Interview() {
           <div style={R.tagline}>GETTING TO KNOW YOU</div>
         </div>
         <div style={R.progressWrap}>
-          <div style={R.progressLabel}>Question {Math.min(questionNumber, 6)} of 6</div>
+          <div style={R.progressLabel}>Question {Math.min(questionNumber, 10)} of 10</div>
           <div style={R.progressBar}>
-            <div style={{ ...R.progressFill, width: `${Math.min((questionNumber / 6) * 100, 100)}%` }} />
+            <div style={{ ...R.progressFill, width: `${Math.min((questionNumber / 10) * 100, 100)}%` }} />
           </div>
           {!complete && <button style={R.skipBtn} onClick={skip}>Skip for now</button>}
         </div>
