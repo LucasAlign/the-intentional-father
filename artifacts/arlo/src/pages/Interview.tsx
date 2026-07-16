@@ -231,7 +231,7 @@ export default function Interview() {
         )}
         {messages.map((m, i) => (
           <div key={i} style={{ ...R.bubble, ...(m.role === "user" ? R.bubbleU : R.bubbleA) }}>
-            {m.role === "assistant" && <div style={R.bubbleName}>ARLO</div>}
+            {m.role === "assistant" && <div style={R.bubbleName}>STEWARD</div>}
             <div style={{ ...R.bubbleText, ...(m.role === "user" ? R.bubbleTextU : {}) }}>
               {m.content}
             </div>
@@ -239,7 +239,7 @@ export default function Interview() {
         ))}
         {sending && (
           <div style={{ ...R.bubble, ...R.bubbleA }}>
-            <div style={R.bubbleName}>ARLO</div>
+            <div style={R.bubbleName}>STEWARD</div>
             <div style={{ ...R.bubbleText, color: C.parchmentDim }}>…</div>
           </div>
         )}

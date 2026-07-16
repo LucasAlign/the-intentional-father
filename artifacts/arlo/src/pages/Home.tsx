@@ -331,7 +331,7 @@ export default function Home() {
           {NAV.map(n => (
             <button key={n.id} style={R.navBtn} onClick={() => setTab(n.id)}>
               {n.icon === "arloA"
-                ? <div style={{ ...R.arloA, ...(tab === n.id ? R.arloAOn : {}) }}>A</div>
+                ? <div style={{ ...R.arloA, ...(tab === n.id ? R.arloAOn : {}) }}>S</div>
                 : <Icon name={n.icon as IconName} size={20} color={tab === n.id ? C.brass : C.parchmentLow} stroke={tab === n.id ? 1.9 : 1.6} />}
               <span style={{ ...R.navLabel, ...(tab === n.id ? R.navLabelOn : {}) }}>{n.label}</span>
             </button>
