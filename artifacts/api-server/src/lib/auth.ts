@@ -61,12 +61,40 @@ function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
+// Comma-separated allowlist of emails permitted to approve beta sign-ups.
+// Defaults to the app owner so the admin page works without extra setup.
+// Shared with routes/admin.ts so admin emails also bypass the beta-invite gate below.
+export const ADMIN_EMAILS = new Set(
+  (process.env.ADMIN_EMAILS ?? "witeyford@gmail.com")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean),
+);
+
+export function isAdmin(email: string | null | undefined): boolean {
+  return !!email && ADMIN_EMAILS.has(email.toLowerCase());
+}
+
 /**
  * Looks up the invite status for an email, auto-creating a `pending` row for
  * first-time sign-in attempts so unapproved users can be reviewed later.
+ * Admin emails are auto-activated so the app owner can never be locked out
+ * behind the beta gate they'd otherwise need admin access to clear.
  */
 export async function resolveInviteStatus(email: string): Promise<string> {
   const normalized = normalizeEmail(email);
+
+  if (isAdmin(normalized)) {
+    const [row] = await db
+      .insert(betaInvites)
+      .values({ email: normalized, status: "active", acceptedAt: new Date() })
+      .onConflictDoUpdate({
+        target: betaInvites.email,
+        set: { status: "active", acceptedAt: new Date() },
+      })
+      .returning();
+    return row?.status ?? "active";
+  }
 
   const [existing] = await db
     .select()

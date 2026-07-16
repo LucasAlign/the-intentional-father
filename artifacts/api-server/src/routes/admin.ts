@@ -1,21 +1,9 @@
 import { Router, Request, Response } from "express";
 import { db, betaInvites } from "@workspace/db";
 import { desc, eq } from "drizzle-orm";
+import { isAdmin } from "../lib/auth";
 
 const router = Router();
-
-// Comma-separated allowlist of emails permitted to approve beta sign-ups.
-// Defaults to the app owner so the admin page works without extra setup.
-const ADMIN_EMAILS = new Set(
-  (process.env.ADMIN_EMAILS ?? "witeyford@gmail.com")
-    .split(",")
-    .map((e) => e.trim().toLowerCase())
-    .filter(Boolean),
-);
-
-function isAdmin(email: string | null | undefined): boolean {
-  return !!email && ADMIN_EMAILS.has(email.toLowerCase());
-}
 
 // GET /api/admin/is-admin
 router.get('/admin/is-admin', (req: Request, res: Response) => {
