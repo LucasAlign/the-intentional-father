@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { db } from "@workspace/db";
 import { profile as profileTable, interviewMessages } from "@workspace/db";
 import { eq, asc } from "drizzle-orm";
+import { normalizeProfileData } from "../lib/profile";
 
 const router = Router();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
@@ -123,7 +124,7 @@ router.get("/profile", async (req: Request, res: Response) => {
       .from(profileTable)
       .where(eq(profileTable.userId, req.user!.id))
       .limit(1);
-    res.json({ onboarded: row?.onboarded ?? false, data: row?.data ?? null });
+    res.json({ onboarded: row?.onboarded ?? false, data: normalizeProfileData(row?.data ?? null) });
   } catch (err) {
     req.log?.error({ err }, "Error fetching profile");
     res.status(500).json({ error: "Failed to fetch profile" });

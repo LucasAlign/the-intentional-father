@@ -141,11 +141,11 @@ function weekDays() {
 
 
 const JOURNAL_PROMPTS_MARRIED = [
-  "What's one specific way I can love my wife better today?",
+  "What's one specific way I can love my spouse better today?",
   "Where do my kids need patience, attention, or encouragement from me today?",
   "What's been bothering me that I need to name honestly instead of carrying quietly?",
   "What am I thankful for today, and how can I say it out loud?",
-  "What would make my wife feel seen before the day is over?",
+  "What would make my spouse feel seen before the day is over?",
   "What's one small moment I can create with my kids today?",
   "Where am I tempted to withdraw, and what would love do instead?",
 ];
@@ -189,9 +189,9 @@ function journalPromptsFor(profile: ProfileData | null): string[] {
 }
 
 function primaryRelationship(profile: ProfileData | null): Relationship | null {
-  const relationships = profile?.relationships;
-  if (!relationships?.length) return null;
-  return relationships.find(r => isSpouseType(r.type)) ?? relationships[0];
+  // Relationships are ordered by the person's stated importance during onboarding —
+  // respect that ordering rather than assuming a spouse is always primary.
+  return profile?.relationships?.[0] ?? null;
 }
 
 const EXERCISE_PROMPTS = [
@@ -453,11 +453,14 @@ function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSen
       if (r.ok) refreshTasks();
     } catch { /* ignore */ }
   }
-  async function complete(id: number) {
+  async function complete(id: number): Promise<boolean> {
     try {
       const r = await fetch(`${API}/tasks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: true }) });
       if (r.ok) refreshTasks();
-    } catch { /* ignore */ }
+      return r.ok;
+    } catch {
+      return false;
+    }
   }
   async function deleteTask(id: number) {
     setDeletingIds(prev => prev.includes(id) ? prev : [...prev, id]);
@@ -570,7 +573,7 @@ function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSen
   );
 }
 
-function SwipePriority({ task, index, isLast, onComplete, onDelete }: { task: Task; index: number; isLast: boolean; onComplete: (id: number) => void; onDelete: (id: number) => void }) {
+function SwipePriority({ task, index, isLast, onComplete, onDelete }: { task: Task; index: number; isLast: boolean; onComplete: (id: number) => Promise<boolean>; onDelete: (id: number) => void }) {
   const [startX, setStartX] = useState<number | null>(null);
   const [offset, setOffset] = useState(0);
   const [dragging, setDragging] = useState(false);
@@ -578,7 +581,10 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete }: { task: Ta
 
   function crossOff() {
     setCrossedOff(true);
-    setTimeout(() => onComplete(task.id), 260);
+    setTimeout(async () => {
+      const ok = await onComplete(task.id);
+      if (!ok) setCrossedOff(false);
+    }, 260);
   }
 
   function down(e: PointerEvent<HTMLDivElement>) {

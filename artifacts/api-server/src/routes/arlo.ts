@@ -3,6 +3,7 @@ import { db } from "@workspace/db";
 import { journalEntries, chatMessages, tasks, commits, jobs, comingUp, profile as profileTable } from "@workspace/db";
 import { eq, desc, asc, gte, lte, and } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
+import { normalizeProfileData, type ProfileData } from "../lib/profile";
 
 const router = Router();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
@@ -25,21 +26,6 @@ function getOpenAIMessage(data: OpenAIResponsesApiResponse): string | undefined 
     .find((text): text is string => Boolean(text));
 }
 
-interface RelationshipProfile {
-  name?: string | null;
-  type?: string | null;
-  notes?: string | null;
-  biggest_challenge?: string | null;
-}
-
-interface ProfileData {
-  name?: string | null;
-  season_of_life?: string | null;
-  relationships?: RelationshipProfile[];
-  guardrails?: { do_not_suggest?: string[]; always_remind_of?: string | null };
-  voice?: string | null;
-}
-
 function buildArloSystemPrompt(profileData: ProfileData | null, fallbackName: string): string {
   const name = profileData?.name || fallbackName || "friend";
   const season = profileData?.season_of_life ? `\nTheir season of life: ${profileData.season_of_life}.` : "";
@@ -47,8 +33,9 @@ function buildArloSystemPrompt(profileData: ProfileData | null, fallbackName: st
     ? `\nKey relationships: ${profileData.relationships
         .map((r) => {
           const label = r.name || r.notes || r.type || "someone close to them";
+          const commitment = r.commitments ? ` — committed to: ${r.commitments}` : "";
           const friction = r.biggest_challenge ? ` — friction: ${r.biggest_challenge}` : "";
-          return `${label}${friction}`;
+          return `${label}${commitment}${friction}`;
         })
         .join("; ")}.`
     : "";
@@ -72,6 +59,7 @@ Guidelines:
 - Default to 1-3 short paragraphs. Be concise unless ${name} explicitly asks for depth or the situation warrants more.
 - Prefer one clear next action or one pointed question over a long list.
 - Use memory: call back to what they said before, name patterns, notice when a commitment hasn't moved.
+- Hold them accountable to commitments they've made to the people who matter most to them, by name where you know it — the same way you'd hold a brother to a promise.
 - Encourage real relationships and real action, never foster dependence on the app.${doNotSuggest}${alwaysRemind}${voice}
 
 You are a tool, not a pastor, counselor, or substitute for the people in their life.`;
@@ -107,7 +95,8 @@ router.get('/tasks', async (req: Request, res: Response) => {
       .select()
       .from(tasks)
       .where(and(eq(tasks.userId, req.user!.id), eq(tasks.done, false)))
-      .orderBy(desc(tasks.createdAt));
+      .orderBy(desc(tasks.createdAt))
+      .limit(50);
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch tasks' });
@@ -406,7 +395,7 @@ router.post('/chat', async (req: Request, res: Response) => {
       context += '\n';
     }
 
-    const profileData = (profileRow[0]?.data ?? null) as ProfileData | null;
+    const profileData = normalizeProfileData(profileRow[0]?.data ?? null);
     const ARLO_SYSTEM_PROMPT = buildArloSystemPrompt(profileData, req.user!.firstName ?? "");
 
     const apiKey = process.env.OPENAI_API_KEY;
