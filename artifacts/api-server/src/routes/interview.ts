@@ -24,10 +24,10 @@ const INTERVIEW_SYSTEM_PROMPT = `You are Steward — a direct, gospel-centered p
 Your mission: get to know them well enough to be genuinely useful across all of life — work, marriage, family, faith.
 
 Work through these 6 areas naturally, like a mentor conversation — not a form or checklist. You have up to 10 questions total, so use any extras to push deeper with a follow-up before moving on:
-1. Name, role, and season of life (who are you right now?)
+1. Name, role, and season of life — ask this open-ended (single, dating, married, parenting young kids, empty nester, widowed, retired, or anything else). Don't assume marriage or kids.
 2. Their #1 priority — what comes first? What's non-negotiable?
 3. Businesses or main work — what do they do, any patterns or common blockers?
-4. Family — spouse's name, kids, biggest marriage challenge right now
+4. Key relationships — who matters most to them right now given their season of life (a spouse, kids, parents, close friends, a mentee — whatever actually fits), names if they share them, and the biggest friction point in those relationships right now
 5. Where do plans stall? What drains decisions? Where does execution break down?
 6. Guardrails — what should you never suggest? How direct do they want you to be?
 
@@ -44,7 +44,7 @@ Rules:
 const EXTRACT_SYSTEM_PROMPT = `You are a data extraction assistant. Given an interview conversation, extract a structured user profile as JSON.
 Output ONLY valid JSON — no markdown, no code blocks, no explanation, no commentary. Just the JSON object.
 
-Use this exact schema (use null for unknown fields):
+Use this exact schema (use null for unknown fields). Order the "relationships" array with the person's most important relationship first, as they emphasized it in conversation — don't assume a spouse belongs first if they didn't lead with one:
 {
   "name": "string",
   "season_of_life": "string describing their current life stage",
@@ -62,12 +62,15 @@ Use this exact schema (use null for unknown fields):
       "key_metrics": ["array of strings"]
     }
   ],
-  "family": {
-    "spouse_name": "string or null",
-    "children": "number or null",
-    "marriage_commitments": "string or null",
-    "biggest_challenge": "string or null"
-  },
+  "relationships": [
+    {
+      "name": "string or null",
+      "type": "string — e.g. spouse, child, parent, sibling, close friend, mentee",
+      "notes": "string or null — role/context, e.g. 'wife', 'oldest son'",
+      "commitments": "string or null",
+      "biggest_challenge": "string or null"
+    }
+  ],
   "planning_profile": {
     "decision_drain": "string or null",
     "common_failure_point": "string or null",
@@ -111,6 +114,21 @@ async function callOpenAI(
   if (!text) throw new Error("Empty response from OpenAI");
   return text;
 }
+
+// GET /api/profile
+router.get("/profile", async (req: Request, res: Response) => {
+  try {
+    const [row] = await db
+      .select()
+      .from(profileTable)
+      .where(eq(profileTable.userId, req.user!.id))
+      .limit(1);
+    res.json({ onboarded: row?.onboarded ?? false, data: row?.data ?? null });
+  } catch (err) {
+    req.log?.error({ err }, "Error fetching profile");
+    res.status(500).json({ error: "Failed to fetch profile" });
+  }
+});
 
 // GET /api/interview/status
 router.get("/interview/status", async (req: Request, res: Response) => {
@@ -319,12 +337,22 @@ router.post("/test/complete-interview", async (req: Request, res: Response) => {
           key_metrics: ["quote conversion", "delivery on time"],
         },
       ],
-      family: {
-        spouse_name: "Wife",
-        children: 3,
-        marriage_commitments: "weekly date, family dinner",
-        biggest_challenge: "staying present when businesses pull",
-      },
+      relationships: [
+        {
+          name: "Sarah",
+          type: "spouse",
+          notes: "wife",
+          commitments: "weekly date, family dinner",
+          biggest_challenge: "staying present when businesses pull",
+        },
+        {
+          name: null,
+          type: "child",
+          notes: "3 kids",
+          commitments: null,
+          biggest_challenge: null,
+        },
+      ],
       planning_profile: {
         decision_drain: "too many options",
         common_failure_point: "stalls at 80%",

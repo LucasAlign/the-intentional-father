@@ -46,6 +46,8 @@ interface Job { id: number; biz: string; name: string; stage: string; due: strin
 interface Event { id: number; date: string; time: string; title: string; sub: string; tag: string; kind: string; }
 interface Message { role: "user" | "assistant"; content: string; }
 interface Journal { reflect: string; commit_text: string; }
+interface Relationship { name: string | null; type: string; notes?: string | null; commitments?: string | null; biggest_challenge?: string | null; }
+interface ProfileData { name?: string | null; season_of_life?: string | null; relationships?: Relationship[]; }
 
 const API = "/api";
 const WOOD = `${import.meta.env.BASE_URL}woodgrain.png`;
@@ -112,7 +114,7 @@ function Icon({ name, size = 15, color = C.brassSoft, stroke = 1.6 }: { name: Ic
 
 const NAV: { id: TabId; icon: IconName | "arloA"; label: string }[] = [
   { id: "today", icon: "sun", label: "Today" },
-  { id: "her", icon: "heart", label: "Her" },
+  { id: "her", icon: "heart", label: "Relationships" },
   { id: "work", icon: "work", label: "Work" },
   { id: "arlo", icon: "arloA", label: "Steward" },
   { id: "week", icon: "cal", label: "Week" },
@@ -138,7 +140,7 @@ function weekDays() {
 }
 
 
-const JOURNAL_PROMPTS = [
+const JOURNAL_PROMPTS_MARRIED = [
   "What's one specific way I can love my wife better today?",
   "Where do my kids need patience, attention, or encouragement from me today?",
   "What's been bothering me that I need to name honestly instead of carrying quietly?",
@@ -147,6 +149,50 @@ const JOURNAL_PROMPTS = [
   "What's one small moment I can create with my kids today?",
   "Where am I tempted to withdraw, and what would love do instead?",
 ];
+
+const JOURNAL_PROMPTS_EMPTY_NESTER = [
+  "Which coworker or teammate could use more of my real attention today?",
+  "Who at work have I been too busy or too guarded to really see lately?",
+  "What's one specific way I can check in on my kids without hovering?",
+  "What's been bothering me that I need to name honestly instead of carrying quietly?",
+  "What am I thankful for today, and how can I say it out loud?",
+  "Where am I tempted to withdraw, and what would love do instead?",
+  "Who could use an encouraging word from me before the day is over?",
+];
+
+const JOURNAL_PROMPTS_GENERAL = [
+  "Who in my life could use a real conversation today, not just a text?",
+  "Where do the people closest to me need patience, attention, or encouragement today?",
+  "What's been bothering me that I need to name honestly instead of carrying quietly?",
+  "What am I thankful for today, and how can I say it out loud?",
+  "Who could use an encouraging word from me before the day is over?",
+  "What's one small moment of real connection I can create today?",
+  "Where am I tempted to withdraw, and what would love do instead?",
+];
+
+function isSpouseType(type: string | null | undefined): boolean {
+  return Boolean(type && /spouse|wife|husband/i.test(type));
+}
+
+function seasonCategory(profile: ProfileData | null): "married" | "empty_nester" | "general" {
+  const season = (profile?.season_of_life || "").toLowerCase();
+  if (season.includes("empty nest")) return "empty_nester";
+  if (season.includes("married") || profile?.relationships?.some(r => isSpouseType(r.type))) return "married";
+  return "general";
+}
+
+function journalPromptsFor(profile: ProfileData | null): string[] {
+  const category = seasonCategory(profile);
+  if (category === "married") return JOURNAL_PROMPTS_MARRIED;
+  if (category === "empty_nester") return JOURNAL_PROMPTS_EMPTY_NESTER;
+  return JOURNAL_PROMPTS_GENERAL;
+}
+
+function primaryRelationship(profile: ProfileData | null): Relationship | null {
+  const relationships = profile?.relationships;
+  if (!relationships?.length) return null;
+  return relationships.find(r => isSpouseType(r.type)) ?? relationships[0];
+}
 
 const EXERCISE_PROMPTS = [
   "Walk outside, move your body, or stretch before the day starts.",
@@ -208,7 +254,7 @@ function jobCalendarEvent(job: Job): Event | null {
 
 // ── Root ──────────────────────────────────────────────────────────────────────
 export default function Home() {
-  const { isLoading, isAuthenticated, pendingApproval, login, logout } = useAuth();
+  const { isLoading, isAuthenticated, pendingApproval, user, login, logout } = useAuth();
   const [, setLocation] = useLocation();
   const [tab, setTab] = useState<TabId>("today");
 
@@ -227,6 +273,8 @@ export default function Home() {
   const [editJob, setEditJob] = useState<Job | null>(null);
   const [calendarAccounts, setCalendarAccounts] = useState<string[]>([]);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [profileMenu, setProfileMenu] = useState(false);
+  const [profile, setProfile] = useState<ProfileData | null>(null);
 
   const refreshTasks = useCallback(() => {
     getList<Task>(`${API}/tasks`).then(setTasks);
@@ -261,6 +309,7 @@ export default function Home() {
     getList<Event>(`${API}/coming-up?start=${start}&end=${end}`).then(setWeek);
     getList<Message>(`${API}/chat-history`).then((m) => setChat(prev => prev.length ? prev : m));
     getJson(`${API}/admin/is-admin`, { isAdmin: false }).then((d) => setIsAdmin(isRecord(d) && d.isAdmin === true));
+    getJson(`${API}/profile`, null).then((d) => { if (isRecord(d) && isRecord(d.data)) setProfile(d.data as unknown as ProfileData); });
     refreshTasks(); refreshCommits(); refreshJobs(); refreshCalendarStatus();
   }, [isAuthenticated, setLocation, refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus]);
 
@@ -296,6 +345,9 @@ export default function Home() {
 
   if (!isAuthenticated) return <AuthGate loading={isLoading} pendingApproval={pendingApproval} onLogin={login} />;
 
+  const primaryRel = primaryRelationship(profile);
+  const relTabLabel = primaryRel?.name || "Relationships";
+
   return (
     <div style={R.root}>
       <style>{`*{box-sizing:border-box}::-webkit-scrollbar{display:none}input::placeholder,textarea::placeholder{color:${C.parchmentLow}}@keyframes micPulse{0%,100%{box-shadow:0 0 14px ${C.brassGlow}}50%{box-shadow:0 0 26px ${C.brassGlow},0 0 40px rgba(216,170,62,0.2)}}`}</style>
@@ -313,13 +365,13 @@ export default function Home() {
               <Icon name="target" size={18} color={C.parchmentDim} />
             </button>
           )}
-          <button style={{ ...R.avatar, padding: 0, cursor: "pointer" }} onClick={logout} title="Log out" aria-label="Log out"><Icon name="user" size={20} color={C.parchmentDim} /></button>
+          <button style={{ ...R.avatar, padding: 0, cursor: "pointer" }} onClick={() => setProfileMenu(true)} title="Profile" aria-label="Profile"><Icon name="user" size={20} color={C.parchmentDim} /></button>
         </div>
       </div>
 
       <div style={R.screen}>
-        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} />}
-        {tab === "her" && <Her commits={commits} refresh={refreshCommits} />}
+        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} />}
+        {tab === "her" && <Relationships commits={commits} refresh={refreshCommits} primaryRel={primaryRel} label={relTabLabel} />}
         {tab === "work" && <Work jobs={jobs} onJob={() => setJobModal(true)} onEdit={setEditJob} />}
         {tab === "arlo" && <ArloChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} />}
         {tab === "week" && <WeekView events={week} jobs={jobs} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await fetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
@@ -333,7 +385,7 @@ export default function Home() {
               {n.icon === "arloA"
                 ? <div style={{ ...R.arloA, ...(tab === n.id ? R.arloAOn : {}) }}>S</div>
                 : <Icon name={n.icon as IconName} size={20} color={tab === n.id ? C.brass : C.parchmentLow} stroke={tab === n.id ? 1.9 : 1.6} />}
-              <span style={{ ...R.navLabel, ...(tab === n.id ? R.navLabelOn : {}) }}>{n.label}</span>
+              <span style={{ ...R.navLabel, ...(tab === n.id ? R.navLabelOn : {}) }}>{n.id === "her" ? relTabLabel : n.label}</span>
             </button>
           ))}
         </nav>
@@ -341,13 +393,29 @@ export default function Home() {
 
       {jobModal && <JobModal onClose={() => setJobModal(false)} onCreated={refreshJobs} bizSuggestions={[...new Set(jobs.map(j => j.biz))]} />}
       {editJob && <JobEditModal job={editJob} onClose={() => setEditJob(null)} onSaved={refreshJobs} onDeleted={refreshJobs} />}
+      {profileMenu && <ProfileMenu name={user?.firstName} email={user?.email} onClose={() => setProfileMenu(false)} onLogout={logout} />}
+    </div>
+  );
+}
+
+function ProfileMenu({ name, email, onClose, onLogout }: { name?: string | null; email?: string | null; onClose: () => void; onLogout: () => void }) {
+  return (
+    <div style={M.overlay} onClick={onClose}>
+      <div style={M.sheet} onClick={e => e.stopPropagation()}>
+        <div style={M.strip} />
+        <div style={M.head}><div style={M.title}>{name || email || "Profile"}</div></div>
+        <a style={{ ...M.next, textDecoration: "none", display: "block", textAlign: "center" }} href="mailto:admin@lucasalign.com?subject=Steward%20feedback">Contact Support / Feedback</a>
+        <button style={{ ...M.next, background: "none", border: "1px solid rgba(210,190,130,0.18)", color: C.parchmentDim, boxShadow: "none" }} onClick={onLogout}>Log Out</button>
+        <button style={M.cancel} onClick={onClose}>Cancel</button>
+      </div>
     </div>
   );
 }
 
 // ── Today ───────────────────────────────────────────────────────────────────
-function Today({ verse, tasks, journal, events, onSend, ci, setCi, sending, onSaveJournal, refreshTasks }: {
-  verse: string; tasks: Task[]; journal: Journal; events: Event[];
+function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks }: {
+  verse: string; tasks: Task[]; journal: Journal; events: Event[]; name?: string | null;
+  profile: ProfileData | null; primaryRel: Relationship | null;
   onSend: (m?: string) => void; ci: string; setCi: (v: string) => void; sending: boolean;
   onSaveJournal: (j: Journal) => void; refreshTasks: () => void;
 }) {
@@ -361,13 +429,20 @@ function Today({ verse, tasks, journal, events, onSend, ci, setCi, sending, onSa
   useEffect(() => { setIntent(journal.commit_text); setReflect(journal.reflect); }, [journal.commit_text, journal.reflect]);
 
   const hr = new Date().getHours();
-  const greeting = `Good ${hr < 12 ? "morning" : hr < 18 ? "afternoon" : "evening"}, Bryant.`;
+  const greeting = `Good ${hr < 12 ? "morning" : hr < 18 ? "afternoon" : "evening"}${name ? `, ${name}` : ""}.`;
   const sep = verse.indexOf(" — ");
   const vRef = sep === -1 ? "" : verse.slice(0, sep);
   const vText = sep === -1 ? verse : verse.slice(sep + 3);
-  const top3 = tasks.filter(t => !deletingIds.includes(t.id)).slice(0, 3);
-  const journalPrompt = rotatingItem(JOURNAL_PROMPTS);
+  const openTasks = tasks.filter(t => !deletingIds.includes(t.id));
+  const journalPrompt = rotatingItem(journalPromptsFor(profile));
   const exercisePrompt = rotatingItem(EXERCISE_PROMPTS);
+  const isSpouseRel = primaryRel && isSpouseType(primaryRel.type);
+  const intentionLabel = isSpouseRel ? "MARRIAGE INTENTION" : primaryRel ? `${(primaryRel.type || "relationship").toUpperCase()} INTENTION` : "RELATIONSHIP INTENTION";
+  const intentionPlaceholder = isSpouseRel
+    ? "What's your intention for your marriage today?"
+    : primaryRel?.name
+      ? `What's your intention with ${primaryRel.name} today?`
+      : "What's your intention for the people who matter most today?";
 
   async function addTask() {
     const t = newTask.trim();
@@ -409,12 +484,12 @@ function Today({ verse, tasks, journal, events, onSend, ci, setCi, sending, onSa
       </div>
 
       <div style={S.cardCentered}>
-        <div style={S.eyebrow}><Icon name="heart" /><span style={S.eyeText}>MARRIAGE INTENTION</span></div>
+        <div style={S.eyebrow}><Icon name="heart" /><span style={S.eyeText}>{intentionLabel}</span></div>
         <textarea
           style={S.intentInput}
           value={intent}
           rows={2}
-          placeholder="What's your intention for your marriage today?"
+          placeholder={intentionPlaceholder}
           onChange={e => setIntent(e.target.value)}
           onBlur={() => intent !== journal.commit_text && onSaveJournal({ ...journal, commit_text: intent })}
         />
@@ -429,14 +504,14 @@ function Today({ verse, tasks, journal, events, onSend, ci, setCi, sending, onSa
       </div>
 
       <div style={S.card}>
-        <div style={S.eyebrow}><Icon name="target" /><span style={S.eyeText}>TOP 3 PRIORITIES</span></div>
-        {top3.length === 0 ? (
+        <div style={S.eyebrow}><Icon name="target" /><span style={S.eyeText}>PRIORITIES</span></div>
+        {openTasks.length === 0 ? (
           <div style={S.empty}>No open priorities. Add the one thing that matters most.</div>
         ) : (
           <div style={{ position: "relative", marginTop: 4 }}>
             <div style={S.prioLine} />
-            {top3.map((t, i) => (
-              <SwipePriority key={t.id} task={t} index={i} isLast={i === top3.length - 1} onComplete={complete} onDelete={deleteTask} />
+            {openTasks.map((t, i) => (
+              <SwipePriority key={t.id} task={t} index={i} isLast={i === openTasks.length - 1} onComplete={complete} onDelete={deleteTask} />
             ))}
           </div>
         )}
@@ -499,6 +574,12 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete }: { task: Ta
   const [startX, setStartX] = useState<number | null>(null);
   const [offset, setOffset] = useState(0);
   const [dragging, setDragging] = useState(false);
+  const [crossedOff, setCrossedOff] = useState(false);
+
+  function crossOff() {
+    setCrossedOff(true);
+    setTimeout(() => onComplete(task.id), 260);
+  }
 
   function down(e: PointerEvent<HTMLDivElement>) {
     setStartX(e.clientX);
@@ -526,9 +607,9 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete }: { task: Ta
         onPointerUp={up}
         onPointerCancel={up}
       >
-        <button style={S.prioNum} title="Mark done" onClick={() => onComplete(task.id)}>{index + 1}</button>
-        <div style={{ flex: 1, paddingTop: 3 }}>
-          <div style={S.prioTitle}>{task.text}</div>
+        <button style={S.prioNum} title="Mark done" onClick={crossOff} disabled={crossedOff}>{index + 1}</button>
+        <div style={{ flex: 1, paddingTop: 3, opacity: crossedOff ? 0.45 : 1, transition: "opacity 0.2s ease" }}>
+          <div style={{ ...S.prioTitle, textDecoration: crossedOff ? "line-through" : "none", transition: "text-decoration-color 0.2s ease" }}>{task.text}</div>
           {task.category && <div style={S.prioSub}>{task.category}</div>}
         </div>
       </div>
@@ -550,9 +631,15 @@ function TodayMsgBar({ ci, setCi, sending, onSend }: { ci: string; setCi: (v: st
   );
 }
 
-// ── Her ───────────────────────────────────────────────────────────────────
-function Her({ commits, refresh }: { commits: Commit[]; refresh: () => void }) {
+// ── Relationships ─────────────────────────────────────────────────────────────
+function Relationships({ commits, refresh, primaryRel, label }: { commits: Commit[]; refresh: () => void; primaryRel: Relationship | null; label: string }) {
   const [val, setVal] = useState("");
+  const intentionText = primaryRel?.name
+    ? `Ask ${primaryRel.name} about their week before you talk about yours.`
+    : "Log commitments to the people who matter most — spouse, kids, parents, close friends.";
+  const subtitle = primaryRel
+    ? "Commitments you've made. Don't let them disappear."
+    : "Log the commitments you make to the people closest to you.";
   const open = commits.filter(c => !c.done), done = commits.filter(c => c.done);
 
   async function add() {
@@ -567,9 +654,9 @@ function Her({ commits, refresh }: { commits: Commit[]; refresh: () => void }) {
 
   return (
     <div style={S.scroll}>
-      <div style={S.pageTitle}>Her</div>
-      <div style={S.pageSub}>Commitments you've made. Don't let them disappear.</div>
-      <div style={S.card}><div style={S.eyebrow}><Icon name="heart" /><span style={S.eyeText}>TODAY'S INTENTION</span></div><div style={S.intent}>Ask her about her week before you talk about yours.</div></div>
+      <div style={S.pageTitle}>{label}</div>
+      <div style={S.pageSub}>{subtitle}</div>
+      <div style={S.card}><div style={S.eyebrow}><Icon name="heart" /><span style={S.eyeText}>TODAY'S INTENTION</span></div><div style={S.intent}>{intentionText}</div></div>
       <div style={S.logRow}>
         <input style={S.logInput} value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => e.key === "Enter" && add()} placeholder="Log a commitment you made..." />
         <button style={S.logBtn} onClick={add}>Log</button>

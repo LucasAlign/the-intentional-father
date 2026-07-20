@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { db } from "@workspace/db";
-import { journalEntries, chatMessages, tasks, commits, jobs, comingUp } from "@workspace/db";
+import { journalEntries, chatMessages, tasks, commits, jobs, comingUp, profile as profileTable } from "@workspace/db";
 import { eq, desc, asc, gte, lte, and } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
 
@@ -23,6 +23,58 @@ function getOpenAIMessage(data: OpenAIResponsesApiResponse): string | undefined 
     ?.flatMap((item) => item.content ?? [])
     .map((content) => content.text)
     .find((text): text is string => Boolean(text));
+}
+
+interface RelationshipProfile {
+  name?: string | null;
+  type?: string | null;
+  notes?: string | null;
+  biggest_challenge?: string | null;
+}
+
+interface ProfileData {
+  name?: string | null;
+  season_of_life?: string | null;
+  relationships?: RelationshipProfile[];
+  guardrails?: { do_not_suggest?: string[]; always_remind_of?: string | null };
+  voice?: string | null;
+}
+
+function buildArloSystemPrompt(profileData: ProfileData | null, fallbackName: string): string {
+  const name = profileData?.name || fallbackName || "friend";
+  const season = profileData?.season_of_life ? `\nTheir season of life: ${profileData.season_of_life}.` : "";
+  const relationships = profileData?.relationships?.length
+    ? `\nKey relationships: ${profileData.relationships
+        .map((r) => {
+          const label = r.name || r.notes || r.type || "someone close to them";
+          const friction = r.biggest_challenge ? ` — friction: ${r.biggest_challenge}` : "";
+          return `${label}${friction}`;
+        })
+        .join("; ")}.`
+    : "";
+  const doNotSuggest = profileData?.guardrails?.do_not_suggest?.length
+    ? `\nNever suggest: ${profileData.guardrails.do_not_suggest.join(", ")}.`
+    : "";
+  const alwaysRemind = profileData?.guardrails?.always_remind_of
+    ? `\nAlways keep in view: ${profileData.guardrails.always_remind_of}.`
+    : "";
+  const voice = profileData?.voice ? `\nPreferred voice: ${profileData.voice}.` : "";
+
+  return `You are Steward, a personal accountability partner and brother to ${name}. Your voice is direct, gospel-centered, in the style of Pastor Joby Martin.
+
+${name}'s core challenge: they're a strong executor but get to the starting line without a full picture (budget, materials, time, contingencies). Reality hits and tasks stall at ~80%. Your job is to help them plan ahead of the work, with them.${season}${relationships}
+
+Guidelines:
+- No flattery. No softening hard truths.
+- Root things in Scripture where it fits naturally — not forced.
+- Cut through excuses with pointed questions.
+- Warm but honest — a brother who loves them enough to tell the truth.
+- Default to 1-3 short paragraphs. Be concise unless ${name} explicitly asks for depth or the situation warrants more.
+- Prefer one clear next action or one pointed question over a long list.
+- Use memory: call back to what they said before, name patterns, notice when a commitment hasn't moved.
+- Encourage real relationships and real action, never foster dependence on the app.${doNotSuggest}${alwaysRemind}${voice}
+
+You are a tool, not a pastor, counselor, or substitute for the people in their life.`;
 }
 
 const VERSES = [
@@ -55,8 +107,7 @@ router.get('/tasks', async (req: Request, res: Response) => {
       .select()
       .from(tasks)
       .where(and(eq(tasks.userId, req.user!.id), eq(tasks.done, false)))
-      .orderBy(desc(tasks.createdAt))
-      .limit(3);
+      .orderBy(desc(tasks.createdAt));
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch tasks' });
@@ -329,10 +380,11 @@ router.post('/chat', async (req: Request, res: Response) => {
     const userId = req.user!.id;
     const today = new Date().toISOString().split('T')[0];
 
-    const [recentJournal, openTasks, todayChat] = await Promise.all([
+    const [recentJournal, openTasks, todayChat, profileRow] = await Promise.all([
       db.select().from(journalEntries).where(eq(journalEntries.userId, userId)).orderBy(desc(journalEntries.date)).limit(3),
       db.select().from(tasks).where(and(eq(tasks.userId, userId), eq(tasks.done, false))).orderBy(desc(tasks.createdAt)).limit(5),
       db.select().from(chatMessages).where(and(eq(chatMessages.userId, userId), eq(chatMessages.date, today))).orderBy(asc(chatMessages.createdAt)),
+      db.select().from(profileTable).where(eq(profileTable.userId, userId)).limit(1),
     ]);
 
     let context = '';
@@ -354,21 +406,8 @@ router.post('/chat', async (req: Request, res: Response) => {
       context += '\n';
     }
 
-    const ARLO_SYSTEM_PROMPT = `You are Steward, a personal accountability partner and brother to Bryant. Your voice is direct, gospel-centered, in the style of Pastor Joby Martin.
-
-Bryant's core challenge: he's a strong executor but gets to the starting line without a full picture (budget, materials, time, contingencies). Reality hits and tasks stall at ~80%. Your job is to help him plan ahead of the work, with him.
-
-Guidelines:
-- No flattery. No softening hard truths.
-- Root things in Scripture. Hold him to Ephesians 5:25 — love his wife as Christ loved the church, sacrificially, without keeping score.
-- Cut through excuses with pointed questions.
-- Warm but honest — a brother who loves him enough to tell the truth.
-- Default to 1-3 short paragraphs. Be concise unless Bryant explicitly asks for depth or the situation warrants more.
-- Prefer one clear next action or one pointed question over a long list.
-- Use memory: call back to what he said before, name patterns, notice when a commitment hasn't moved.
-- Encourage real relationships and real action, never foster dependence on the app.
-
-You are a tool, not a pastor or counselor or substitute for his wife.`;
+    const profileData = (profileRow[0]?.data ?? null) as ProfileData | null;
+    const ARLO_SYSTEM_PROMPT = buildArloSystemPrompt(profileData, req.user!.firstName ?? "");
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
