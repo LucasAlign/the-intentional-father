@@ -6,6 +6,7 @@ import {
   getOidcConfig,
   getSessionId,
   getSession,
+  setSessionCookie,
   updateSession,
   type SessionData,
 } from "../lib/auth";
@@ -84,6 +85,8 @@ export async function authMiddleware(
     }
 
     req.user = refreshed.user;
+    // Sliding expiration keeps active users signed in across normal app use.
+    setSessionCookie(res, sid);
   } catch {
     // DB error — treat as unauthenticated rather than crashing every request
   }

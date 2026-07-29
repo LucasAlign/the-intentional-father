@@ -17,7 +17,7 @@ import {
   deleteSession,
   resolveInviteStatus,
   SESSION_COOKIE,
-  SESSION_TTL,
+  setSessionCookie,
   GOOGLE_ISSUER_URL,
   type OidcProvider,
   type SessionData,
@@ -35,16 +35,6 @@ function getOrigin(req: Request): string {
   const host =
     req.headers["x-forwarded-host"] || req.headers["host"] || "localhost";
   return `${proto}://${host}`;
-}
-
-function setSessionCookie(res: Response, sid: string) {
-  res.cookie(SESSION_COOKIE, sid, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge: SESSION_TTL,
-  });
 }
 
 function setOidcCookie(res: Response, name: string, value: string) {
@@ -168,7 +158,16 @@ function appendAuthError(target: string, error: string): string {
 
 function makeLoginHandler(provider: OidcProvider) {
   return async (req: Request, res: Response) => {
-    const config = await getOidcConfig(provider);
+    let config: oidc.Configuration;
+    try {
+      config = await getOidcConfig(provider);
+    } catch (err) {
+      req.log?.error({ err, provider }, "Failed to initialize OIDC login");
+      res.status(503).json({
+        error: `${provider === "microsoft" ? "Microsoft" : "Google"} sign-in is not configured.`,
+      });
+      return;
+    }
 
     // Priority: PUBLIC_URL (explicit config) → browser-reported origin → server headers.
     // The browser value is the most reliable on mobile because x-forwarded-host can
@@ -217,7 +216,16 @@ function makeLoginHandler(provider: OidcProvider) {
 // parameters not expressed in the schema.
 function makeCallbackHandler(provider: OidcProvider) {
   return async (req: Request, res: Response) => {
-    const config = await getOidcConfig(provider);
+    let config: oidc.Configuration;
+    try {
+      config = await getOidcConfig(provider);
+    } catch (err) {
+      req.log?.error({ err, provider }, "Failed to initialize OIDC callback");
+      res.status(503).json({
+        error: `${provider === "microsoft" ? "Microsoft" : "Google"} sign-in is not configured.`,
+      });
+      return;
+    }
     const loginPath = provider === "google" ? "/api/login" : `/api/login/${provider}`;
 
     // Use the origin stored during login so the redirect_uri matches exactly.

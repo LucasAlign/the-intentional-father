@@ -10,7 +10,17 @@ export const GOOGLE_ISSUER_URL =
 export const MICROSOFT_ISSUER_URL =
   process.env.MICROSOFT_ISSUER_URL ?? "https://login.microsoftonline.com/common/v2.0";
 export const SESSION_COOKIE = "sid";
-export const SESSION_TTL = 7 * 24 * 60 * 60 * 1000;
+export const SESSION_TTL = 30 * 24 * 60 * 60 * 1000;
+
+export function setSessionCookie(res: Response, sid: string): void {
+  res.cookie(SESSION_COOKIE, sid, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "lax",
+    path: "/",
+    maxAge: SESSION_TTL,
+  });
+}
 
 export type OidcProvider = "google" | "microsoft";
 export type Provider = OidcProvider | "demo";
