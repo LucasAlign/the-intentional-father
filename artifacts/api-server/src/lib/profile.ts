@@ -6,10 +6,34 @@ export interface RelationshipProfile {
   biggest_challenge?: string | null;
 }
 
+export interface CoreIdentity {
+  worldview?: string | null;
+  top_priority?: string | null;
+  values?: string[];
+}
+
+export interface BusinessProfile {
+  name?: string | null;
+  role?: string | null;
+  rhythm?: string | null;
+  common_blockers?: string[];
+  key_metrics?: string[];
+}
+
+export interface PlanningProfile {
+  decision_drain?: string | null;
+  common_failure_point?: string | null;
+  ideal_rhythm?: string | null;
+  where_ai_helps_most?: string | null;
+}
+
 export interface ProfileData {
   name?: string | null;
   season_of_life?: string | null;
+  core_identity?: CoreIdentity | null;
+  businesses?: BusinessProfile[];
   relationships?: RelationshipProfile[];
+  planning_profile?: PlanningProfile | null;
   guardrails?: { do_not_suggest?: string[]; always_remind_of?: string | null };
   voice?: string | null;
 }
@@ -26,6 +50,40 @@ function normalizeRelationship(raw: unknown): RelationshipProfile | null {
     notes: typeof raw.notes === "string" ? raw.notes : null,
     commitments: typeof raw.commitments === "string" ? raw.commitments : null,
     biggest_challenge: typeof raw.biggest_challenge === "string" ? raw.biggest_challenge : null,
+  };
+}
+
+function stringArray(raw: unknown): string[] {
+  return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === "string") : [];
+}
+
+function normalizeCoreIdentity(raw: unknown): CoreIdentity | null {
+  if (!isRecord(raw)) return null;
+  return {
+    worldview: typeof raw.worldview === "string" ? raw.worldview : null,
+    top_priority: typeof raw.top_priority === "string" ? raw.top_priority : null,
+    values: stringArray(raw.values),
+  };
+}
+
+function normalizeBusiness(raw: unknown): BusinessProfile | null {
+  if (!isRecord(raw)) return null;
+  return {
+    name: typeof raw.name === "string" ? raw.name : null,
+    role: typeof raw.role === "string" ? raw.role : null,
+    rhythm: typeof raw.rhythm === "string" ? raw.rhythm : null,
+    common_blockers: stringArray(raw.common_blockers),
+    key_metrics: stringArray(raw.key_metrics),
+  };
+}
+
+function normalizePlanningProfile(raw: unknown): PlanningProfile | null {
+  if (!isRecord(raw)) return null;
+  return {
+    decision_drain: typeof raw.decision_drain === "string" ? raw.decision_drain : null,
+    common_failure_point: typeof raw.common_failure_point === "string" ? raw.common_failure_point : null,
+    ideal_rhythm: typeof raw.ideal_rhythm === "string" ? raw.ideal_rhythm : null,
+    where_ai_helps_most: typeof raw.where_ai_helps_most === "string" ? raw.where_ai_helps_most : null,
   };
 }
 
@@ -63,10 +121,17 @@ export function normalizeProfileData(raw: unknown): ProfileData | null {
     ? rawGuardrails.do_not_suggest.filter((v): v is string => typeof v === "string")
     : [];
 
+  const rawBusinesses = Array.isArray(raw.businesses)
+    ? raw.businesses.map(normalizeBusiness).filter((b): b is BusinessProfile => b !== null)
+    : [];
+
   return {
     name: typeof raw.name === "string" ? raw.name : null,
     season_of_life: typeof raw.season_of_life === "string" ? raw.season_of_life : null,
+    core_identity: normalizeCoreIdentity(raw.core_identity),
+    businesses: rawBusinesses,
     relationships: rawRelationships,
+    planning_profile: normalizePlanningProfile(raw.planning_profile),
     guardrails: {
       do_not_suggest: doNotSuggest,
       always_remind_of: typeof rawGuardrails?.always_remind_of === "string" ? rawGuardrails.always_remind_of : null,

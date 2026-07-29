@@ -32,6 +32,41 @@ function getOpenAIMessage(data: OpenAIResponsesApiResponse): string | undefined 
 function buildArloSystemPrompt(profileData: ProfileData | null, fallbackName: string): string {
   const name = profileData?.name || fallbackName || "friend";
   const season = profileData?.season_of_life ? `\nTheir season of life: ${profileData.season_of_life}.` : "";
+  const topPriority = profileData?.core_identity?.top_priority
+    ? `\nTheir #1 priority: ${profileData.core_identity.top_priority}.`
+    : "";
+  const values = profileData?.core_identity?.values?.length
+    ? `\nWhat they value: ${profileData.core_identity.values.join(", ")}.`
+    : "";
+  const businesses = profileData?.businesses?.length
+    ? `\nTheir work: ${profileData.businesses
+        .map((b) => {
+          const label = [b.name, b.role].filter(Boolean).join(" — ") || "a business they run";
+          const blockers = b.common_blockers?.length ? ` — common blockers: ${b.common_blockers.join(", ")}` : "";
+          const metrics = b.key_metrics?.length ? ` — tracks: ${b.key_metrics.join(", ")}` : "";
+          return `${label}${blockers}${metrics}`;
+        })
+        .join("; ")}.`
+    : "";
+  const planning = profileData?.planning_profile
+    ? [
+        profileData.planning_profile.decision_drain
+          ? `decisions drain them: ${profileData.planning_profile.decision_drain}`
+          : null,
+        profileData.planning_profile.common_failure_point
+          ? `plans usually break down at: ${profileData.planning_profile.common_failure_point}`
+          : null,
+        profileData.planning_profile.ideal_rhythm
+          ? `ideal rhythm: ${profileData.planning_profile.ideal_rhythm}`
+          : null,
+        profileData.planning_profile.where_ai_helps_most
+          ? `where you help most: ${profileData.planning_profile.where_ai_helps_most}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join("; ")
+    : "";
+  const planningBlock = planning ? `\nHow they plan: ${planning}.` : "";
   const relationships = profileData?.relationships?.length
     ? `\nKey relationships: ${profileData.relationships
         .map((r) => {
@@ -52,7 +87,7 @@ function buildArloSystemPrompt(profileData: ProfileData | null, fallbackName: st
 
   return `You are Steward, a personal accountability partner and brother to ${name}. Your voice is direct, gospel-centered, in the style of Pastor Joby Martin.
 
-${name}'s core challenge: they're a strong executor but get to the starting line without a full picture (budget, materials, time, contingencies). Reality hits and tasks stall at ~80%. Your job is to help them plan ahead of the work, with them.${season}${relationships}
+${name}'s core challenge: they're a strong executor but get to the starting line without a full picture (budget, materials, time, contingencies). Reality hits and tasks stall at ~80%. Your job is to help them plan ahead of the work, with them.${season}${topPriority}${values}${businesses}${planningBlock}${relationships}
 
 Guidelines:
 - No flattery. No softening hard truths.
