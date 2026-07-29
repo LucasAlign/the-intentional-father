@@ -4,9 +4,12 @@ import { journalEntries, chatMessages, tasks, commits, jobs, comingUp, profile a
 import { eq, desc, asc, gte, lte, and } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
 import { normalizeProfileData, type ProfileData } from "../lib/profile";
+import { aiRateLimit } from "../middlewares/aiRateLimit";
+import { SCRIPTURE_GROUNDING, getVerseOfTheDay } from "../lib/verses";
 
 const router = Router();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
+const MAX_CHAT_MESSAGE_LENGTH = 4000;
 
 type OpenAIResponsesApiResponse = {
   output_text?: string;
@@ -53,7 +56,7 @@ ${name}'s core challenge: they're a strong executor but get to the starting line
 
 Guidelines:
 - No flattery. No softening hard truths.
-- Root things in Scripture where it fits naturally — not forced.
+- Root things in Scripture where it fits naturally — not forced. Quote only from the approved verses below, verbatim.
 - Cut through excuses with pointed questions.
 - Warm but honest — a brother who loves them enough to tell the truth.
 - Default to 1-3 short paragraphs. Be concise unless ${name} explicitly asks for depth or the situation warrants more.
@@ -62,25 +65,9 @@ Guidelines:
 - Hold them accountable to commitments they've made to the people who matter most to them, by name where you know it — the same way you'd hold a brother to a promise.
 - Encourage real relationships and real action, never foster dependence on the app.${doNotSuggest}${alwaysRemind}${voice}
 
-You are a tool, not a pastor, counselor, or substitute for the people in their life.`;
-}
+You are a tool, not a pastor, counselor, or substitute for the people in their life.
 
-const VERSES = [
-  'Ephesians 5:25 — Husbands, love your wives, just as Christ loved the church and gave himself up for her.',
-  'Proverbs 29:25 — Fear of man will prove to be a snare, but whoever trusts in the Lord is kept safe.',
-  'Philippians 4:8 — Finally, brothers and sisters, whatever is true, whatever is noble, whatever is right, whatever is pure, whatever is lovely, whatever is admirable—if anything is excellent or praiseworthy—think about such things.',
-  'Colossians 3:17 — And whatever you do, whether in word or deed, do it all in the name of the Lord Jesus, giving thanks to God the Father through him.',
-  'Proverbs 27:12 — The prudent see danger and take refuge, but the simple keep going and pay the penalty.',
-  'Proverbs 6:6-8 — Go to the ant, you sluggard; consider its ways and be wise! It has no commander, no overseer or ruler, yet it stores its provisions in summer and gathers its food at harvest.',
-  'Proverbs 16:3 — Commit your work to the Lord, and your plans will be established.',
-];
-
-function getVerseOfTheDay(): string {
-  const today = new Date();
-  const dayOfYear = Math.floor(
-    (today.getTime() - new Date(today.getFullYear(), 0, 0).getTime()) / 86400000
-  );
-  return VERSES[dayOfYear % VERSES.length];
+${SCRIPTURE_GROUNDING}`;
 }
 
 // GET /api/verse
@@ -363,9 +350,17 @@ router.delete('/coming-up/:id', async (req: Request, res: Response) => {
 });
 
 // POST /api/chat
-router.post('/chat', async (req: Request, res: Response) => {
+router.post('/chat', aiRateLimit, async (req: Request, res: Response) => {
   try {
     const { message } = req.body;
+    if (typeof message !== 'string' || !message.trim()) {
+      res.status(400).json({ error: 'Message is required' });
+      return;
+    }
+    if (message.length > MAX_CHAT_MESSAGE_LENGTH) {
+      res.status(400).json({ error: `Message must be under ${MAX_CHAT_MESSAGE_LENGTH} characters` });
+      return;
+    }
     const userId = req.user!.id;
     const today = new Date().toISOString().split('T')[0];
 

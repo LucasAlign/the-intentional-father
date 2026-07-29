@@ -3,10 +3,13 @@ import { db } from "@workspace/db";
 import { profile as profileTable, interviewMessages } from "@workspace/db";
 import { eq, asc } from "drizzle-orm";
 import { normalizeProfileData } from "../lib/profile";
+import { aiRateLimit } from "../middlewares/aiRateLimit";
+import { SCRIPTURE_GROUNDING } from "../lib/verses";
 
 const router = Router();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
 const TOTAL_INTERVIEW_QUESTIONS = 10;
+const MAX_INTERVIEW_MESSAGE_LENGTH = 4000;
 
 type OpenAIResponsesApiResponse = {
   output_text?: string;
@@ -37,10 +40,12 @@ Rules:
 - Ask ONE area at a time. Wait for the answer before moving on.
 - If an answer is surface-level, push once with a pointed follow-up before moving on.
 - Acknowledge patterns you hear ("That sounds like your 80% problem, doesn't it?").
-- Reference Scripture naturally where it fits — not forced, not preachy.
+- Reference Scripture naturally where it fits — not forced, not preachy. Quote only from the approved verses below, verbatim.
 - Tone: direct and warm, like a brother who tells the truth and sees potential.
 - By question 10 at the latest, give a clear summary of how you understand them and ask: "Does that sound right?"
-- When they confirm the summary is accurate, end your response with exactly this tag on its own line: [INTERVIEW_COMPLETE]`;
+- When they confirm the summary is accurate, end your response with exactly this tag on its own line: [INTERVIEW_COMPLETE]
+
+${SCRIPTURE_GROUNDING}`;
 
 const EXTRACT_SYSTEM_PROMPT = `You are a data extraction assistant. Given an interview conversation, extract a structured user profile as JSON.
 Output ONLY valid JSON — no markdown, no code blocks, no explanation, no commentary. Just the JSON object.
@@ -178,10 +183,18 @@ router.get("/interview/history", async (req: Request, res: Response) => {
 });
 
 // POST /api/interview
-router.post("/interview", async (req: Request, res: Response) => {
+router.post("/interview", aiRateLimit, async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const { message } = req.body as { message?: string };
+    if (message !== undefined && typeof message !== "string") {
+      res.status(400).json({ error: "Message must be a string" });
+      return;
+    }
+    if (message && message.length > MAX_INTERVIEW_MESSAGE_LENGTH) {
+      res.status(400).json({ error: `Message must be under ${MAX_INTERVIEW_MESSAGE_LENGTH} characters` });
+      return;
+    }
     const isStart = !message || message.trim() === "";
 
     const apiKey = process.env.OPENAI_API_KEY;
