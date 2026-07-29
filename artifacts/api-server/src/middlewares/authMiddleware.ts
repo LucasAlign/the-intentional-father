@@ -86,7 +86,12 @@ export async function authMiddleware(
 
     req.user = refreshed.user;
     // Sliding expiration keeps active users signed in across normal app use.
+    // Extend the DB row alongside the cookie — refreshIfExpired only touches
+    // it on OIDC token refresh, which never happens for demo sessions, so
+    // without this a demo user active every day still hard-expires at
+    // creation+30d while their cookie looks freshly slid.
     setSessionCookie(res, sid);
+    await updateSession(sid, refreshed);
   } catch {
     // DB error — treat as unauthenticated rather than crashing every request
   }

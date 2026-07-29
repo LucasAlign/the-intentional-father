@@ -188,9 +188,15 @@ function makeLoginHandler(provider: OidcProvider) {
     const codeVerifier = oidc.randomPKCECodeVerifier();
     const codeChallenge = await oidc.calculatePKCECodeChallenge(codeVerifier);
 
+    // Google issues a refresh token for any access_type=offline request regardless
+    // of scope; Microsoft's v2.0 endpoint only does so when offline_access is
+    // explicitly requested — without it, sessions can't be refreshed past the
+    // ~60-90min access token lifetime and users get logged out.
+    const scope = provider === "microsoft" ? "openid email profile offline_access" : "openid email profile";
+
     const redirectTo = oidc.buildAuthorizationUrl(config, {
       redirect_uri: callbackUrl,
-      scope: "openid email profile",
+      scope,
       access_type: "offline",
       include_granted_scopes: "true",
       code_challenge: codeChallenge,
