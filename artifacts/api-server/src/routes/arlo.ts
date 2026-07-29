@@ -106,8 +106,15 @@ ${SCRIPTURE_GROUNDING}`;
 }
 
 // GET /api/verse
-router.get('/verse', (_req: Request, res: Response) => {
-  res.send(getVerseOfTheDay());
+router.get('/verse', async (req: Request, res: Response) => {
+  try {
+    const [profileRow] = await db.select().from(profileTable).where(eq(profileTable.userId, req.user!.id)).limit(1);
+    const profileData = normalizeProfileData(profileRow?.data ?? null);
+    res.send(getVerseOfTheDay(profileData));
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching verse of the day');
+    res.send(getVerseOfTheDay(null));
+  }
 });
 
 // GET /api/tasks

@@ -329,8 +329,14 @@ router.post("/interview/skip", async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/test/complete-interview  — seeds a completed profile for testing
+// POST /api/test/complete-interview  — seeds a completed profile for testing.
+// Dev-only: any authenticated user could otherwise overwrite their own real
+// onboarding data with this fixture, so it 404s outside local development.
 router.post("/test/complete-interview", async (req: Request, res: Response) => {
+  if (process.env.NODE_ENV === "production") {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
   try {
     const userId = req.user!.id;
 

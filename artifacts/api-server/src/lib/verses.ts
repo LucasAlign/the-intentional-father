@@ -54,12 +54,61 @@ export const VERSES = [
   "1 Corinthians 9:26-27 — I do not run like someone running aimlessly; I do not fight like a boxer beating the air. No, I strike a blow to my body and make it my slave.",
 ];
 
-export function getVerseOfTheDay(): string {
+// References that assume a specific relationship the reader may not have.
+// The daily rotation below has no judgment call the way chat does (it never
+// "decides" a verse fits) — so verses tagged here are excluded unless the
+// user's profile actually matches, same rule Home.tsx's seasonCategory()
+// already applies to journal prompts.
+const MARRIAGE_ONLY_REFS = new Set([
+  "Ephesians 5:25",
+  "Proverbs 31:11-12",
+  "Malachi 2:14",
+  "Genesis 2:24",
+  "Proverbs 18:22",
+]);
+const PARENTING_ONLY_REFS = new Set(["Proverbs 22:6", "Deuteronomy 6:6-7"]);
+
+function verseRef(verse: string): string {
+  return verse.split(" — ")[0]!;
+}
+
+interface RelationshipLike {
+  type?: string | null;
+}
+
+interface VerseProfileContext {
+  season_of_life?: string | null;
+  relationships?: RelationshipLike[];
+}
+
+function isMarried(profile: VerseProfileContext | null): boolean {
+  const season = (profile?.season_of_life || "").toLowerCase();
+  return season.includes("married") || Boolean(profile?.relationships?.some((r) => /spouse|wife|husband/i.test(r.type || "")));
+}
+
+function hasKids(profile: VerseProfileContext | null): boolean {
+  const season = (profile?.season_of_life || "").toLowerCase();
+  return (
+    /father|mother|parent|\bkids?\b|\bchild/.test(season) ||
+    Boolean(profile?.relationships?.some((r) => /child|son|daughter/i.test(r.type || "")))
+  );
+}
+
+export function getVerseOfTheDay(profile: VerseProfileContext | null = null): string {
+  const married = isMarried(profile);
+  const kids = hasKids(profile);
+  const pool = VERSES.filter((v) => {
+    const ref = verseRef(v);
+    if (MARRIAGE_ONLY_REFS.has(ref) && !married) return false;
+    if (PARENTING_ONLY_REFS.has(ref) && !kids) return false;
+    return true;
+  });
+
   const today = new Date();
   const dayOfYear = Math.floor(
     (today.getTime() - new Date(today.getFullYear(), 0, 0).getTime()) / 86400000,
   );
-  return VERSES[dayOfYear % VERSES.length];
+  return pool[dayOfYear % pool.length]!;
 }
 
 export const SCRIPTURE_GROUNDING = `## Approved verses
