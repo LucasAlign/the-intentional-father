@@ -254,7 +254,7 @@ function jobCalendarEvent(job: Job): Event | null {
 
 // ── Root ──────────────────────────────────────────────────────────────────────
 export default function Home() {
-  const { isLoading, isAuthenticated, pendingApproval, user, login, logout } = useAuth();
+  const { isLoading, isAuthenticated, pendingApproval, user, login, logout, startEmailLogin, verifyEmailLogin } = useAuth();
   const [, setLocation] = useLocation();
   const [tab, setTab] = useState<TabId>("today");
 
@@ -343,7 +343,7 @@ export default function Home() {
     }
   }
 
-  if (!isAuthenticated) return <AuthGate loading={isLoading} pendingApproval={pendingApproval} onLogin={login} />;
+  if (!isAuthenticated) return <AuthGate loading={isLoading} pendingApproval={pendingApproval} onLogin={login} onStartEmailLogin={startEmailLogin} onVerifyEmailLogin={verifyEmailLogin} />;
 
   const primaryRel = primaryRelationship(profile);
   const relTabLabel = primaryRel?.name || "Relationships";
@@ -944,7 +944,51 @@ function JobEditModal({ job, onClose, onSaved, onDeleted }: { job: Job; onClose:
 }
 
 // ── Auth gate ───────────────────────────────────────────────────────────────────
-function AuthGate({ loading, pendingApproval, onLogin }: { loading: boolean; pendingApproval: boolean; onLogin: (provider?: "google" | "microsoft" | "demo") => void }) {
+type EmailLoginStartResult = { ok: true } | { ok: false; error: string };
+type EmailLoginVerifyResult = { ok: true; pendingApproval: boolean } | { ok: false; error: string };
+
+function AuthGate({
+  loading,
+  pendingApproval,
+  onLogin,
+  onStartEmailLogin,
+  onVerifyEmailLogin,
+}: {
+  loading: boolean;
+  pendingApproval: boolean;
+  onLogin: (provider?: "google" | "microsoft" | "demo") => void;
+  onStartEmailLogin: (email: string) => Promise<EmailLoginStartResult>;
+  onVerifyEmailLogin: (email: string, code: string, name?: string) => Promise<EmailLoginVerifyResult>;
+}) {
+  const [step, setStep] = useState<"providers" | "email" | "code">("providers");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [code, setCode] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function sendCode() {
+    if (!name.trim()) { setError("Enter your name first."); return; }
+    if (!email.trim()) { setError("Enter your email first."); return; }
+    setBusy(true);
+    setError("");
+    const result = await onStartEmailLogin(email.trim());
+    setBusy(false);
+    if (!result.ok) { setError(result.error); return; }
+    setStep("code");
+  }
+
+  async function verifyCode() {
+    if (!/^[0-9]{6}$/.test(code)) { setError("Enter the 6-digit code."); return; }
+    setBusy(true);
+    setError("");
+    const result = await onVerifyEmailLogin(email.trim(), code, name.trim());
+    setBusy(false);
+    if (!result.ok) { setError(result.error); return; }
+    // On success the auth hook updates `user`/`pendingApproval` and this
+    // component's parent re-renders past the gate (or into the pending state).
+  }
+
   return (
     <div style={R.root}>
       <div style={R.woodLayer} />
@@ -956,12 +1000,58 @@ function AuthGate({ loading, pendingApproval, onLogin }: { loading: boolean; pen
           <div style={G.loading}>Loading...</div>
         ) : pendingApproval ? (
           <div style={G.welcome}>Thanks for signing up — you're on the list. We'll let you in soon.</div>
-        ) : (
+        ) : step === "providers" ? (
           <>
             <div style={G.welcome}>Welcome back.</div>
             <button style={G.googleBtn} onClick={() => onLogin("google")}>Continue with Google</button>
             <button style={{ ...G.googleBtn, marginTop: 10 }} onClick={() => onLogin("microsoft")}>Continue with Microsoft</button>
+            <button style={{ ...G.googleBtn, marginTop: 10 }} onClick={() => { setError(""); setStep("email"); }}>Continue with Email</button>
             <div style={G.notice}>New here? Sign in above to request access.</div>
+          </>
+        ) : step === "email" ? (
+          <>
+            <div style={G.welcome}>Sign in with email</div>
+            <input
+              style={M.input}
+              type="text"
+              autoFocus
+              placeholder="Your name"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && sendCode()}
+            />
+            <input
+              style={M.input}
+              type="email"
+              inputMode="email"
+              placeholder="you@example.com"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && sendCode()}
+            />
+            {error && <div style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{error}</div>}
+            <button style={G.googleBtn} disabled={busy} onClick={sendCode}>{busy ? "Sending…" : "Send code"}</button>
+            <button style={{ ...G.addHomeToggle, marginTop: 14 }} onClick={() => { setError(""); setStep("providers"); }}>Back</button>
+          </>
+        ) : (
+          <>
+            <div style={G.welcome}>Enter your code</div>
+            <div style={{ ...G.notice, marginTop: -8, marginBottom: 14 }}>We sent a 6-digit code to {email}</div>
+            <input
+              style={{ ...M.input, textAlign: "center", letterSpacing: "0.3em", fontSize: 22 }}
+              type="text"
+              inputMode="numeric"
+              maxLength={6}
+              autoFocus
+              placeholder="000000"
+              value={code}
+              onChange={e => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              onKeyDown={e => e.key === "Enter" && verifyCode()}
+            />
+            {error && <div style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{error}</div>}
+            <button style={G.googleBtn} disabled={busy} onClick={verifyCode}>{busy ? "Verifying…" : "Verify"}</button>
+            <button style={{ ...G.addHomeToggle, marginTop: 14 }} disabled={busy} onClick={sendCode}>Resend code</button>
+            <button style={{ ...G.addHomeToggle, marginTop: 10 }} onClick={() => { setError(""); setCode(""); setStep("email"); }}>Use a different email</button>
           </>
         )}
         <AddToHomeScreen />

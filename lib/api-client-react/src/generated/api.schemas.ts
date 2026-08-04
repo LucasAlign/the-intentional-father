@@ -25,6 +25,31 @@ export interface AuthUserEnvelope {
   user: AuthUser | null;
 }
 
+export interface EmailLoginStartRequest {
+  email: string;
+}
+
+export const EmailLoginStartResponseValue = {
+  sent: true,
+} as const;
+export type EmailLoginStartResponse = typeof EmailLoginStartResponseValue;
+
+export interface EmailLoginVerifyRequest {
+  email: string;
+  /** @pattern ^[0-9]{6}$ */
+  code: string;
+  /**
+     * Display name, used to set first/last name when this verify call creates a brand-new user. Ignored for an existing user.
+     * @minLength 1
+     */
+  name?: string;
+}
+
+export interface EmailLoginVerifyResponse {
+  user: AuthUser | null;
+  pendingApproval: boolean;
+}
+
 export interface MobileTokenExchangeRequest {
   /** @minLength 1 */
   code: string;

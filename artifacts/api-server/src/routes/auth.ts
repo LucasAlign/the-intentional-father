@@ -6,9 +6,13 @@ import {
   ExchangeMobileAuthorizationCodeBody,
   ExchangeMobileAuthorizationCodeResponse,
   LogoutMobileSessionResponse,
+  StartEmailLoginBody,
+  StartEmailLoginResponse,
+  VerifyEmailLoginBody,
+  VerifyEmailLoginResponse,
 } from "@workspace/api-zod";
-import { eq } from "drizzle-orm";
-import { db, googleCalendarConnections, usersTable } from "@workspace/db";
+import { and, desc, eq, isNull } from "drizzle-orm";
+import { db, googleCalendarConnections, usersTable, emailLoginCodes } from "@workspace/db";
 import {
   clearSession,
   getOidcConfig,
@@ -19,9 +23,15 @@ import {
   SESSION_COOKIE,
   setSessionCookie,
   GOOGLE_ISSUER_URL,
+  generateEmailLoginCode,
+  hashEmailLoginCode,
+  EMAIL_CODE_TTL_MS,
+  EMAIL_CODE_MAX_ATTEMPTS,
   type OidcProvider,
   type SessionData,
 } from "../lib/auth";
+import { emailStartRateLimit, emailVerifyRateLimit } from "../middlewares/emailAuthRateLimit";
+import { sendLoginCode } from "../lib/email";
 
 const OIDC_COOKIE_TTL = 10 * 60 * 1000;
 
@@ -134,6 +144,19 @@ async function upsertUser(claims: Record<string, unknown>) {
       .returning();
     return updated;
   }
+}
+
+function splitName(name: string): { firstName: string | null; lastName: string | null } {
+  const [firstName, ...rest] = name.trim().split(/\s+/);
+  return { firstName: firstName || null, lastName: rest.join(" ") || null };
+}
+
+async function findOrCreateUserByEmail(email: string, name?: string) {
+  const [existing] = await db.select().from(usersTable).where(eq(usersTable.email, email));
+  if (existing) return existing;
+  const { firstName, lastName } = name ? splitName(name) : { firstName: null, lastName: null };
+  const [created] = await db.insert(usersTable).values({ email, firstName, lastName }).returning();
+  return created;
 }
 
 router.get("/auth/user", (req: Request, res: Response) => {
@@ -345,6 +368,125 @@ router.get("/login", makeLoginHandler("google"));
 router.get("/callback", makeCallbackHandler("google"));
 router.get("/login/microsoft", makeLoginHandler("microsoft"));
 router.get("/callback/microsoft", makeCallbackHandler("microsoft"));
+
+// Email OTP: works for both registration and returning sign-ins. A new user
+// row and pending beta_invites row are created on first successful verify —
+// same self-serve-then-approve flow as the Google/Microsoft callback above,
+// just without requiring a social account.
+router.post(
+  "/login/email/start",
+  emailStartRateLimit,
+  async (req: Request, res: Response) => {
+    const parsed = StartEmailLoginBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "A valid email is required." });
+      return;
+    }
+    const email = parsed.data.email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      res.status(400).json({ error: "A valid email is required." });
+      return;
+    }
+
+    const code = generateEmailLoginCode();
+    try {
+      await db.insert(emailLoginCodes).values({
+        email,
+        codeHash: hashEmailLoginCode(code),
+        expiresAt: new Date(Date.now() + EMAIL_CODE_TTL_MS),
+      });
+      await sendLoginCode(email, code);
+    } catch (err) {
+      req.log?.error({ err }, "Failed to send email login code");
+      res.status(500).json({ error: "Could not send the code. Please try again." });
+      return;
+    }
+
+    res.json(StartEmailLoginResponse.parse({ sent: true }));
+  },
+);
+
+router.post(
+  "/login/email/verify",
+  emailVerifyRateLimit,
+  async (req: Request, res: Response) => {
+    const parsed = VerifyEmailLoginBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "A valid email and 6-digit code are required." });
+      return;
+    }
+    const email = parsed.data.email.trim().toLowerCase();
+    const { code, name } = parsed.data;
+
+    const [latest] = await db
+      .select()
+      .from(emailLoginCodes)
+      .where(and(eq(emailLoginCodes.email, email), isNull(emailLoginCodes.consumedAt)))
+      .orderBy(desc(emailLoginCodes.createdAt))
+      .limit(1);
+
+    if (!latest || latest.expiresAt < new Date()) {
+      res.status(400).json({ error: "That code has expired. Request a new one." });
+      return;
+    }
+    if (latest.attempts >= EMAIL_CODE_MAX_ATTEMPTS) {
+      res.status(400).json({ error: "Too many attempts. Request a new code." });
+      return;
+    }
+    if (latest.codeHash !== hashEmailLoginCode(code)) {
+      await db
+        .update(emailLoginCodes)
+        .set({ attempts: latest.attempts + 1 })
+        .where(eq(emailLoginCodes.id, latest.id));
+      res.status(400).json({ error: "That code isn't right. Try again." });
+      return;
+    }
+
+    await db
+      .update(emailLoginCodes)
+      .set({ consumedAt: new Date() })
+      .where(eq(emailLoginCodes.id, latest.id));
+
+    let dbUser: Awaited<ReturnType<typeof findOrCreateUserByEmail>>;
+    try {
+      dbUser = await findOrCreateUserByEmail(email, name);
+    } catch (err) {
+      req.log?.error({ err }, "Failed to upsert user during email login");
+      res.status(500).json({ error: "Login failed — could not save user." });
+      return;
+    }
+
+    const inviteStatus = await resolveInviteStatus(email);
+    if (inviteStatus !== "active") {
+      res.json(VerifyEmailLoginResponse.parse({ user: null, pendingApproval: true }));
+      return;
+    }
+
+    const sessionData: SessionData = {
+      user: {
+        id: dbUser.id,
+        email: dbUser.email,
+        firstName: dbUser.firstName,
+        lastName: dbUser.lastName,
+        profileImageUrl: dbUser.profileImageUrl,
+      },
+      provider: "email",
+      access_token: "email",
+    };
+
+    let sid: string;
+    try {
+      sid = await createSession(sessionData);
+    } catch (err) {
+      req.log?.error({ err }, "Failed to create session during email login");
+      res.status(500).json({ error: "Login failed — could not create session." });
+      return;
+    }
+
+    setSessionCookie(res, sid);
+    res.json(VerifyEmailLoginResponse.parse({ user: sessionData.user, pendingApproval: false }));
+  },
+);
 
 // No OAuth round-trip: creates a fresh throwaway user and session directly,
 // so anyone can try the app without a Google/Microsoft account. Bypasses the

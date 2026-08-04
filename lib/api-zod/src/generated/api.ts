@@ -80,6 +80,44 @@ export const LogoutBrowserSessionHeader = zod.object({
 
 
 /**
+ * Works for both new and returning users — if no account exists for the email yet, one is created (pending beta approval) once the code is verified.
+ * @summary Send a one-time sign-in code to an email address
+ */
+export const StartEmailLoginBody = zod.object({
+  "email": zod.string().email()
+})
+
+export const StartEmailLoginResponse = zod.object({
+  "sent": zod.boolean()
+})
+
+
+/**
+ * @summary Verify a one-time email sign-in code and create a session
+ */
+export const verifyEmailLoginBodyCodeRegExp = new RegExp('^[0-9]{6}$');
+
+
+
+export const VerifyEmailLoginBody = zod.object({
+  "email": zod.string().email(),
+  "code": zod.string().regex(verifyEmailLoginBodyCodeRegExp),
+  "name": zod.string().min(1).optional().describe('Display name, used to set first\/last name when this verify call creates a brand-new user. Ignored for an existing user.')
+})
+
+export const VerifyEmailLoginResponse = zod.object({
+  "user": zod.union([zod.object({
+  "id": zod.string(),
+  "email": zod.string().email().nullable(),
+  "firstName": zod.string().nullable(),
+  "lastName": zod.string().nullable(),
+  "profileImageUrl": zod.string().nullable()
+}),zod.null()]),
+  "pendingApproval": zod.boolean()
+})
+
+
+/**
  * @summary Exchange a mobile OIDC code for a session token
  */
 

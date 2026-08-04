@@ -11,6 +11,16 @@ export const MICROSOFT_ISSUER_URL =
   process.env.MICROSOFT_ISSUER_URL ?? "https://login.microsoftonline.com/common/v2.0";
 export const SESSION_COOKIE = "sid";
 export const SESSION_TTL = 30 * 24 * 60 * 60 * 1000;
+export const EMAIL_CODE_TTL_MS = 10 * 60 * 1000;
+export const EMAIL_CODE_MAX_ATTEMPTS = 5;
+
+export function generateEmailLoginCode(): string {
+  return crypto.randomInt(0, 1_000_000).toString().padStart(6, "0");
+}
+
+export function hashEmailLoginCode(code: string): string {
+  return crypto.createHash("sha256").update(code).digest("hex");
+}
 
 export function setSessionCookie(res: Response, sid: string): void {
   res.cookie(SESSION_COOKIE, sid, {
@@ -23,7 +33,7 @@ export function setSessionCookie(res: Response, sid: string): void {
 }
 
 export type OidcProvider = "google" | "microsoft";
-export type Provider = OidcProvider | "demo";
+export type Provider = OidcProvider | "demo" | "email";
 
 const PROVIDER_CONFIG: Record<
   OidcProvider,

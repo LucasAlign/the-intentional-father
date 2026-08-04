@@ -28,3 +28,21 @@ export async function sendApprovalEmail(email: string): Promise<void> {
     throw new Error(`Resend error: ${error.message}`);
   }
 }
+
+export async function sendLoginCode(email: string, code: string): Promise<void> {
+  const resend = getResendClient();
+  if (!resend) {
+    console.warn(`RESEND_API_KEY not configured; sign-in code for ${email} is ${code}`);
+    return;
+  }
+
+  const { error } = await resend.emails.send({
+    from: FROM_EMAIL,
+    to: email,
+    subject: `Your Steward sign-in code: ${code}`,
+    html: `<p>Your Steward sign-in code is:</p><p style="font-size:28px;font-weight:700;letter-spacing:6px;">${code}</p><p>This code expires in 10 minutes.</p>`,
+  });
+  if (error) {
+    throw new Error(`Resend error: ${error.message}`);
+  }
+}

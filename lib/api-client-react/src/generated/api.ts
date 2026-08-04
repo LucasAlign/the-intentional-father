@@ -23,6 +23,10 @@ import type {
   AuthUserEnvelope,
   BeginBrowserLoginParams,
   BeginMicrosoftLoginParams,
+  EmailLoginStartRequest,
+  EmailLoginStartResponse,
+  EmailLoginVerifyRequest,
+  EmailLoginVerifyResponse,
   ErrorEnvelope,
   HandleBrowserLoginCallbackParams,
   HandleMicrosoftLoginCallbackParams,
@@ -611,6 +615,149 @@ export function useLogoutBrowserSession<TData = Awaited<ReturnType<typeof logout
 
 
 
+
+export const getStartEmailLoginUrl = () => {
+
+
+
+
+  return `/api/login/email/start`
+}
+
+/**
+ * Works for both new and returning users — if no account exists for the email yet, one is created (pending beta approval) once the code is verified.
+ * @summary Send a one-time sign-in code to an email address
+ */
+export const startEmailLogin = async (emailLoginStartRequest: EmailLoginStartRequest, options?: RequestInit): Promise<EmailLoginStartResponse> => {
+
+  return customFetch<EmailLoginStartResponse>(getStartEmailLoginUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      emailLoginStartRequest,)
+  }
+);}
+
+
+
+
+export const getStartEmailLoginMutationOptions = <TError = ErrorType<ErrorEnvelope>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof startEmailLogin>>, TError,{data: BodyType<EmailLoginStartRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof startEmailLogin>>, TError,{data: BodyType<EmailLoginStartRequest>}, TContext> => {
+
+const mutationKey = ['startEmailLogin'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof startEmailLogin>>, {data: BodyType<EmailLoginStartRequest>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  startEmailLogin(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type StartEmailLoginMutationResult = NonNullable<Awaited<ReturnType<typeof startEmailLogin>>>
+    export type StartEmailLoginMutationBody = BodyType<EmailLoginStartRequest>
+    export type StartEmailLoginMutationError = ErrorType<ErrorEnvelope>
+
+    /**
+ * @summary Send a one-time sign-in code to an email address
+ */
+export const useStartEmailLogin = <TError = ErrorType<ErrorEnvelope>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof startEmailLogin>>, TError,{data: BodyType<EmailLoginStartRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof startEmailLogin>>,
+        TError,
+        {data: BodyType<EmailLoginStartRequest>},
+        TContext
+      > => {
+      return useMutation(getStartEmailLoginMutationOptions(options));
+    }
+
+export const getVerifyEmailLoginUrl = () => {
+
+
+
+
+  return `/api/login/email/verify`
+}
+
+/**
+ * @summary Verify a one-time email sign-in code and create a session
+ */
+export const verifyEmailLogin = async (emailLoginVerifyRequest: EmailLoginVerifyRequest, options?: RequestInit): Promise<EmailLoginVerifyResponse> => {
+
+  return customFetch<EmailLoginVerifyResponse>(getVerifyEmailLoginUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      emailLoginVerifyRequest,)
+  }
+);}
+
+
+
+
+export const getVerifyEmailLoginMutationOptions = <TError = ErrorType<ErrorEnvelope>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof verifyEmailLogin>>, TError,{data: BodyType<EmailLoginVerifyRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof verifyEmailLogin>>, TError,{data: BodyType<EmailLoginVerifyRequest>}, TContext> => {
+
+const mutationKey = ['verifyEmailLogin'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof verifyEmailLogin>>, {data: BodyType<EmailLoginVerifyRequest>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  verifyEmailLogin(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type VerifyEmailLoginMutationResult = NonNullable<Awaited<ReturnType<typeof verifyEmailLogin>>>
+    export type VerifyEmailLoginMutationBody = BodyType<EmailLoginVerifyRequest>
+    export type VerifyEmailLoginMutationError = ErrorType<ErrorEnvelope>
+
+    /**
+ * @summary Verify a one-time email sign-in code and create a session
+ */
+export const useVerifyEmailLogin = <TError = ErrorType<ErrorEnvelope>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof verifyEmailLogin>>, TError,{data: BodyType<EmailLoginVerifyRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof verifyEmailLogin>>,
+        TError,
+        {data: BodyType<EmailLoginVerifyRequest>},
+        TContext
+      > => {
+      return useMutation(getVerifyEmailLoginMutationOptions(options));
+    }
 
 export const getExchangeMobileAuthorizationCodeUrl = () => {
 
