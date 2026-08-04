@@ -962,27 +962,29 @@ function AuthGate({
 }) {
   const [step, setStep] = useState<"providers" | "email" | "code">("providers");
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(() => localStorage.getItem("steward:email") ?? "");
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function sendCode() {
-    if (!name.trim()) { setError("Enter your name first."); return; }
     if (!email.trim()) { setError("Enter your email first."); return; }
     setBusy(true);
     setError("");
     const result = await onStartEmailLogin(email.trim());
     setBusy(false);
     if (!result.ok) { setError(result.error); return; }
+    localStorage.setItem("steward:email", email.trim());
+    setCode("");
     setStep("code");
   }
 
-  async function verifyCode() {
-    if (!/^[0-9]{6}$/.test(code)) { setError("Enter the 6-digit code."); return; }
+  async function verifyCode(codeOverride?: string) {
+    const codeToVerify = codeOverride ?? code;
+    if (!/^[0-9]{6}$/.test(codeToVerify)) { setError("Enter the 6-digit code."); return; }
     setBusy(true);
     setError("");
-    const result = await onVerifyEmailLogin(email.trim(), code, name.trim());
+    const result = await onVerifyEmailLogin(email.trim(), codeToVerify, name.trim());
     setBusy(false);
     if (!result.ok) { setError(result.error); return; }
     // On success the auth hook updates `user`/`pendingApproval` and this
@@ -1014,8 +1016,9 @@ function AuthGate({
             <input
               style={M.input}
               type="text"
-              autoFocus
-              placeholder="Your name"
+              autoComplete="name"
+              autoFocus={!email}
+              placeholder="Your name (optional)"
               value={name}
               onChange={e => setName(e.target.value)}
               onKeyDown={e => e.key === "Enter" && sendCode()}
@@ -1024,6 +1027,8 @@ function AuthGate({
               style={M.input}
               type="email"
               inputMode="email"
+              autoComplete="email"
+              autoFocus={!!email}
               placeholder="you@example.com"
               value={email}
               onChange={e => setEmail(e.target.value)}
@@ -1041,15 +1046,20 @@ function AuthGate({
               style={{ ...M.input, textAlign: "center", letterSpacing: "0.3em", fontSize: 22 }}
               type="text"
               inputMode="numeric"
+              autoComplete="one-time-code"
               maxLength={6}
               autoFocus
               placeholder="000000"
               value={code}
-              onChange={e => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              onChange={e => {
+                const next = e.target.value.replace(/\D/g, "").slice(0, 6);
+                setCode(next);
+                if (next.length === 6) verifyCode(next);
+              }}
               onKeyDown={e => e.key === "Enter" && verifyCode()}
             />
             {error && <div style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{error}</div>}
-            <button style={G.googleBtn} disabled={busy} onClick={verifyCode}>{busy ? "Verifying…" : "Verify"}</button>
+            <button style={G.googleBtn} disabled={busy} onClick={() => verifyCode()}>{busy ? "Verifying…" : "Verify"}</button>
             <button style={{ ...G.addHomeToggle, marginTop: 14 }} disabled={busy} onClick={sendCode}>Resend code</button>
             <button style={{ ...G.addHomeToggle, marginTop: 10 }} onClick={() => { setError(""); setCode(""); setStep("email"); }}>Use a different email</button>
           </>

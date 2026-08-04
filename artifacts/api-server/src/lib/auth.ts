@@ -10,7 +10,7 @@ export const GOOGLE_ISSUER_URL =
 export const MICROSOFT_ISSUER_URL =
   process.env.MICROSOFT_ISSUER_URL ?? "https://login.microsoftonline.com/common/v2.0";
 export const SESSION_COOKIE = "sid";
-export const SESSION_TTL = 30 * 24 * 60 * 60 * 1000;
+export const SESSION_TTL = 90 * 24 * 60 * 60 * 1000;
 export const EMAIL_CODE_TTL_MS = 10 * 60 * 1000;
 export const EMAIL_CODE_MAX_ATTEMPTS = 5;
 

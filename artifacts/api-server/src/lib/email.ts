@@ -18,11 +18,16 @@ export async function sendApprovalEmail(email: string): Promise<void> {
     return;
   }
 
+  const appUrl = process.env.PUBLIC_URL?.replace(/\/+$/, "");
+  const signInButton = appUrl
+    ? `<p><a href="${appUrl}" style="display:inline-block;background:#1E1A10;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:700;">Sign in to Steward</a></p>`
+    : "";
+
   const { error } = await resend.emails.send({
     from: FROM_EMAIL,
     to: email,
     subject: "You're approved for Steward",
-    html: `<p>Good news — your access to Steward has been approved.</p><p>Sign in whenever you're ready to get started.</p>`,
+    html: `<p>Good news — your access to Steward has been approved.</p>${signInButton}<p>If you signed up with Google or Microsoft, use "Continue with Google/Microsoft" again. If you signed up with your email, choose "Continue with Email" and we'll send you a fresh sign-in code.</p>`,
   });
   if (error) {
     throw new Error(`Resend error: ${error.message}`);
