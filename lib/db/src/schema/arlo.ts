@@ -4,11 +4,14 @@ import { z } from "zod/v4";
 
 export const journalEntries = pgTable("journal_entries", {
   id: serial("id").primaryKey(),
-  date: text("date").notNull().unique(),
+  userId: text("user_id").notNull(),
+  date: text("date").notNull(),
   reflect: text("reflect").notNull().default(""),
   commitText: text("commit_text").notNull().default(""),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (table) => [
+  unique("journal_entries_user_date_unique").on(table.userId, table.date),
+]);
 
 export const insertJournalEntrySchema = createInsertSchema(journalEntries).omit({ id: true, createdAt: true });
 export type InsertJournalEntry = z.infer<typeof insertJournalEntrySchema>;
@@ -16,6 +19,7 @@ export type JournalEntry = typeof journalEntries.$inferSelect;
 
 export const tasks = pgTable("tasks", {
   id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
   text: text("text").notNull(),
   category: text("category").notNull().default(""),
   notes: text("notes").notNull().default(""),
@@ -30,6 +34,7 @@ export type Task = typeof tasks.$inferSelect;
 
 export const chatMessages = pgTable("chat_messages", {
   id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
   role: text("role").notNull(),
   content: text("content").notNull(),
   date: text("date").notNull(),
@@ -42,6 +47,7 @@ export type ChatMessage = typeof chatMessages.$inferSelect;
 
 export const commits = pgTable("commits", {
   id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
   text: text("text").notNull(),
   madeDate: text("made_date").notNull(),
   done: boolean("done").notNull().default(false),
@@ -54,6 +60,7 @@ export type Commit = typeof commits.$inferSelect;
 
 export const jobs = pgTable("jobs", {
   id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
   biz: text("biz").notNull(),
   name: text("name").notNull(),
   stage: text("stage").notNull().default(""),
@@ -68,6 +75,7 @@ export type Job = typeof jobs.$inferSelect;
 
 export const comingUp = pgTable("coming_up", {
   id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
   date: text("date").notNull(),
   time: text("time").notNull(),
   title: text("title").notNull(),

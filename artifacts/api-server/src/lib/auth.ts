@@ -1,40 +1,140 @@
 import * as client from "openid-client";
 import crypto from "crypto";
 import { type Request, type Response } from "express";
-import { db, sessionsTable } from "@workspace/db";
+import { db, sessionsTable, betaInvites } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import type { AuthUser } from "@workspace/api-zod";
 
 export const GOOGLE_ISSUER_URL =
   process.env.GOOGLE_ISSUER_URL ?? "https://accounts.google.com";
+export const MICROSOFT_ISSUER_URL =
+  process.env.MICROSOFT_ISSUER_URL ?? "https://login.microsoftonline.com/common/v2.0";
 export const SESSION_COOKIE = "sid";
-export const SESSION_TTL = 7 * 24 * 60 * 60 * 1000;
+export const SESSION_TTL = 90 * 24 * 60 * 60 * 1000;
+export const EMAIL_CODE_TTL_MS = 10 * 60 * 1000;
+export const EMAIL_CODE_MAX_ATTEMPTS = 5;
+
+export function generateEmailLoginCode(): string {
+  return crypto.randomInt(0, 1_000_000).toString().padStart(6, "0");
+}
+
+export function hashEmailLoginCode(code: string): string {
+  return crypto.createHash("sha256").update(code).digest("hex");
+}
+
+export function setSessionCookie(res: Response, sid: string): void {
+  res.cookie(SESSION_COOKIE, sid, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "lax",
+    path: "/",
+    maxAge: SESSION_TTL,
+  });
+}
+
+export type OidcProvider = "google" | "microsoft";
+export type Provider = OidcProvider | "demo" | "email";
+
+const PROVIDER_CONFIG: Record<
+  OidcProvider,
+  { issuer: string; clientIdEnv: string; clientSecretEnv: string }
+> = {
+  google: {
+    issuer: GOOGLE_ISSUER_URL,
+    clientIdEnv: "GOOGLE_CLIENT_ID",
+    clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+  },
+  microsoft: {
+    issuer: MICROSOFT_ISSUER_URL,
+    clientIdEnv: "MICROSOFT_CLIENT_ID",
+    clientSecretEnv: "MICROSOFT_CLIENT_SECRET",
+  },
+};
 
 export interface SessionData {
   user: AuthUser;
+  provider: Provider;
   access_token: string;
   refresh_token?: string;
   expires_at?: number;
 }
 
-let oidcConfig: client.Configuration | null = null;
+const oidcConfigs = new Map<Provider, client.Configuration>();
 
-export async function getOidcConfig(): Promise<client.Configuration> {
-  if (!oidcConfig) {
-    const clientId = process.env.GOOGLE_CLIENT_ID;
-    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-    if (!clientId || !clientSecret) {
-      throw new Error(
-        "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be configured",
-      );
-    }
-    oidcConfig = await client.discovery(
-      new URL(GOOGLE_ISSUER_URL),
-      clientId,
-      clientSecret,
-    );
+export async function getOidcConfig(provider: OidcProvider): Promise<client.Configuration> {
+  const cached = oidcConfigs.get(provider);
+  if (cached) return cached;
+
+  const { issuer, clientIdEnv, clientSecretEnv } = PROVIDER_CONFIG[provider];
+  const clientId = process.env[clientIdEnv];
+  const clientSecret = process.env[clientSecretEnv];
+  if (!clientId || !clientSecret) {
+    throw new Error(`${clientIdEnv} and ${clientSecretEnv} must be configured`);
   }
-  return oidcConfig;
+
+  const config = await client.discovery(new URL(issuer), clientId, clientSecret);
+  oidcConfigs.set(provider, config);
+  return config;
+}
+
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+// Comma-separated allowlist of emails permitted to approve beta sign-ups.
+// Defaults to the app owner so the admin page works without extra setup.
+// Shared with routes/admin.ts so admin emails also bypass the beta-invite gate below.
+export const ADMIN_EMAILS = new Set(
+  (process.env.ADMIN_EMAILS ?? "witeyford@gmail.com")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean),
+);
+
+export function isAdmin(email: string | null | undefined): boolean {
+  return !!email && ADMIN_EMAILS.has(email.toLowerCase());
+}
+
+/**
+ * Looks up the invite status for an email, auto-creating a `pending` row for
+ * first-time sign-in attempts so unapproved users can be reviewed later.
+ * Admin emails are auto-activated so the app owner can never be locked out
+ * behind the beta gate they'd otherwise need admin access to clear.
+ */
+export async function resolveInviteStatus(email: string): Promise<string> {
+  const normalized = normalizeEmail(email);
+
+  if (isAdmin(normalized)) {
+    const [row] = await db
+      .insert(betaInvites)
+      .values({ email: normalized, status: "active", acceptedAt: new Date() })
+      .onConflictDoUpdate({
+        target: betaInvites.email,
+        set: { status: "active", acceptedAt: new Date() },
+      })
+      .returning();
+    return row?.status ?? "active";
+  }
+
+  const [existing] = await db
+    .select()
+    .from(betaInvites)
+    .where(eq(betaInvites.email, normalized));
+  if (existing) return existing.status;
+
+  const [created] = await db
+    .insert(betaInvites)
+    .values({ email: normalized, status: "pending" })
+    .onConflictDoNothing()
+    .returning();
+  if (created) return created.status;
+
+  // Lost an insert race with another concurrent sign-in attempt; re-read.
+  const [row] = await db
+    .select()
+    .from(betaInvites)
+    .where(eq(betaInvites.email, normalized));
+  return row?.status ?? "pending";
 }
 
 export async function createSession(data: SessionData): Promise<string> {

@@ -22,8 +22,14 @@ import type {
 import type {
   AuthUserEnvelope,
   BeginBrowserLoginParams,
+  BeginMicrosoftLoginParams,
+  EmailLoginStartRequest,
+  EmailLoginStartResponse,
+  EmailLoginVerifyRequest,
+  EmailLoginVerifyResponse,
   ErrorEnvelope,
   HandleBrowserLoginCallbackParams,
+  HandleMicrosoftLoginCallbackParams,
   HealthStatus,
   LogoutSuccess,
   MobileTokenExchangeRequest,
@@ -213,7 +219,7 @@ export const getBeginBrowserLoginUrl = (params?: BeginBrowserLoginParams,) => {
 }
 
 /**
- * @summary Start the browser OIDC login flow
+ * @summary Start the browser OIDC login flow (Google)
  */
 export const beginBrowserLogin = async (params?: BeginBrowserLoginParams, options?: RequestInit): Promise<unknown> => {
 
@@ -260,7 +266,7 @@ export type BeginBrowserLoginQueryError = ErrorType<void>
 
 
 /**
- * @summary Start the browser OIDC login flow
+ * @summary Start the browser OIDC login flow (Google)
  */
 
 export function useBeginBrowserLogin<TData = Awaited<ReturnType<typeof beginBrowserLogin>>, TError = ErrorType<void>>(
@@ -297,7 +303,7 @@ export const getHandleBrowserLoginCallbackUrl = (params?: HandleBrowserLoginCall
 }
 
 /**
- * @summary Complete the browser OIDC login flow
+ * @summary Complete the browser OIDC login flow (Google)
  */
 export const handleBrowserLoginCallback = async (params?: HandleBrowserLoginCallbackParams, options?: RequestInit): Promise<unknown> => {
 
@@ -344,7 +350,7 @@ export type HandleBrowserLoginCallbackQueryError = ErrorType<void>
 
 
 /**
- * @summary Complete the browser OIDC login flow
+ * @summary Complete the browser OIDC login flow (Google)
  */
 
 export function useHandleBrowserLoginCallback<TData = Awaited<ReturnType<typeof handleBrowserLoginCallback>>, TError = ErrorType<void>>(
@@ -353,6 +359,174 @@ export function useHandleBrowserLoginCallback<TData = Awaited<ReturnType<typeof 
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
   const queryOptions = getHandleBrowserLoginCallbackQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getBeginMicrosoftLoginUrl = (params?: BeginMicrosoftLoginParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : value.toString())
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/login/microsoft?${stringifiedParams}` : `/api/login/microsoft`
+}
+
+/**
+ * @summary Start the browser OIDC login flow (Microsoft)
+ */
+export const beginMicrosoftLogin = async (params?: BeginMicrosoftLoginParams, options?: RequestInit): Promise<unknown> => {
+
+  return customFetch<unknown>(getBeginMicrosoftLoginUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getBeginMicrosoftLoginQueryKey = (params?: BeginMicrosoftLoginParams,) => {
+    return [
+    `/api/login/microsoft`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getBeginMicrosoftLoginQueryOptions = <TData = Awaited<ReturnType<typeof beginMicrosoftLogin>>, TError = ErrorType<void>>(params?: BeginMicrosoftLoginParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof beginMicrosoftLogin>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getBeginMicrosoftLoginQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof beginMicrosoftLogin>>> = ({ signal }) => beginMicrosoftLogin(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof beginMicrosoftLogin>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type BeginMicrosoftLoginQueryResult = NonNullable<Awaited<ReturnType<typeof beginMicrosoftLogin>>>
+export type BeginMicrosoftLoginQueryError = ErrorType<void>
+
+
+/**
+ * @summary Start the browser OIDC login flow (Microsoft)
+ */
+
+export function useBeginMicrosoftLogin<TData = Awaited<ReturnType<typeof beginMicrosoftLogin>>, TError = ErrorType<void>>(
+ params?: BeginMicrosoftLoginParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof beginMicrosoftLogin>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getBeginMicrosoftLoginQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getHandleMicrosoftLoginCallbackUrl = (params?: HandleMicrosoftLoginCallbackParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : value.toString())
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/callback/microsoft?${stringifiedParams}` : `/api/callback/microsoft`
+}
+
+/**
+ * @summary Complete the browser OIDC login flow (Microsoft)
+ */
+export const handleMicrosoftLoginCallback = async (params?: HandleMicrosoftLoginCallbackParams, options?: RequestInit): Promise<unknown> => {
+
+  return customFetch<unknown>(getHandleMicrosoftLoginCallbackUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getHandleMicrosoftLoginCallbackQueryKey = (params?: HandleMicrosoftLoginCallbackParams,) => {
+    return [
+    `/api/callback/microsoft`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getHandleMicrosoftLoginCallbackQueryOptions = <TData = Awaited<ReturnType<typeof handleMicrosoftLoginCallback>>, TError = ErrorType<void>>(params?: HandleMicrosoftLoginCallbackParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof handleMicrosoftLoginCallback>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getHandleMicrosoftLoginCallbackQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof handleMicrosoftLoginCallback>>> = ({ signal }) => handleMicrosoftLoginCallback(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof handleMicrosoftLoginCallback>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type HandleMicrosoftLoginCallbackQueryResult = NonNullable<Awaited<ReturnType<typeof handleMicrosoftLoginCallback>>>
+export type HandleMicrosoftLoginCallbackQueryError = ErrorType<void>
+
+
+/**
+ * @summary Complete the browser OIDC login flow (Microsoft)
+ */
+
+export function useHandleMicrosoftLoginCallback<TData = Awaited<ReturnType<typeof handleMicrosoftLoginCallback>>, TError = ErrorType<void>>(
+ params?: HandleMicrosoftLoginCallbackParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof handleMicrosoftLoginCallback>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getHandleMicrosoftLoginCallbackQueryOptions(params,options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 
@@ -441,6 +615,149 @@ export function useLogoutBrowserSession<TData = Awaited<ReturnType<typeof logout
 
 
 
+
+export const getStartEmailLoginUrl = () => {
+
+
+
+
+  return `/api/login/email/start`
+}
+
+/**
+ * Works for both new and returning users — if no account exists for the email yet, one is created (pending beta approval) once the code is verified.
+ * @summary Send a one-time sign-in code to an email address
+ */
+export const startEmailLogin = async (emailLoginStartRequest: EmailLoginStartRequest, options?: RequestInit): Promise<EmailLoginStartResponse> => {
+
+  return customFetch<EmailLoginStartResponse>(getStartEmailLoginUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      emailLoginStartRequest,)
+  }
+);}
+
+
+
+
+export const getStartEmailLoginMutationOptions = <TError = ErrorType<ErrorEnvelope>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof startEmailLogin>>, TError,{data: BodyType<EmailLoginStartRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof startEmailLogin>>, TError,{data: BodyType<EmailLoginStartRequest>}, TContext> => {
+
+const mutationKey = ['startEmailLogin'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof startEmailLogin>>, {data: BodyType<EmailLoginStartRequest>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  startEmailLogin(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type StartEmailLoginMutationResult = NonNullable<Awaited<ReturnType<typeof startEmailLogin>>>
+    export type StartEmailLoginMutationBody = BodyType<EmailLoginStartRequest>
+    export type StartEmailLoginMutationError = ErrorType<ErrorEnvelope>
+
+    /**
+ * @summary Send a one-time sign-in code to an email address
+ */
+export const useStartEmailLogin = <TError = ErrorType<ErrorEnvelope>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof startEmailLogin>>, TError,{data: BodyType<EmailLoginStartRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof startEmailLogin>>,
+        TError,
+        {data: BodyType<EmailLoginStartRequest>},
+        TContext
+      > => {
+      return useMutation(getStartEmailLoginMutationOptions(options));
+    }
+
+export const getVerifyEmailLoginUrl = () => {
+
+
+
+
+  return `/api/login/email/verify`
+}
+
+/**
+ * @summary Verify a one-time email sign-in code and create a session
+ */
+export const verifyEmailLogin = async (emailLoginVerifyRequest: EmailLoginVerifyRequest, options?: RequestInit): Promise<EmailLoginVerifyResponse> => {
+
+  return customFetch<EmailLoginVerifyResponse>(getVerifyEmailLoginUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      emailLoginVerifyRequest,)
+  }
+);}
+
+
+
+
+export const getVerifyEmailLoginMutationOptions = <TError = ErrorType<ErrorEnvelope>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof verifyEmailLogin>>, TError,{data: BodyType<EmailLoginVerifyRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof verifyEmailLogin>>, TError,{data: BodyType<EmailLoginVerifyRequest>}, TContext> => {
+
+const mutationKey = ['verifyEmailLogin'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof verifyEmailLogin>>, {data: BodyType<EmailLoginVerifyRequest>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  verifyEmailLogin(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type VerifyEmailLoginMutationResult = NonNullable<Awaited<ReturnType<typeof verifyEmailLogin>>>
+    export type VerifyEmailLoginMutationBody = BodyType<EmailLoginVerifyRequest>
+    export type VerifyEmailLoginMutationError = ErrorType<ErrorEnvelope>
+
+    /**
+ * @summary Verify a one-time email sign-in code and create a session
+ */
+export const useVerifyEmailLogin = <TError = ErrorType<ErrorEnvelope>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof verifyEmailLogin>>, TError,{data: BodyType<EmailLoginVerifyRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof verifyEmailLogin>>,
+        TError,
+        {data: BodyType<EmailLoginVerifyRequest>},
+        TContext
+      > => {
+      return useMutation(getVerifyEmailLoginMutationOptions(options));
+    }
 
 export const getExchangeMobileAuthorizationCodeUrl = () => {
 

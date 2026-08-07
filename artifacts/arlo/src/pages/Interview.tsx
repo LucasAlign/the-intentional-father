@@ -102,7 +102,7 @@ export default function Interview() {
           setQuestionNumber(d.questionNumber);
           setBooted(true);
         } else {
-          // Auto-trigger Arlo's greeting
+          // Auto-trigger Steward's greeting
           await triggerStart();
         }
       } catch {
@@ -121,7 +121,11 @@ export default function Interview() {
         credentials: "include",
         body: JSON.stringify({ message: "" }),
       });
-      if (!r.ok) return;
+      if (!r.ok) {
+        const errorText = await r.text();
+        setMessages([{ role: "assistant", content: "Steward is connected, but onboarding failed (" + r.status + "): " + (errorText || "No error details returned.") }]);
+        return;
+      }
       const d = await r.json() as { message: string; questionNumber: number; complete?: boolean };
       setMessages([{ role: "assistant", content: d.message }]);
       setQuestionNumber(d.questionNumber);
@@ -148,7 +152,8 @@ export default function Interview() {
         body: JSON.stringify({ message: text }),
       });
       if (!r.ok) {
-        setMessages(prev => [...prev, { role: "assistant", content: "I couldn't reach the server. Try again." }]);
+        const errorText = await r.text();
+        setMessages(prev => [...prev, { role: "assistant", content: "Steward is connected, but onboarding failed (" + r.status + "): " + (errorText || "No error details returned.") }]);
         return;
       }
       const d = await r.json() as { message: string; questionNumber: number; complete?: boolean };
@@ -165,6 +170,14 @@ export default function Interview() {
   function confirm() {
     setConfirming(true);
     setTimeout(() => setLocation("/"), 600);
+  }
+
+  async function skip() {
+    try {
+      await fetch(`${API}/interview/skip`, { method: "POST", credentials: "include" });
+    } finally {
+      setLocation("/");
+    }
   }
 
   if (isLoading || (!booted && isAuthenticated)) {
@@ -184,7 +197,7 @@ export default function Interview() {
         <div style={R.ambient} />
         <div style={R.loadWrap}>
           <div style={R.loadText}>Please sign in to continue.</div>
-          <button style={R.loginBtn} onClick={login}>Sign in</button>
+          <button style={R.loginBtn} onClick={() => login()}>Sign in</button>
         </div>
       </div>
     );
@@ -199,14 +212,15 @@ export default function Interview() {
       {/* Header */}
       <div style={R.header}>
         <div>
-          <div style={R.logo}><span style={R.logoText}>Arlo</span><span style={R.logoDot}>.</span></div>
+          <div style={R.logo}><span style={R.logoText}>Steward</span><span style={R.logoDot}>.</span></div>
           <div style={R.tagline}>GETTING TO KNOW YOU</div>
         </div>
         <div style={R.progressWrap}>
-          <div style={R.progressLabel}>Question {Math.min(questionNumber, 6)} of 6</div>
+          <div style={R.progressLabel}>Question {Math.min(questionNumber, 10)} of 10</div>
           <div style={R.progressBar}>
-            <div style={{ ...R.progressFill, width: `${Math.min((questionNumber / 6) * 100, 100)}%` }} />
+            <div style={{ ...R.progressFill, width: `${Math.min((questionNumber / 10) * 100, 100)}%` }} />
           </div>
+          {!complete && <button style={R.skipBtn} onClick={skip}>Skip for now</button>}
         </div>
       </div>
 
@@ -217,7 +231,7 @@ export default function Interview() {
         )}
         {messages.map((m, i) => (
           <div key={i} style={{ ...R.bubble, ...(m.role === "user" ? R.bubbleU : R.bubbleA) }}>
-            {m.role === "assistant" && <div style={R.bubbleName}>ARLO</div>}
+            {m.role === "assistant" && <div style={R.bubbleName}>STEWARD</div>}
             <div style={{ ...R.bubbleText, ...(m.role === "user" ? R.bubbleTextU : {}) }}>
               {m.content}
             </div>
@@ -225,7 +239,7 @@ export default function Interview() {
         ))}
         {sending && (
           <div style={{ ...R.bubble, ...R.bubbleA }}>
-            <div style={R.bubbleName}>ARLO</div>
+            <div style={R.bubbleName}>STEWARD</div>
             <div style={{ ...R.bubbleText, color: C.parchmentDim }}>…</div>
           </div>
         )}
@@ -319,6 +333,11 @@ const R: Record<string, CSSProperties> = {
     background: `linear-gradient(90deg,${C.brassDeep},${C.brass})`,
     borderRadius: 2, transition: "width 0.5s ease",
     boxShadow: `0 0 6px ${C.brassGlow}`,
+  },
+  skipBtn: {
+    background: "none", border: "none", padding: 0, marginTop: 8,
+    color: C.parchmentLow, fontSize: 11, letterSpacing: "0.04em",
+    textDecoration: "underline", textUnderlineOffset: 2, cursor: "pointer", fontFamily: F,
   },
   chatArea: {
     flex: 1, overflowY: "auto", padding: "8px 18px 12px",

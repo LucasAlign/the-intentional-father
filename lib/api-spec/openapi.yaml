@@ -45,7 +45,7 @@ paths:
     get:
       tags: [Auth]
       operationId: beginBrowserLogin
-      summary: Start the browser OIDC login flow
+      summary: Start the browser OIDC login flow (Google)
       parameters:
         - name: returnTo
           in: query
@@ -60,7 +60,7 @@ paths:
     get:
       tags: [Auth]
       operationId: handleBrowserLoginCallback
-      summary: Complete the browser OIDC login flow
+      summary: Complete the browser OIDC login flow (Google)
       parameters:
         - name: code
           in: query
@@ -80,7 +80,53 @@ paths:
             format: uri
       responses:
         '302':
-          description: Redirect to the `returnTo` path on success (defaults to `/`) or `/api/login` on failure.
+          description: >-
+            Redirect to the `returnTo` path (with `?authError=pending_approval`
+            appended if the account isn't approved yet) on success, or
+            `/api/login` on failure.
+  /login/microsoft:
+    get:
+      tags: [Auth]
+      operationId: beginMicrosoftLogin
+      summary: Start the browser OIDC login flow (Microsoft)
+      parameters:
+        - name: returnTo
+          in: query
+          required: false
+          description: Relative path to redirect to after login (must start with `/`). Defaults to `/`.
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirect to the OIDC authorization endpoint.
+  /callback/microsoft:
+    get:
+      tags: [Auth]
+      operationId: handleMicrosoftLoginCallback
+      summary: Complete the browser OIDC login flow (Microsoft)
+      parameters:
+        - name: code
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: iss
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uri
+      responses:
+        '302':
+          description: >-
+            Redirect to the `returnTo` path (with `?authError=pending_approval`
+            appended if the account isn't approved yet) on success, or
+            `/api/login/microsoft` on failure.
   /logout:
     get:
       tags: [Auth]
@@ -92,6 +138,77 @@ paths:
       responses:
         '302':
           description: Redirect to the OIDC provider logout URL.
+  /login/email/start:
+    post:
+      tags: [Auth]
+      operationId: startEmailLogin
+      summary: Send a one-time sign-in code to an email address
+      description: >-
+        Works for both new and returning users — if no account exists for the
+        email yet, one is created (pending beta approval) once the code is verified.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailLoginStartRequest'
+      responses:
+        '200':
+          description: Code sent (or silently accepted) — always returned to avoid confirming email existence.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailLoginStartResponse'
+        '400':
+          description: Missing or invalid email.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '429':
+          description: Too many code requests.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          description: Failed to send the code.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /login/email/verify:
+    post:
+      tags: [Auth]
+      operationId: verifyEmailLogin
+      summary: Verify a one-time email sign-in code and create a session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailLoginVerifyRequest'
+      responses:
+        '200':
+          description: >-
+            Code verified. `user` is null and `pendingApproval` is true if the
+            account is awaiting beta approval; otherwise a session cookie is set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailLoginVerifyResponse'
+        '400':
+          description: Invalid, expired, or already-used code.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '429':
+          description: Too many attempts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
   /mobile-auth/token-exchange:
     post:
       tags: [Auth]
@@ -189,6 +306,46 @@ components:
           oneOf:
             - $ref: '#/components/schemas/AuthUser'
             - type: 'null'
+    EmailLoginStartRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+    EmailLoginStartResponse:
+      type: object
+      required: [sent]
+      properties:
+        sent:
+          type: boolean
+          const: true
+    EmailLoginVerifyRequest:
+      type: object
+      required: [email, code]
+      properties:
+        email:
+          type: string
+          format: email
+        code:
+          type: string
+          pattern: '^[0-9]{6}$'
+        name:
+          description: >-
+            Display name, used to set first/last name when this verify call
+            creates a brand-new user. Ignored for an existing user.
+          type: string
+          minLength: 1
+    EmailLoginVerifyResponse:
+      type: object
+      required: [user, pendingApproval]
+      properties:
+        user:
+          oneOf:
+            - $ref: '#/components/schemas/AuthUser'
+            - type: 'null'
+        pendingApproval:
+          type: boolean
     MobileTokenExchangeRequest:
       type: object
       required: [code, code_verifier, redirect_uri, state]

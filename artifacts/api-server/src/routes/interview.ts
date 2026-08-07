@@ -2,9 +2,14 @@ import { Router, Request, Response } from "express";
 import { db } from "@workspace/db";
 import { profile as profileTable, interviewMessages } from "@workspace/db";
 import { eq, asc } from "drizzle-orm";
+import { normalizeProfileData } from "../lib/profile";
+import { aiRateLimit } from "../middlewares/aiRateLimit";
+import { SCRIPTURE_GROUNDING } from "../lib/verses";
 
 const router = Router();
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
+const TOTAL_INTERVIEW_QUESTIONS = 10;
+const MAX_INTERVIEW_MESSAGE_LENGTH = 4000;
 
 type OpenAIResponsesApiResponse = {
   output_text?: string;
@@ -19,14 +24,14 @@ function getOpenAIMessage(data: OpenAIResponsesApiResponse): string | undefined 
     .find((t): t is string => Boolean(t));
 }
 
-const INTERVIEW_SYSTEM_PROMPT = `You are Arlo — a direct, gospel-centered planning partner meeting someone for the first time.
+const INTERVIEW_SYSTEM_PROMPT = `You are Steward — a direct, gospel-centered planning partner meeting someone for the first time.
 Your mission: get to know them well enough to be genuinely useful across all of life — work, marriage, family, faith.
 
-Work through these 6 areas naturally, like a mentor conversation — not a form or checklist:
-1. Name, role, and season of life (who are you right now?)
+Work through these 6 areas naturally, like a mentor conversation — not a form or checklist. You have up to 10 questions total, so use any extras to push deeper with a follow-up before moving on:
+1. Name, role, and season of life — ask this open-ended (single, dating, married, parenting young kids, empty nester, widowed, retired, or anything else). Don't assume marriage or kids.
 2. Their #1 priority — what comes first? What's non-negotiable?
 3. Businesses or main work — what do they do, any patterns or common blockers?
-4. Family — spouse's name, kids, biggest marriage challenge right now
+4. Key relationships — who matters most to them right now given their season of life (a spouse, kids, parents, close friends, a mentee — whatever actually fits), names if they share them, and the biggest friction point in those relationships right now
 5. Where do plans stall? What drains decisions? Where does execution break down?
 6. Guardrails — what should you never suggest? How direct do they want you to be?
 
@@ -35,15 +40,17 @@ Rules:
 - Ask ONE area at a time. Wait for the answer before moving on.
 - If an answer is surface-level, push once with a pointed follow-up before moving on.
 - Acknowledge patterns you hear ("That sounds like your 80% problem, doesn't it?").
-- Reference Scripture naturally where it fits — not forced, not preachy.
+- Reference Scripture naturally where it fits — not forced, not preachy. Quote only from the approved verses below, verbatim.
 - Tone: direct and warm, like a brother who tells the truth and sees potential.
-- After all 6 areas are covered, give a clear summary of how you understand them and ask: "Does that sound right?"
-- When they confirm the summary is accurate, end your response with exactly this tag on its own line: [INTERVIEW_COMPLETE]`;
+- By question 10 at the latest, give a clear summary of how you understand them and ask: "Does that sound right?"
+- When they confirm the summary is accurate, end your response with exactly this tag on its own line: [INTERVIEW_COMPLETE]
+
+${SCRIPTURE_GROUNDING}`;
 
 const EXTRACT_SYSTEM_PROMPT = `You are a data extraction assistant. Given an interview conversation, extract a structured user profile as JSON.
 Output ONLY valid JSON — no markdown, no code blocks, no explanation, no commentary. Just the JSON object.
 
-Use this exact schema (use null for unknown fields):
+Use this exact schema (use null for unknown fields). Order the "relationships" array with the person's most important relationship first, as they emphasized it in conversation — don't assume a spouse belongs first if they didn't lead with one:
 {
   "name": "string",
   "season_of_life": "string describing their current life stage",
@@ -61,12 +68,15 @@ Use this exact schema (use null for unknown fields):
       "key_metrics": ["array of strings"]
     }
   ],
-  "family": {
-    "spouse_name": "string or null",
-    "children": "number or null",
-    "marriage_commitments": "string or null",
-    "biggest_challenge": "string or null"
-  },
+  "relationships": [
+    {
+      "name": "string or null",
+      "type": "string — e.g. spouse, child, parent, sibling, close friend, mentee",
+      "notes": "string or null — role/context, e.g. 'wife', 'oldest son'",
+      "commitments": "string or null",
+      "biggest_challenge": "string or null"
+    }
+  ],
   "planning_profile": {
     "decision_drain": "string or null",
     "common_failure_point": "string or null",
@@ -111,6 +121,21 @@ async function callOpenAI(
   return text;
 }
 
+// GET /api/profile
+router.get("/profile", async (req: Request, res: Response) => {
+  try {
+    const [row] = await db
+      .select()
+      .from(profileTable)
+      .where(eq(profileTable.userId, req.user!.id))
+      .limit(1);
+    res.json({ onboarded: row?.onboarded ?? false, data: normalizeProfileData(row?.data ?? null) });
+  } catch (err) {
+    req.log?.error({ err }, "Error fetching profile");
+    res.status(500).json({ error: "Failed to fetch profile" });
+  }
+});
+
 // GET /api/interview/status
 router.get("/interview/status", async (req: Request, res: Response) => {
   try {
@@ -138,7 +163,7 @@ router.get("/interview/history", async (req: Request, res: Response) => {
       .orderBy(asc(interviewMessages.createdAt));
 
     const userCount = msgs.filter((m) => m.role === "user").length;
-    const questionNumber = Math.min(userCount + 1, 6);
+    const questionNumber = Math.min(userCount + 1, TOTAL_INTERVIEW_QUESTIONS);
 
     const [profileRow] = await db
       .select()
@@ -158,10 +183,18 @@ router.get("/interview/history", async (req: Request, res: Response) => {
 });
 
 // POST /api/interview
-router.post("/interview", async (req: Request, res: Response) => {
+router.post("/interview", aiRateLimit, async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const { message } = req.body as { message?: string };
+    if (message !== undefined && typeof message !== "string") {
+      res.status(400).json({ error: "Message must be a string" });
+      return;
+    }
+    if (message && message.length > MAX_INTERVIEW_MESSAGE_LENGTH) {
+      res.status(400).json({ error: `Message must be under ${MAX_INTERVIEW_MESSAGE_LENGTH} characters` });
+      return;
+    }
     const isStart = !message || message.trim() === "";
 
     const apiKey = process.env.OPENAI_API_KEY;
@@ -193,7 +226,7 @@ router.post("/interview", async (req: Request, res: Response) => {
       const userCount = existing.filter((m) => m.role === "user").length;
       res.json({
         message: existing[existing.length - 1]?.content ?? "",
-        questionNumber: Math.min(userCount + 1, 6),
+        questionNumber: Math.min(userCount + 1, TOTAL_INTERVIEW_QUESTIONS),
       });
       return;
     }
@@ -215,10 +248,10 @@ router.post("/interview", async (req: Request, res: Response) => {
     });
 
     const userCount = existing.filter((m) => m.role === "user").length + (isStart ? 0 : 1);
-    const questionNumber = Math.min(userCount + 1, 6);
+    const questionNumber = Math.min(userCount + 1, TOTAL_INTERVIEW_QUESTIONS);
 
-    // Check if interview is complete
-    if (assistantText.includes("[INTERVIEW_COMPLETE]")) {
+    // Check if interview is complete, or force it once the question cap is hit
+    if (assistantText.includes("[INTERVIEW_COMPLETE]") || userCount >= TOTAL_INTERVIEW_QUESTIONS) {
       try {
         const allMessages = await db
           .select()
@@ -253,7 +286,7 @@ router.post("/interview", async (req: Request, res: Response) => {
           });
 
         const cleanMessage = assistantText.replace("[INTERVIEW_COMPLETE]", "").trimEnd();
-        res.json({ message: cleanMessage, questionNumber: 6, complete: true, profile: profileData });
+        res.json({ message: cleanMessage, questionNumber: TOTAL_INTERVIEW_QUESTIONS, complete: true, profile: profileData });
         return;
       } catch (extractErr) {
         req.log?.error({ extractErr }, "Profile extraction failed");
@@ -266,7 +299,7 @@ router.post("/interview", async (req: Request, res: Response) => {
             set: { onboarded: true, updatedAt: new Date() },
           });
         const cleanMessage = assistantText.replace("[INTERVIEW_COMPLETE]", "").trimEnd();
-        res.json({ message: cleanMessage, questionNumber: 6, complete: true });
+        res.json({ message: cleanMessage, questionNumber: TOTAL_INTERVIEW_QUESTIONS, complete: true });
         return;
       }
     }
@@ -274,12 +307,36 @@ router.post("/interview", async (req: Request, res: Response) => {
     res.json({ message: assistantText, questionNumber });
   } catch (err) {
     req.log?.error({ err }, "Interview error");
-    res.status(500).json({ error: "Failed to get response from Arlo" });
+    res.status(500).json({ error: "Failed to get response from Steward" });
   }
 });
 
-// POST /api/test/complete-interview  — seeds a completed profile for testing
+// POST /api/interview/skip
+router.post("/interview/skip", async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    await db
+      .insert(profileTable)
+      .values({ userId, data: null, onboarded: true, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: profileTable.userId,
+        set: { onboarded: true, updatedAt: new Date() },
+      });
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, "Error skipping interview");
+    res.status(500).json({ error: "Failed to skip interview" });
+  }
+});
+
+// POST /api/test/complete-interview  — seeds a completed profile for testing.
+// Dev-only: any authenticated user could otherwise overwrite their own real
+// onboarding data with this fixture, so it 404s outside local development.
 router.post("/test/complete-interview", async (req: Request, res: Response) => {
+  if (process.env.NODE_ENV === "production") {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
   try {
     const userId = req.user!.id;
 
@@ -300,12 +357,22 @@ router.post("/test/complete-interview", async (req: Request, res: Response) => {
           key_metrics: ["quote conversion", "delivery on time"],
         },
       ],
-      family: {
-        spouse_name: "Wife",
-        children: 3,
-        marriage_commitments: "weekly date, family dinner",
-        biggest_challenge: "staying present when businesses pull",
-      },
+      relationships: [
+        {
+          name: "Sarah",
+          type: "spouse",
+          notes: "wife",
+          commitments: "weekly date, family dinner",
+          biggest_challenge: "staying present when businesses pull",
+        },
+        {
+          name: null,
+          type: "child",
+          notes: "3 kids",
+          commitments: null,
+          biggest_challenge: null,
+        },
+      ],
       planning_profile: {
         decision_drain: "too many options",
         common_failure_point: "stalls at 80%",

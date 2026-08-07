@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { CSSProperties, ReactElement } from "react";
+import type { CSSProperties, ReactElement, PointerEvent } from "react";
 import { useAuth } from "@workspace/replit-auth-web";
 import { useLocation } from "wouter";
 
@@ -46,6 +46,8 @@ interface Job { id: number; biz: string; name: string; stage: string; due: strin
 interface Event { id: number; date: string; time: string; title: string; sub: string; tag: string; kind: string; }
 interface Message { role: "user" | "assistant"; content: string; }
 interface Journal { reflect: string; commit_text: string; }
+interface Relationship { name: string | null; type: string; notes?: string | null; commitments?: string | null; biggest_challenge?: string | null; }
+interface ProfileData { name?: string | null; season_of_life?: string | null; relationships?: Relationship[]; }
 
 const API = "/api";
 const WOOD = `${import.meta.env.BASE_URL}woodgrain.png`;
@@ -112,9 +114,9 @@ function Icon({ name, size = 15, color = C.brassSoft, stroke = 1.6 }: { name: Ic
 
 const NAV: { id: TabId; icon: IconName | "arloA"; label: string }[] = [
   { id: "today", icon: "sun", label: "Today" },
-  { id: "her", icon: "heart", label: "Her" },
+  { id: "her", icon: "heart", label: "Relationships" },
   { id: "work", icon: "work", label: "Work" },
-  { id: "arlo", icon: "arloA", label: "Arlo" },
+  { id: "arlo", icon: "arloA", label: "Steward" },
   { id: "week", icon: "cal", label: "Week" },
 ];
 type TabId = "today" | "her" | "work" | "arlo" | "week";
@@ -137,9 +139,122 @@ function weekDays() {
   });
 }
 
+
+const JOURNAL_PROMPTS_MARRIED = [
+  "What's one specific way I can love my spouse better today?",
+  "Where do my kids need patience, attention, or encouragement from me today?",
+  "What's been bothering me that I need to name honestly instead of carrying quietly?",
+  "What am I thankful for today, and how can I say it out loud?",
+  "What would make my spouse feel seen before the day is over?",
+  "What's one small moment I can create with my kids today?",
+  "Where am I tempted to withdraw, and what would love do instead?",
+];
+
+const JOURNAL_PROMPTS_EMPTY_NESTER = [
+  "Which coworker or teammate could use more of my real attention today?",
+  "Who at work have I been too busy or too guarded to really see lately?",
+  "What's one specific way I can check in on my kids without hovering?",
+  "What's been bothering me that I need to name honestly instead of carrying quietly?",
+  "What am I thankful for today, and how can I say it out loud?",
+  "Where am I tempted to withdraw, and what would love do instead?",
+  "Who could use an encouraging word from me before the day is over?",
+];
+
+const JOURNAL_PROMPTS_GENERAL = [
+  "Who in my life could use a real conversation today, not just a text?",
+  "Where do the people closest to me need patience, attention, or encouragement today?",
+  "What's been bothering me that I need to name honestly instead of carrying quietly?",
+  "What am I thankful for today, and how can I say it out loud?",
+  "Who could use an encouraging word from me before the day is over?",
+  "What's one small moment of real connection I can create today?",
+  "Where am I tempted to withdraw, and what would love do instead?",
+];
+
+function isSpouseType(type: string | null | undefined): boolean {
+  return Boolean(type && /spouse|wife|husband/i.test(type));
+}
+
+function seasonCategory(profile: ProfileData | null): "married" | "empty_nester" | "general" {
+  const season = (profile?.season_of_life || "").toLowerCase();
+  if (season.includes("empty nest")) return "empty_nester";
+  if (season.includes("married") || profile?.relationships?.some(r => isSpouseType(r.type))) return "married";
+  return "general";
+}
+
+function journalPromptsFor(profile: ProfileData | null): string[] {
+  const category = seasonCategory(profile);
+  if (category === "married") return JOURNAL_PROMPTS_MARRIED;
+  if (category === "empty_nester") return JOURNAL_PROMPTS_EMPTY_NESTER;
+  return JOURNAL_PROMPTS_GENERAL;
+}
+
+function primaryRelationship(profile: ProfileData | null): Relationship | null {
+  // Relationships are ordered by the person's stated importance during onboarding —
+  // respect that ordering rather than assuming a spouse is always primary.
+  return profile?.relationships?.[0] ?? null;
+}
+
+const EXERCISE_PROMPTS = [
+  "Walk outside, move your body, or stretch before the day starts.",
+  "Get 20 minutes of movement in before the work takes over.",
+  "Do something simple: walk, pushups, mobility, or a steady sweat.",
+  "Move early so your body is not the last thing you remember.",
+];
+
+function dayOfYear(date = new Date()) {
+  return Math.floor((date.getTime() - new Date(date.getFullYear(), 0, 0).getTime()) / 86400000);
+}
+
+function rotatingItem(items: string[]) {
+  return items[dayOfYear() % items.length];
+}
+
+function parseJobDueDate(due: string): string | null {
+  const value = due.trim();
+  if (!value) return null;
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+
+  const currentYear = new Date().getFullYear();
+  const numeric = value.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2}|\d{4}))?$/);
+  if (numeric) {
+    const month = Number(numeric[1]);
+    const day = Number(numeric[2]);
+    const year = numeric[3] ? Number(numeric[3].length === 2 ? "20" + numeric[3] : numeric[3]) : currentYear;
+    const date = new Date(year, month - 1, day);
+    if (date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day) return ymd(date);
+  }
+
+  const monthName = value.match(/^(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+(\d{1,2})(?:,\s*(\d{4}))?$/i);
+  if (monthName) {
+    const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    const month = months.findIndex(m => monthName[1].toLowerCase().startsWith(m));
+    const day = Number(monthName[2]);
+    const year = monthName[3] ? Number(monthName[3]) : currentYear;
+    const date = new Date(year, month, day);
+    if (date.getFullYear() === year && date.getMonth() === month && date.getDate() === day) return ymd(date);
+  }
+
+  return null;
+}
+
+function jobCalendarEvent(job: Job): Event | null {
+  const date = parseJobDueDate(job.due);
+  if (!date) return null;
+  return {
+    id: -100000 - job.id,
+    date,
+    time: "Due",
+    title: job.name,
+    sub: job.stage,
+    tag: job.biz,
+    kind: "work",
+  };
+}
+
 // ── Root ──────────────────────────────────────────────────────────────────────
 export default function Home() {
-  const { isLoading, isAuthenticated, login, logout } = useAuth();
+  const { isLoading, isAuthenticated, pendingApproval, user, login, logout, startEmailLogin, verifyEmailLogin } = useAuth();
   const [, setLocation] = useLocation();
   const [tab, setTab] = useState<TabId>("today");
 
@@ -157,6 +272,9 @@ export default function Home() {
   const [jobModal, setJobModal] = useState(false);
   const [editJob, setEditJob] = useState<Job | null>(null);
   const [calendarAccounts, setCalendarAccounts] = useState<string[]>([]);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [profileMenu, setProfileMenu] = useState(false);
+  const [profile, setProfile] = useState<ProfileData | null>(null);
 
   const refreshTasks = useCallback(() => {
     getList<Task>(`${API}/tasks`).then(setTasks);
@@ -169,7 +287,7 @@ export default function Home() {
   }, []);
   const refreshCalendarStatus = useCallback(() => {
     getJson(`${API}/google-calendar/status`, { accounts: [] }).then((d) => {
-      setCalendarAccounts(isRecord(d) && Array.isArray(d.accounts) ? d.accounts as string[] : []);
+      setCalendarAccounts(isRecord(d) && Array.isArray(d.accounts) ? d.accounts as string[] : isRecord(d) && d.connected ? ["Google Calendar"] : []);
     });
   }, []);
 
@@ -190,6 +308,8 @@ export default function Home() {
     getList<Event>(`${API}/coming-up`).then(setToday);
     getList<Event>(`${API}/coming-up?start=${start}&end=${end}`).then(setWeek);
     getList<Message>(`${API}/chat-history`).then((m) => setChat(prev => prev.length ? prev : m));
+    getJson(`${API}/admin/is-admin`, { isAdmin: false }).then((d) => setIsAdmin(isRecord(d) && d.isAdmin === true));
+    getJson(`${API}/profile`, null).then((d) => { if (isRecord(d) && isRecord(d.data)) setProfile(d.data as unknown as ProfileData); });
     refreshTasks(); refreshCommits(); refreshJobs(); refreshCalendarStatus();
   }, [isAuthenticated, setLocation, refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus]);
 
@@ -213,7 +333,8 @@ export default function Home() {
         const d = await r.json();
         setChat(p => [...p, { role: "assistant", content: d.message }]);
       } else {
-        setChat(p => [...p, { role: "assistant", content: "I couldn't reach the server just now. Try again in a moment." }]);
+        const errorText = await r.text();
+        setChat(p => [...p, { role: "assistant", content: "Steward is connected, but the chat request failed (" + r.status + "): " + (errorText || "No error details returned.") }]);
       }
     } catch {
       setChat(p => [...p, { role: "assistant", content: "I couldn't reach the server just now. Try again in a moment." }]);
@@ -222,7 +343,10 @@ export default function Home() {
     }
   }
 
-  if (!isAuthenticated) return <AuthGate loading={isLoading} onLogin={login} />;
+  if (!isAuthenticated) return <AuthGate loading={isLoading} pendingApproval={pendingApproval} onLogin={login} onStartEmailLogin={startEmailLogin} onVerifyEmailLogin={verifyEmailLogin} />;
+
+  const primaryRel = primaryRelationship(profile);
+  const relTabLabel = primaryRel?.name || "Relationships";
 
   return (
     <div style={R.root}>
@@ -232,18 +356,25 @@ export default function Home() {
 
       <div style={R.header}>
         <div>
-          <div style={R.logo}><span style={R.logoText}>Arlo</span><span style={R.logoDot}>.</span></div>
+          <div style={R.logo}><span style={R.logoText}>Steward</span><span style={R.logoDot}>.</span></div>
           <div style={R.tagline}>FOCUSED. FAITHFUL. FREE.</div>
         </div>
-        <button style={{ ...R.avatar, padding: 0, cursor: "pointer" }} onClick={logout} title="Log out" aria-label="Log out"><Icon name="user" size={20} color={C.parchmentDim} /></button>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {isAdmin && (
+            <button style={{ ...R.avatar, padding: 0, cursor: "pointer" }} onClick={() => setLocation("/admin")} title="Sign-ups" aria-label="Sign-ups">
+              <Icon name="target" size={18} color={C.parchmentDim} />
+            </button>
+          )}
+          <button style={{ ...R.avatar, padding: 0, cursor: "pointer" }} onClick={() => setProfileMenu(true)} title="Profile" aria-label="Profile"><Icon name="user" size={20} color={C.parchmentDim} /></button>
+        </div>
       </div>
 
       <div style={R.screen}>
-        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} />}
-        {tab === "her" && <Her commits={commits} refresh={refreshCommits} />}
+        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} />}
+        {tab === "her" && <Relationships commits={commits} refresh={refreshCommits} primaryRel={primaryRel} label={relTabLabel} />}
         {tab === "work" && <Work jobs={jobs} onJob={() => setJobModal(true)} onEdit={setEditJob} />}
         {tab === "arlo" && <ArloChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} />}
-        {tab === "week" && <WeekView events={week} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await fetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
+        {tab === "week" && <WeekView events={week} jobs={jobs} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await fetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
       </div>
 
       <div style={R.navWrap}>
@@ -252,9 +383,9 @@ export default function Home() {
           {NAV.map(n => (
             <button key={n.id} style={R.navBtn} onClick={() => setTab(n.id)}>
               {n.icon === "arloA"
-                ? <div style={{ ...R.arloA, ...(tab === n.id ? R.arloAOn : {}) }}>A</div>
+                ? <div style={{ ...R.arloA, ...(tab === n.id ? R.arloAOn : {}) }}>S</div>
                 : <Icon name={n.icon as IconName} size={20} color={tab === n.id ? C.brass : C.parchmentLow} stroke={tab === n.id ? 1.9 : 1.6} />}
-              <span style={{ ...R.navLabel, ...(tab === n.id ? R.navLabelOn : {}) }}>{n.label}</span>
+              <span style={{ ...R.navLabel, ...(tab === n.id ? R.navLabelOn : {}) }}>{n.id === "her" ? relTabLabel : n.label}</span>
             </button>
           ))}
         </nav>
@@ -262,13 +393,29 @@ export default function Home() {
 
       {jobModal && <JobModal onClose={() => setJobModal(false)} onCreated={refreshJobs} bizSuggestions={[...new Set(jobs.map(j => j.biz))]} />}
       {editJob && <JobEditModal job={editJob} onClose={() => setEditJob(null)} onSaved={refreshJobs} onDeleted={refreshJobs} />}
+      {profileMenu && <ProfileMenu name={user?.firstName} email={user?.email} onClose={() => setProfileMenu(false)} onLogout={logout} />}
+    </div>
+  );
+}
+
+function ProfileMenu({ name, email, onClose, onLogout }: { name?: string | null; email?: string | null; onClose: () => void; onLogout: () => void }) {
+  return (
+    <div style={M.overlay} onClick={onClose}>
+      <div style={M.sheet} onClick={e => e.stopPropagation()}>
+        <div style={M.strip} />
+        <div style={M.head}><div style={M.title}>{name || email || "Profile"}</div></div>
+        <a style={{ ...M.next, textDecoration: "none", display: "block", textAlign: "center" }} href="mailto:admin@lucasalign.com?subject=Steward%20feedback">Contact Support / Feedback</a>
+        <button style={{ ...M.next, background: "none", border: "1px solid rgba(210,190,130,0.18)", color: C.parchmentDim, boxShadow: "none" }} onClick={onLogout}>Log Out</button>
+        <button style={M.cancel} onClick={onClose}>Cancel</button>
+      </div>
     </div>
   );
 }
 
 // ── Today ───────────────────────────────────────────────────────────────────
-function Today({ verse, tasks, journal, events, onSend, ci, setCi, sending, onSaveJournal, refreshTasks }: {
-  verse: string; tasks: Task[]; journal: Journal; events: Event[];
+function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks }: {
+  verse: string; tasks: Task[]; journal: Journal; events: Event[]; name?: string | null;
+  profile: ProfileData | null; primaryRel: Relationship | null;
   onSend: (m?: string) => void; ci: string; setCi: (v: string) => void; sending: boolean;
   onSaveJournal: (j: Journal) => void; refreshTasks: () => void;
 }) {
@@ -277,14 +424,25 @@ function Today({ verse, tasks, journal, events, onSend, ci, setCi, sending, onSa
   const [writing, setWriting] = useState(false);
   const [adding, setAdding] = useState(false);
   const [newTask, setNewTask] = useState("");
+  const [deletingIds, setDeletingIds] = useState<number[]>([]);
+  const [exerciseDone, setExerciseDone] = useState(false);
   useEffect(() => { setIntent(journal.commit_text); setReflect(journal.reflect); }, [journal.commit_text, journal.reflect]);
 
   const hr = new Date().getHours();
-  const greeting = `Good ${hr < 12 ? "morning" : hr < 18 ? "afternoon" : "evening"}, Bryant.`;
+  const greeting = `Good ${hr < 12 ? "morning" : hr < 18 ? "afternoon" : "evening"}${name ? `, ${name}` : ""}.`;
   const sep = verse.indexOf(" — ");
   const vRef = sep === -1 ? "" : verse.slice(0, sep);
   const vText = sep === -1 ? verse : verse.slice(sep + 3);
-  const top3 = tasks.slice(0, 3);
+  const openTasks = tasks.filter(t => !deletingIds.includes(t.id));
+  const journalPrompt = rotatingItem(journalPromptsFor(profile));
+  const exercisePrompt = rotatingItem(EXERCISE_PROMPTS);
+  const isSpouseRel = primaryRel && isSpouseType(primaryRel.type);
+  const intentionLabel = isSpouseRel ? "MARRIAGE INTENTION" : primaryRel ? `${(primaryRel.type || "relationship").toUpperCase()} INTENTION` : "RELATIONSHIP INTENTION";
+  const intentionPlaceholder = isSpouseRel
+    ? "What's your intention for your marriage today?"
+    : primaryRel?.name
+      ? `What's your intention with ${primaryRel.name} today?`
+      : "What's your intention for the people who matter most today?";
 
   async function addTask() {
     const t = newTask.trim();
@@ -295,11 +453,24 @@ function Today({ verse, tasks, journal, events, onSend, ci, setCi, sending, onSa
       if (r.ok) refreshTasks();
     } catch { /* ignore */ }
   }
-  async function complete(id: number) {
+  async function complete(id: number): Promise<boolean> {
     try {
       const r = await fetch(`${API}/tasks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: true }) });
       if (r.ok) refreshTasks();
-    } catch { /* ignore */ }
+      return r.ok;
+    } catch {
+      return false;
+    }
+  }
+  async function deleteTask(id: number) {
+    setDeletingIds(prev => prev.includes(id) ? prev : [...prev, id]);
+    try {
+      const r = await fetch(`${API}/tasks/${id}`, { method: "DELETE" });
+      if (r.ok) refreshTasks();
+      else setDeletingIds(prev => prev.filter(item => item !== id));
+    } catch {
+      setDeletingIds(prev => prev.filter(item => item !== id));
+    }
   }
 
   return (
@@ -316,32 +487,34 @@ function Today({ verse, tasks, journal, events, onSend, ci, setCi, sending, onSa
       </div>
 
       <div style={S.cardCentered}>
-        <div style={S.eyebrow}><Icon name="heart" /><span style={S.eyeText}>MARRIAGE INTENTION</span></div>
+        <div style={S.eyebrow}><Icon name="heart" /><span style={S.eyeText}>{intentionLabel}</span></div>
         <textarea
           style={S.intentInput}
           value={intent}
           rows={2}
-          placeholder="What's your intention for your marriage today?"
+          placeholder={intentionPlaceholder}
           onChange={e => setIntent(e.target.value)}
           onBlur={() => intent !== journal.commit_text && onSaveJournal({ ...journal, commit_text: intent })}
         />
       </div>
 
+      <div style={{ ...S.exerciseCard, ...(exerciseDone ? S.exerciseDone : {}) }}>
+        <div style={{ flex: 1 }}>
+          <div style={S.eyebrow}><Icon name="clock" /><span style={S.eyeText}>MORNING 20 MIN</span></div>
+          <div style={S.exerciseText}>{exerciseDone ? "Movement logged for today." : exercisePrompt}</div>
+        </div>
+        <button style={{ ...S.exerciseBtn, ...(exerciseDone ? S.exerciseBtnDone : {}) }} onClick={() => setExerciseDone(done => !done)}>{exerciseDone ? "Done" : "Log"}</button>
+      </div>
+
       <div style={S.card}>
-        <div style={S.eyebrow}><Icon name="target" /><span style={S.eyeText}>TOP 3 PRIORITIES</span></div>
-        {top3.length === 0 ? (
+        <div style={S.eyebrow}><Icon name="target" /><span style={S.eyeText}>PRIORITIES</span></div>
+        {openTasks.length === 0 ? (
           <div style={S.empty}>No open priorities. Add the one thing that matters most.</div>
         ) : (
           <div style={{ position: "relative", marginTop: 4 }}>
             <div style={S.prioLine} />
-            {top3.map((t, i) => (
-              <div key={t.id} style={{ ...S.prioRow, marginBottom: i < top3.length - 1 ? 20 : 0 }}>
-                <button style={S.prioNum} title="Mark done" onClick={() => complete(t.id)}>{i + 1}</button>
-                <div style={{ flex: 1, paddingTop: 3 }}>
-                  <div style={S.prioTitle}>{t.text}</div>
-                  {t.category && <div style={S.prioSub}>{t.category}</div>}
-                </div>
-              </div>
+            {openTasks.map((t, i) => (
+              <SwipePriority key={t.id} task={t} index={i} isLast={i === openTasks.length - 1} onComplete={complete} onDelete={deleteTask} />
             ))}
           </div>
         )}
@@ -376,7 +549,7 @@ function Today({ verse, tasks, journal, events, onSend, ci, setCi, sending, onSa
       <div style={S.journalCard}>
         <div style={{ flex: 1 }}>
           <div style={S.eyebrow}><Icon name="pen" /><span style={S.eyeText}>DAILY JOURNAL PROMPT</span></div>
-          <div style={S.journalText}>What's one way I can love her better today?</div>
+          <div style={S.journalText}>{journalPrompt}</div>
           {writing && (
             <textarea
               style={S.journalInput}
@@ -400,12 +573,62 @@ function Today({ verse, tasks, journal, events, onSend, ci, setCi, sending, onSa
   );
 }
 
+function SwipePriority({ task, index, isLast, onComplete, onDelete }: { task: Task; index: number; isLast: boolean; onComplete: (id: number) => Promise<boolean>; onDelete: (id: number) => void }) {
+  const [startX, setStartX] = useState<number | null>(null);
+  const [offset, setOffset] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const [crossedOff, setCrossedOff] = useState(false);
+
+  function crossOff() {
+    setCrossedOff(true);
+    setTimeout(async () => {
+      const ok = await onComplete(task.id);
+      if (!ok) setCrossedOff(false);
+    }, 260);
+  }
+
+  function down(e: PointerEvent<HTMLDivElement>) {
+    setStartX(e.clientX);
+    setDragging(true);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+  function move(e: PointerEvent<HTMLDivElement>) {
+    if (startX === null) return;
+    setOffset(Math.min(0, Math.max(-104, e.clientX - startX)));
+  }
+  function up() {
+    if (offset <= -72) onDelete(task.id);
+    setStartX(null);
+    setOffset(0);
+    setDragging(false);
+  }
+
+  return (
+    <div style={{ ...S.swipeWrap, marginBottom: isLast ? 0 : 20 }}>
+      <div style={S.deleteCue}>Delete</div>
+      <div
+        style={{ ...S.prioRow, ...S.swipeFront, transform: "translateX(" + offset + "px)", transition: dragging ? "none" : "transform 0.18s ease" }}
+        onPointerDown={down}
+        onPointerMove={move}
+        onPointerUp={up}
+        onPointerCancel={up}
+      >
+        <button style={S.prioNum} title="Mark done" onClick={crossOff} disabled={crossedOff}>{index + 1}</button>
+        <div style={{ flex: 1, paddingTop: 3, opacity: crossedOff ? 0.45 : 1, transition: "opacity 0.2s ease" }}>
+          <div style={{ ...S.prioTitle, textDecoration: crossedOff ? "line-through" : "none", transition: "text-decoration-color 0.2s ease" }}>{task.text}</div>
+          {task.category && <div style={S.prioSub}>{task.category}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TodayMsgBar({ ci, setCi, sending, onSend }: { ci: string; setCi: (v: string) => void; sending: boolean; onSend: (m?: string) => void }) {
   const { listening, toggle } = useSpeech(setCi);
   return (
     <div style={S.msgBar}>
       <Icon name="chat" size={17} color={C.parchmentLow} />
-      <input style={S.msgInput} value={ci} onChange={e => setCi(e.target.value)} onKeyDown={e => e.key === "Enter" && onSend()} placeholder="Message Arlo..." />
+      <input style={S.msgInput} value={ci} onChange={e => setCi(e.target.value)} onKeyDown={e => e.key === "Enter" && onSend()} placeholder="Message Steward..." />
       <button style={{ ...S.micBtn, ...(listening ? S.micBtnOn : {}) }} onClick={toggle} title={listening ? "Stop" : "Voice input"}>
         <Icon name="mic" size={15} color={listening ? C.ink : C.parchmentDim} stroke={1.8} />
       </button>
@@ -414,9 +637,15 @@ function TodayMsgBar({ ci, setCi, sending, onSend }: { ci: string; setCi: (v: st
   );
 }
 
-// ── Her ───────────────────────────────────────────────────────────────────
-function Her({ commits, refresh }: { commits: Commit[]; refresh: () => void }) {
+// ── Relationships ─────────────────────────────────────────────────────────────
+function Relationships({ commits, refresh, primaryRel, label }: { commits: Commit[]; refresh: () => void; primaryRel: Relationship | null; label: string }) {
   const [val, setVal] = useState("");
+  const intentionText = primaryRel?.name
+    ? `Ask ${primaryRel.name} about their week before you talk about yours.`
+    : "Log commitments to the people who matter most — spouse, kids, parents, close friends.";
+  const subtitle = primaryRel
+    ? "Commitments you've made. Don't let them disappear."
+    : "Log the commitments you make to the people closest to you.";
   const open = commits.filter(c => !c.done), done = commits.filter(c => c.done);
 
   async function add() {
@@ -431,9 +660,9 @@ function Her({ commits, refresh }: { commits: Commit[]; refresh: () => void }) {
 
   return (
     <div style={S.scroll}>
-      <div style={S.pageTitle}>Her</div>
-      <div style={S.pageSub}>Commitments you've made. Don't let them disappear.</div>
-      <div style={S.card}><div style={S.eyebrow}><Icon name="heart" /><span style={S.eyeText}>TODAY'S INTENTION</span></div><div style={S.intent}>Ask her about her week before you talk about yours.</div></div>
+      <div style={S.pageTitle}>{label}</div>
+      <div style={S.pageSub}>{subtitle}</div>
+      <div style={S.card}><div style={S.eyebrow}><Icon name="heart" /><span style={S.eyeText}>TODAY'S INTENTION</span></div><div style={S.intent}>{intentionText}</div></div>
       <div style={S.logRow}>
         <input style={S.logInput} value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => e.key === "Enter" && add()} placeholder="Log a commitment you made..." />
         <button style={S.logBtn} onClick={add}>Log</button>
@@ -468,28 +697,37 @@ function Her({ commits, refresh }: { commits: Commit[]; refresh: () => void }) {
 
 // ── Work ───────────────────────────────────────────────────────────────────
 function Work({ jobs, onJob, onEdit }: { jobs: Job[]; onJob: () => void; onEdit: (j: Job) => void }) {
-  const groups = [...new Set(jobs.map(j => j.biz))];
+  const sortedJobs = [...jobs].sort((a, b) => a.biz.localeCompare(b.biz) || a.due.localeCompare(b.due) || a.name.localeCompare(b.name));
+  const groups = [...new Set(sortedJobs.map(j => j.biz))];
+  let lastBiz = "";
   return (
     <div style={S.scroll}>
       <div style={S.pageTitle}>Work</div>
-      <div style={S.pageSub}>Active across all your businesses. Tap a job to edit.</div>
-      {groups.length === 0 && <div style={S.card}><div style={S.empty}>No active jobs yet. Add one to start planning ahead.</div></div>}
-      {groups.map(biz => (
-        <div key={biz} style={S.card}>
-          <div style={S.eyebrow}><Icon name="work" color={bizC(biz, groups)} /><span style={{ ...S.eyeText, color: bizC(biz, groups) }}>{biz.toUpperCase()}</span></div>
-          {jobs.filter(j => j.biz === biz).map(j => (
-            <div key={j.id} style={{ ...S.jobRow, cursor: "pointer" }} onClick={() => onEdit(j)}>
-              <div style={S.jobTop}><div style={S.prioTitle}>{j.name}</div>{j.due && <div style={{ ...S.prioSub, color: C.brass }}>{j.due}</div>}</div>
-              {j.stage && <div style={{ ...S.prioSub, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>{j.stage}</div>}
-              <div style={S.trackRow}>
-                <div style={S.track}><div style={{ ...S.trackFill, width: j.pct + "%", background: j.pct >= 80 ? `linear-gradient(90deg,${C.brassDeep},${C.brass})` : "linear-gradient(90deg,#2E3A1C,#5A8A40)", boxShadow: j.pct >= 80 ? `0 0 6px ${C.brassGlow}` : "none" }} /></div>
-                <span style={S.prioSub}>{j.pct}%</span>
+      <div style={S.pageSub}>Active jobs by category. Tap a row to edit.</div>
+      {sortedJobs.length === 0 ? (
+        <div style={S.card}><div style={S.empty}>No active jobs yet. Add one to start planning ahead.</div></div>
+      ) : (
+        <div style={S.workList}>
+          {sortedJobs.map(j => {
+            const showHeader = j.biz !== lastBiz;
+            lastBiz = j.biz;
+            return (
+              <div key={j.id}>
+                {showHeader && <div style={{ ...S.workGroup, color: bizC(j.biz, groups) }}>{j.biz.toUpperCase()}</div>}
+                <button style={S.workRow} onClick={() => onEdit(j)}>
+                  <div style={S.workMain}>
+                    <div style={S.workName}>{j.name}</div>
+                    <div style={S.workMeta}>{[j.stage, j.due].filter(Boolean).join("  •  ") || "No stage or due date"}</div>
+                  </div>
+                  <div style={S.workPct}>{j.pct}%</div>
+                  <div style={S.workTrack}><div style={{ ...S.workTrackFill, width: j.pct + "%", background: j.pct >= 80 ? C.brass : bizC(j.biz, groups) }} /></div>
+                </button>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
-      ))}
-      <button style={S.intakeBtn} onClick={onJob}>＋  Add new job</button>
+      )}
+      <button style={{ ...S.intakeBtn, marginTop: 12 }} onClick={onJob}>＋  Add new job</button>
       <div style={{ height: 32 }} />
     </div>
   );
@@ -501,16 +739,16 @@ function ArloChat({ messages, input, setInput, send, sending }: { messages: Mess
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
   return (
     <div style={S.chatWrap}>
-      <div style={{ padding: "4px 18px 0" }}><div style={S.pageTitle}>Arlo</div><div style={S.pageSub}>Your partner. Straight talk only.</div></div>
+      <div style={{ padding: "4px 18px 0" }}><div style={S.pageTitle}>Steward</div><div style={S.pageSub}>Your partner. Straight talk only.</div></div>
       <div style={S.chatMsgs}>
         {messages.length === 0 && <div style={{ ...S.empty, marginTop: 24 }}>No messages yet. Brain dump anything.</div>}
         {messages.map((m, i) => (
           <div key={i} style={{ ...S.bubble, ...(m.role === "user" ? S.bubbleU : S.bubbleA) }}>
-            {m.role === "assistant" && <div style={S.bubbleName}>ARLO</div>}
+            {m.role === "assistant" && <div style={S.bubbleName}>STEWARD</div>}
             <div style={{ ...S.bubbleText, ...(m.role === "user" ? S.bubbleTextU : {}) }}>{m.content}</div>
           </div>
         ))}
-        {sending && <div style={{ ...S.bubble, ...S.bubbleA }}><div style={S.bubbleName}>ARLO</div><div style={{ ...S.bubbleText, color: C.parchmentDim }}>…</div></div>}
+        {sending && <div style={{ ...S.bubble, ...S.bubbleA }}><div style={S.bubbleName}>STEWARD</div><div style={{ ...S.bubbleText, color: C.parchmentDim }}>…</div></div>}
         <div ref={endRef} />
       </div>
       <ArloChatBar input={input} setInput={setInput} send={send} sending={sending} />
@@ -532,43 +770,43 @@ function ArloChatBar({ input, setInput, send, sending }: { input: string; setInp
 }
 
 // ── Week ───────────────────────────────────────────────────────────────────
-function WeekView({ events, calendarAccounts, onConnectCalendar, onDisconnectCalendar }: { events: Event[]; calendarAccounts: string[]; onConnectCalendar: () => void; onDisconnectCalendar: (email: string) => void }) {
+function WeekView({ events, jobs, calendarAccounts, onConnectCalendar, onDisconnectCalendar }: { events: Event[]; jobs: Job[]; calendarAccounts: string[]; onConnectCalendar: () => void; onDisconnectCalendar: (email: string) => void }) {
   const days = weekDays();
   const todayKey = ymd(new Date());
+  const datedWork = jobs.map(jobCalendarEvent).filter((event): event is Event => Boolean(event));
+  const calendarEvents = [...events, ...datedWork].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
   return (
     <div style={S.scroll}>
       <div style={S.pageTitle}>This Week</div>
-      <div style={S.pageSub}>One week ahead. No surprises.</div>
-      <div style={{ ...S.calendarCard, flexDirection: "column", alignItems: "stretch" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: calendarAccounts.length > 0 ? 10 : 0 }}>
-          <div style={S.calendarTitle}>Google Calendar</div>
-          <button style={S.calendarBtn} onClick={onConnectCalendar}>{calendarAccounts.length > 0 ? "Add account" : "Connect"}</button>
-        </div>
-        {calendarAccounts.length === 0 ? (
-          <div style={S.prioSub}>Connect your calendar to pull upcoming events into Arlo.</div>
-        ) : (
-          calendarAccounts.map(email => (
-            <div key={email} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
-              <div style={{ ...S.prioSub, color: C.parchmentMid }}>{email}</div>
-              <button style={S.calendarRemoveBtn} onClick={() => onDisconnectCalendar(email)}>Remove</button>
-            </div>
-          ))
-        )}
-      </div>
+      <div style={S.pageSub}>Work, commitments, and calendar events in one pass.</div>
       {days.map(d => {
-        const items = events.filter(e => e.date === d.key);
+        const items = calendarEvents.filter(e => e.date === d.key);
         const isToday = d.key === todayKey;
         const past = d.key < todayKey;
         return (
           <div key={d.key} style={{ ...S.weekRow, ...(isToday ? S.weekToday : {}), ...(past ? { opacity: 0.3 } : {}) }}>
             <div style={S.weekL}><div style={{ ...S.weekDay, ...(isToday ? { color: C.brass } : {}) }}>{d.day}</div><div style={S.prioSub}>{d.label}</div></div>
             <div style={{ flex: 1 }}>
-              {items.length === 0 ? <div style={S.prioSub}>—</div> : items.map(it => <div key={it.id} style={S.prioTitle}>{it.title}</div>)}
+              {items.length === 0 ? <div style={S.prioSub}>—</div> : items.map(it => (
+                <div key={it.id} style={S.weekItem}>
+                  <div style={S.weekItemTop}><span style={S.prioTitle}>{it.title}</span>{it.time && <span style={S.weekTime}>{it.time}</span>}</div>
+                  {(it.sub || it.tag) && <div style={S.prioSub}>{[it.sub, it.tag].filter(Boolean).join("  •  ")}</div>}
+                </div>
+              ))}
             </div>
             {isToday && <div style={S.todayPill}>Today</div>}
           </div>
         );
       })}
+      <div style={S.calendarBottom}>
+        {calendarAccounts.length > 0 && calendarAccounts.map(email => (
+          <div key={email} style={S.calendarAccount}>
+            <span>{email}</span>
+            <button style={S.calendarRemoveBtn} onClick={() => onDisconnectCalendar(email)}>Remove</button>
+          </div>
+        ))}
+        <button style={S.calendarSmallBtn} onClick={onConnectCalendar}>Add Google Calendar</button>
+      </div>
       <div style={{ height: 32 }} />
     </div>
   );
@@ -706,33 +944,199 @@ function JobEditModal({ job, onClose, onSaved, onDeleted }: { job: Job; onClose:
 }
 
 // ── Auth gate ───────────────────────────────────────────────────────────────────
-function AuthGate({ loading, onLogin }: { loading: boolean; onLogin: () => void }) {
+type EmailLoginStartResult = { ok: true } | { ok: false; error: string };
+type EmailLoginVerifyResult = { ok: true; pendingApproval: boolean } | { ok: false; error: string };
+
+function AuthGate({
+  loading,
+  pendingApproval,
+  onLogin,
+  onStartEmailLogin,
+  onVerifyEmailLogin,
+}: {
+  loading: boolean;
+  pendingApproval: boolean;
+  onLogin: (provider?: "google" | "microsoft" | "demo") => void;
+  onStartEmailLogin: (email: string) => Promise<EmailLoginStartResult>;
+  onVerifyEmailLogin: (email: string, code: string, name?: string) => Promise<EmailLoginVerifyResult>;
+}) {
+  const [step, setStep] = useState<"providers" | "email" | "code">("providers");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState(() => localStorage.getItem("steward:email") ?? "");
+  const [code, setCode] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function sendCode() {
+    if (!email.trim()) { setError("Enter your email first."); return; }
+    setBusy(true);
+    setError("");
+    const result = await onStartEmailLogin(email.trim());
+    setBusy(false);
+    if (!result.ok) { setError(result.error); return; }
+    localStorage.setItem("steward:email", email.trim());
+    setCode("");
+    setStep("code");
+  }
+
+  async function verifyCode(codeOverride?: string) {
+    const codeToVerify = codeOverride ?? code;
+    if (!/^[0-9]{6}$/.test(codeToVerify)) { setError("Enter the 6-digit code."); return; }
+    setBusy(true);
+    setError("");
+    const result = await onVerifyEmailLogin(email.trim(), codeToVerify, name.trim());
+    setBusy(false);
+    if (!result.ok) { setError(result.error); return; }
+    // On success the auth hook updates `user`/`pendingApproval` and this
+    // component's parent re-renders past the gate (or into the pending state).
+  }
+
   return (
     <div style={R.root}>
       <div style={R.woodLayer} />
       <div style={R.ambient} />
       <div style={G.wrap}>
-        <div style={R.logo}><span style={R.logoText}>Arlo</span><span style={R.logoDot}>.</span></div>
+        <div style={R.logo}><span style={R.logoText}>Steward</span><span style={R.logoDot}>.</span></div>
         <div style={{ ...R.tagline, textAlign: "center", marginBottom: 38 }}>FOCUSED. FAITHFUL. FREE.</div>
         {loading ? (
-          <div style={G.loading}>Loading…</div>
-        ) : (
+          <div style={G.loading}>Loading...</div>
+        ) : pendingApproval ? (
+          <div style={G.welcome}>Thanks for signing up — you're on the list. We'll let you in soon.</div>
+        ) : step === "providers" ? (
           <>
             <div style={G.welcome}>Welcome back.</div>
-            <div style={G.sub}>Sign in to open your day.</div>
-            <button style={G.btn} onClick={onLogin}>Log in</button>
+            <button style={G.googleBtn} onClick={() => onLogin("google")}>Continue with Google</button>
+            <button style={{ ...G.googleBtn, marginTop: 10 }} onClick={() => onLogin("microsoft")}>Continue with Microsoft</button>
+            <button style={{ ...G.googleBtn, marginTop: 10 }} onClick={() => { setError(""); setStep("email"); }}>Continue with Email</button>
+            <div style={G.notice}>New here? Sign in above to request access.</div>
+          </>
+        ) : step === "email" ? (
+          <>
+            <div style={G.welcome}>Sign in with email</div>
+            <input
+              style={M.input}
+              type="text"
+              autoComplete="name"
+              autoFocus={!email}
+              placeholder="Your name (optional)"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && sendCode()}
+            />
+            <input
+              style={M.input}
+              type="email"
+              inputMode="email"
+              autoComplete="email"
+              autoFocus={!!email}
+              placeholder="you@example.com"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && sendCode()}
+            />
+            {error && <div style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{error}</div>}
+            <button style={G.googleBtn} disabled={busy} onClick={sendCode}>{busy ? "Sending…" : "Send code"}</button>
+            <button style={{ ...G.addHomeToggle, marginTop: 14 }} onClick={() => { setError(""); setStep("providers"); }}>Back</button>
+          </>
+        ) : (
+          <>
+            <div style={G.welcome}>Enter your code</div>
+            <div style={{ ...G.notice, marginTop: -8, marginBottom: 14 }}>We sent a 6-digit code to {email}</div>
+            <input
+              style={{ ...M.input, textAlign: "center", letterSpacing: "0.3em", fontSize: 22 }}
+              type="text"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              autoFocus
+              placeholder="000000"
+              value={code}
+              onChange={e => {
+                const next = e.target.value.replace(/\D/g, "").slice(0, 6);
+                setCode(next);
+                if (next.length === 6) verifyCode(next);
+              }}
+              onKeyDown={e => e.key === "Enter" && verifyCode()}
+            />
+            {error && <div style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{error}</div>}
+            <button style={G.googleBtn} disabled={busy} onClick={() => verifyCode()}>{busy ? "Verifying…" : "Verify"}</button>
+            <button style={{ ...G.addHomeToggle, marginTop: 14 }} disabled={busy} onClick={sendCode}>Resend code</button>
+            <button style={{ ...G.addHomeToggle, marginTop: 10 }} onClick={() => { setError(""); setCode(""); setStep("email"); }}>Use a different email</button>
           </>
         )}
+        <AddToHomeScreen />
       </div>
     </div>
   );
 }
+
+const ADD_HOME_STEPS: Record<"ios" | "android", string[]> = {
+  ios: [
+    "Open this page in Safari.",
+    "Tap the Share icon (square with an arrow) in the toolbar.",
+    'Scroll down and tap "Add to Home Screen".',
+    'Tap "Add" in the top right.',
+  ],
+  android: [
+    "Open this page in Chrome.",
+    "Tap the ⋮ menu icon in the toolbar.",
+    'Tap "Add to Home screen" (or "Install app").',
+    'Tap "Add" / "Install" to confirm.',
+  ],
+};
+
+function AddToHomeScreen() {
+  const [open, setOpen] = useState(false);
+  const [platform, setPlatform] = useState<"ios" | "android">(
+    () => (/iPhone|iPad|iPod/.test(navigator.userAgent) ? "ios" : "android"),
+  );
+  return (
+    <div style={G.addHome}>
+      <button style={G.addHomeToggle} onClick={() => setOpen(o => !o)}>
+        {open ? "Hide" : "📲 Add Steward to your Home Screen"}
+      </button>
+      {open && (
+        <div style={G.addHomePanel}>
+          <div style={G.addHomeTabs}>
+            <button
+              style={{ ...G.addHomeTab, ...(platform === "ios" ? G.addHomeTabOn : {}) }}
+              onClick={() => setPlatform("ios")}
+            >
+              iPhone
+            </button>
+            <button
+              style={{ ...G.addHomeTab, ...(platform === "android" ? G.addHomeTabOn : {}) }}
+              onClick={() => setPlatform("android")}
+            >
+              Android
+            </button>
+          </div>
+          {ADD_HOME_STEPS[platform].map((step, i) => (
+            <div key={i} style={G.addHomeStep}>
+              <span style={G.addHomeStepNum}>{i + 1}.</span>
+              <span>{step}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const G: Record<string, CSSProperties> = {
   wrap: { position: "relative", zIndex: 10, flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px" },
   loading: { color: C.parchmentLow, fontSize: 14, letterSpacing: "0.04em" },
-  welcome: { fontSize: 26, fontWeight: 400, color: C.parchment, textShadow: "0 2px 8px rgba(0,0,0,0.5)" },
-  sub: { fontSize: 14, color: C.parchmentLow, marginTop: 8, marginBottom: 30 },
-  btn: { padding: "14px 48px", borderRadius: 14, border: `1px solid ${C.brass}`, cursor: "pointer", fontFamily: F, fontSize: 15, fontWeight: 600, letterSpacing: "0.03em", color: C.ink, background: `radial-gradient(circle at 35% 28%,${C.brass},${C.brassDeep})`, boxShadow: `0 4px 18px ${C.brassGlow},inset 0 1px 0 rgba(255,240,200,0.3)` },
+  welcome: { fontSize: 26, fontWeight: 400, color: C.parchment, textShadow: "0 2px 8px rgba(0,0,0,0.5)", marginBottom: 22, textAlign: "center" },
+  googleBtn: { width: "100%", background: "rgba(30,26,16,0.62)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 12, color: C.parchmentMid, fontSize: 14, fontWeight: 700, padding: "13px 16px", cursor: "pointer", fontFamily: F },
+  notice: { fontSize: 12, color: C.parchmentLow, marginTop: 14, textAlign: "center" },
+  addHome: { marginTop: 18, width: "100%", textAlign: "center" },
+  addHomeToggle: { background: "none", border: "none", color: C.brassSoft, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: F, textDecoration: "underline", textUnderlineOffset: 3 },
+  addHomePanel: { marginTop: 12, background: "rgba(30,26,16,0.5)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, padding: "14px 16px", textAlign: "left" },
+  addHomeTabs: { display: "flex", gap: 8, marginBottom: 12 },
+  addHomeTab: { flex: 1, background: "rgba(20,18,11,0.6)", border: "1px solid rgba(210,190,130,0.14)", borderRadius: 8, color: C.parchmentDim, fontSize: 12, fontWeight: 600, padding: "7px 10px", cursor: "pointer", fontFamily: F, textAlign: "center" },
+  addHomeTabOn: { borderColor: C.brass, color: C.brass, boxShadow: `0 0 10px ${C.brassGlow}` },
+  addHomeStep: { fontSize: 12.5, color: C.parchmentMid, lineHeight: 1.5, marginBottom: 6, display: "flex", gap: 8 },
+  addHomeStepNum: { color: C.brassSoft, fontWeight: 700, flexShrink: 0 },
 };
 
 // ── Styles ────────────────────────────────────────────────────────────────────
@@ -777,6 +1181,9 @@ const S: Record<string, CSSProperties> = {
   prioNum: { width: 40, height: 40, borderRadius: "50%", flexShrink: 0, background: `radial-gradient(circle at 35% 28%,${C.walnutMid},${C.walnut} 70%,#3E2814)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, color: C.parchment, boxShadow: `0 3px 10px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,220,160,0.25),inset 0 -2px 4px rgba(0,0,0,0.4),0 0 0 5px rgba(20,18,11,0.85)`, zIndex: 1, textShadow: "0 1px 2px rgba(0,0,0,0.5)", border: "none", cursor: "pointer" },
   prioTitle: { fontSize: 15, color: C.parchment, lineHeight: 1.4, marginBottom: 3 },
   prioSub: { fontSize: 12, color: C.parchmentDim, lineHeight: 1.4 },
+  swipeWrap: { position: "relative", overflow: "hidden", borderRadius: 12, touchAction: "pan-y" },
+  swipeFront: { background: "transparent", width: "100%" },
+  deleteCue: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: 18, background: "rgba(200,112,96,0.2)", color: "#D4A090", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" },
   upRow: { display: "flex" },
   upCol: { flex: 1, paddingRight: 12 },
   upBorder: { borderRight: "1px solid rgba(210,190,130,0.14)", marginRight: 12 },
@@ -789,6 +1196,11 @@ const S: Record<string, CSSProperties> = {
   journalCard: { ...glass, padding: "16px 20px", marginBottom: 14, display: "flex", alignItems: "center", gap: 12 },
   journalText: { fontSize: 13, color: C.parchmentMid, marginTop: 2 },
   journalInput: { width: "100%", marginTop: 10, background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: "10px 12px", outline: "none", resize: "vertical", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
+  exerciseCard: { ...glass, padding: "14px 16px", marginBottom: 14, display: "flex", alignItems: "center", gap: 12, border: "1px solid rgba(138,180,106,0.28)" },
+  exerciseDone: { opacity: 0.72, borderColor: "rgba(138,180,106,0.42)" },
+  exerciseText: { fontSize: 13, color: C.parchmentMid, lineHeight: 1.45, marginTop: -2 },
+  exerciseBtn: { flexShrink: 0, background: "rgba(30,26,16,0.7)", border: "1px solid rgba(138,180,106,0.46)", borderRadius: 18, color: "#A8C888", fontSize: 12, fontWeight: 700, padding: "8px 13px", cursor: "pointer", fontFamily: F },
+  exerciseBtnDone: { background: "rgba(138,180,106,0.22)", color: C.parchment },
   writeBtn: { flexShrink: 0, alignSelf: "flex-start", background: "transparent", border: `1.5px solid ${C.brass}`, borderRadius: 24, color: C.brass, fontSize: 13, fontWeight: 600, padding: "10px 18px", cursor: "pointer", boxShadow: `0 0 16px ${C.brassGlow},inset 0 0 8px rgba(216,170,62,0.1)` },
   msgBar: { display: "flex", alignItems: "center", gap: 11, background: "rgba(8,10,5,0.55)", backdropFilter: "blur(8px)", borderRadius: 30, padding: "11px 11px 11px 17px", marginBottom: 14, border: "1px solid rgba(210,190,130,0.16)", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.5),0 2px 8px rgba(0,0,0,0.3)" },
   msgInput: { flex: 1, background: "none", border: "none", color: C.parchment, fontSize: 14, outline: "none", fontFamily: F },
@@ -805,6 +1217,15 @@ const S: Record<string, CSSProperties> = {
   dot: { width: 22, height: 22, borderRadius: "50%", flexShrink: 0, marginTop: 1, background: "rgba(0,0,0,0.2)", border: `1.5px solid ${C.parchmentLow}`, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#7AB46A", boxShadow: "inset 0 1px 3px rgba(0,0,0,0.4)" },
   dotDone: { background: "rgba(120,180,106,0.25)", borderColor: "#7AB46A" },
   jobRow: { marginBottom: 14, paddingBottom: 14, borderBottom: "1px solid rgba(210,190,130,0.12)" },
+  workList: { ...glass, padding: "10px 0", marginBottom: 12 },
+  workGroup: { fontSize: 10, fontWeight: 800, letterSpacing: "0.13em", padding: "8px 16px 5px" },
+  workRow: { width: "100%", display: "grid", gridTemplateColumns: "1fr auto", gap: "2px 10px", alignItems: "center", background: "transparent", border: "none", borderTop: "1px solid rgba(210,190,130,0.09)", color: C.parchment, textAlign: "left", padding: "9px 16px 10px", cursor: "pointer", fontFamily: F },
+  workMain: { minWidth: 0 },
+  workName: { fontSize: 14, color: C.parchment, lineHeight: 1.25, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  workMeta: { fontSize: 11, color: C.parchmentDim, lineHeight: 1.35, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  workPct: { fontSize: 12, color: C.brassSoft, fontWeight: 700, gridColumn: "2", gridRow: "1 / span 2" },
+  workTrack: { gridColumn: "1 / -1", height: 3, background: "rgba(0,0,0,0.42)", borderRadius: 3, overflow: "hidden", marginTop: 6 },
+  workTrackFill: { height: "100%", borderRadius: 3, transition: "width 0.3s" },
   jobTop: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 2 },
   trackRow: { display: "flex", alignItems: "center", gap: 8 },
   track: { flex: 1, height: 5, background: "rgba(0,0,0,0.45)", borderRadius: 3, overflow: "hidden", boxShadow: "inset 0 1px 3px rgba(0,0,0,0.5)" },
@@ -828,6 +1249,12 @@ const S: Record<string, CSSProperties> = {
   weekL: { width: 42, flexShrink: 0 },
   weekDay: { fontSize: 12, fontWeight: 700, color: C.parchmentMid, textTransform: "uppercase" },
   todayPill: { fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", background: `linear-gradient(135deg,${C.brass},${C.brassDeep})`, color: C.ink, borderRadius: 6, padding: "3px 9px", fontWeight: 700, alignSelf: "center", flexShrink: 0, boxShadow: `0 2px 8px ${C.brassGlow}` },
+  weekItem: { marginBottom: 8 },
+  weekItemTop: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 },
+  weekTime: { fontSize: 11, color: C.brassSoft, flexShrink: 0 },
+  calendarBottom: { borderTop: "1px solid rgba(210,190,130,0.12)", marginTop: 8, paddingTop: 14, display: "flex", flexDirection: "column", gap: 8, alignItems: "stretch" },
+  calendarAccount: { display: "flex", justifyContent: "space-between", alignItems: "center", color: C.parchmentDim, fontSize: 12 },
+  calendarSmallBtn: { alignSelf: "stretch", background: "rgba(30,26,16,0.62)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 10, color: C.parchmentMid, fontSize: 12, fontWeight: 700, padding: "10px 12px", cursor: "pointer", fontFamily: F },
 };
 const M: Record<string, CSSProperties> = {
   overlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "flex-end", zIndex: 200, backdropFilter: "blur(6px)" },

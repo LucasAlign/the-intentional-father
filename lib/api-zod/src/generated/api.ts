@@ -36,7 +36,7 @@ export const GetCurrentAuthUserResponse = zod.object({
 
 
 /**
- * @summary Start the browser OIDC login flow
+ * @summary Start the browser OIDC login flow (Google)
  */
 export const BeginBrowserLoginQueryParams = zod.object({
   "returnTo": zod.coerce.string().optional().describe('Relative path to redirect to after login (must start with `\/`). Defaults to `\/`.')
@@ -44,9 +44,27 @@ export const BeginBrowserLoginQueryParams = zod.object({
 
 
 /**
- * @summary Complete the browser OIDC login flow
+ * @summary Complete the browser OIDC login flow (Google)
  */
 export const HandleBrowserLoginCallbackQueryParams = zod.object({
+  "code": zod.coerce.string().optional(),
+  "state": zod.coerce.string().optional(),
+  "iss": zod.coerce.string().url().optional()
+})
+
+
+/**
+ * @summary Start the browser OIDC login flow (Microsoft)
+ */
+export const BeginMicrosoftLoginQueryParams = zod.object({
+  "returnTo": zod.coerce.string().optional().describe('Relative path to redirect to after login (must start with `\/`). Defaults to `\/`.')
+})
+
+
+/**
+ * @summary Complete the browser OIDC login flow (Microsoft)
+ */
+export const HandleMicrosoftLoginCallbackQueryParams = zod.object({
   "code": zod.coerce.string().optional(),
   "state": zod.coerce.string().optional(),
   "iss": zod.coerce.string().url().optional()
@@ -58,6 +76,44 @@ export const HandleBrowserLoginCallbackQueryParams = zod.object({
  */
 export const LogoutBrowserSessionHeader = zod.object({
   "Authorization": zod.string().optional().describe('Opaque session token — `Bearer <sid>`.')
+})
+
+
+/**
+ * Works for both new and returning users — if no account exists for the email yet, one is created (pending beta approval) once the code is verified.
+ * @summary Send a one-time sign-in code to an email address
+ */
+export const StartEmailLoginBody = zod.object({
+  "email": zod.string().email()
+})
+
+export const StartEmailLoginResponse = zod.object({
+  "sent": zod.boolean()
+})
+
+
+/**
+ * @summary Verify a one-time email sign-in code and create a session
+ */
+export const verifyEmailLoginBodyCodeRegExp = new RegExp('^[0-9]{6}$');
+
+
+
+export const VerifyEmailLoginBody = zod.object({
+  "email": zod.string().email(),
+  "code": zod.string().regex(verifyEmailLoginBodyCodeRegExp),
+  "name": zod.string().min(1).optional().describe('Display name, used to set first\/last name when this verify call creates a brand-new user. Ignored for an existing user.')
+})
+
+export const VerifyEmailLoginResponse = zod.object({
+  "user": zod.union([zod.object({
+  "id": zod.string(),
+  "email": zod.string().email().nullable(),
+  "firstName": zod.string().nullable(),
+  "lastName": zod.string().nullable(),
+  "profileImageUrl": zod.string().nullable()
+}),zod.null()]),
+  "pendingApproval": zod.boolean()
 })
 
 

@@ -1,11 +1,15 @@
 import { Router, Request, Response } from "express";
 import { db } from "@workspace/db";
-import { journalEntries, chatMessages, tasks, commits, jobs, comingUp } from "@workspace/db";
+import { journalEntries, chatMessages, tasks, commits, jobs, comingUp, profile as profileTable } from "@workspace/db";
 import { eq, desc, asc, gte, lte, and } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
+import { normalizeProfileData, type ProfileData } from "../lib/profile";
+import { aiRateLimit } from "../middlewares/aiRateLimit";
+import { SCRIPTURE_GROUNDING, getVerseOfTheDay } from "../lib/verses";
 
 const router = Router();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
+const MAX_CHAT_MESSAGE_LENGTH = 4000;
 
 type OpenAIResponsesApiResponse = {
   output_text?: string;
@@ -25,38 +29,103 @@ function getOpenAIMessage(data: OpenAIResponsesApiResponse): string | undefined 
     .find((text): text is string => Boolean(text));
 }
 
-const VERSES = [
-  'Ephesians 5:25 — Husbands, love your wives, just as Christ loved the church and gave himself up for her.',
-  'Proverbs 29:25 — Fear of man will prove to be a snare, but whoever trusts in the Lord is kept safe.',
-  'Philippians 4:8 — Finally, brothers and sisters, whatever is true, whatever is noble, whatever is right, whatever is pure, whatever is lovely, whatever is admirable—if anything is excellent or praiseworthy—think about such things.',
-  'Colossians 3:17 — And whatever you do, whether in word or deed, do it all in the name of the Lord Jesus, giving thanks to God the Father through him.',
-  'Proverbs 27:12 — The prudent see danger and take refuge, but the simple keep going and pay the penalty.',
-  'Proverbs 6:6-8 — Go to the ant, you sluggard; consider its ways and be wise! It has no commander, no overseer or ruler, yet it stores its provisions in summer and gathers its food at harvest.',
-  'Proverbs 16:3 — Commit your work to the Lord, and your plans will be established.',
-];
+function buildArloSystemPrompt(profileData: ProfileData | null, fallbackName: string): string {
+  const name = profileData?.name || fallbackName || "friend";
+  const season = profileData?.season_of_life ? `\nTheir season of life: ${profileData.season_of_life}.` : "";
+  const topPriority = profileData?.core_identity?.top_priority
+    ? `\nTheir #1 priority: ${profileData.core_identity.top_priority}.`
+    : "";
+  const values = profileData?.core_identity?.values?.length
+    ? `\nWhat they value: ${profileData.core_identity.values.join(", ")}.`
+    : "";
+  const businesses = profileData?.businesses?.length
+    ? `\nTheir work: ${profileData.businesses
+        .map((b) => {
+          const label = [b.name, b.role].filter(Boolean).join(" — ") || "a business they run";
+          const blockers = b.common_blockers?.length ? ` — common blockers: ${b.common_blockers.join(", ")}` : "";
+          const metrics = b.key_metrics?.length ? ` — tracks: ${b.key_metrics.join(", ")}` : "";
+          return `${label}${blockers}${metrics}`;
+        })
+        .join("; ")}.`
+    : "";
+  const planning = profileData?.planning_profile
+    ? [
+        profileData.planning_profile.decision_drain
+          ? `decisions drain them: ${profileData.planning_profile.decision_drain}`
+          : null,
+        profileData.planning_profile.common_failure_point
+          ? `plans usually break down at: ${profileData.planning_profile.common_failure_point}`
+          : null,
+        profileData.planning_profile.ideal_rhythm
+          ? `ideal rhythm: ${profileData.planning_profile.ideal_rhythm}`
+          : null,
+        profileData.planning_profile.where_ai_helps_most
+          ? `where you help most: ${profileData.planning_profile.where_ai_helps_most}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join("; ")
+    : "";
+  const planningBlock = planning ? `\nHow they plan: ${planning}.` : "";
+  const relationships = profileData?.relationships?.length
+    ? `\nKey relationships: ${profileData.relationships
+        .map((r) => {
+          const label = r.name || r.notes || r.type || "someone close to them";
+          const commitment = r.commitments ? ` — committed to: ${r.commitments}` : "";
+          const friction = r.biggest_challenge ? ` — friction: ${r.biggest_challenge}` : "";
+          return `${label}${commitment}${friction}`;
+        })
+        .join("; ")}.`
+    : "";
+  const doNotSuggest = profileData?.guardrails?.do_not_suggest?.length
+    ? `\nNever suggest: ${profileData.guardrails.do_not_suggest.join(", ")}.`
+    : "";
+  const alwaysRemind = profileData?.guardrails?.always_remind_of
+    ? `\nAlways keep in view: ${profileData.guardrails.always_remind_of}.`
+    : "";
+  const voice = profileData?.voice ? `\nPreferred voice: ${profileData.voice}.` : "";
 
-function getVerseOfTheDay(): string {
-  const today = new Date();
-  const dayOfYear = Math.floor(
-    (today.getTime() - new Date(today.getFullYear(), 0, 0).getTime()) / 86400000
-  );
-  return VERSES[dayOfYear % VERSES.length];
+  return `You are Steward, a personal accountability partner and brother to ${name}. Your voice is direct, gospel-centered, in the style of Pastor Joby Martin.
+
+${name}'s core challenge: they're a strong executor but get to the starting line without a full picture (budget, materials, time, contingencies). Reality hits and tasks stall at ~80%. Your job is to help them plan ahead of the work, with them.${season}${topPriority}${values}${businesses}${planningBlock}${relationships}
+
+Guidelines:
+- No flattery. No softening hard truths.
+- Root things in Scripture where it fits naturally — not forced. Quote only from the approved verses below, verbatim.
+- Cut through excuses with pointed questions.
+- Warm but honest — a brother who loves them enough to tell the truth.
+- Default to 1-3 short paragraphs. Be concise unless ${name} explicitly asks for depth or the situation warrants more.
+- Prefer one clear next action or one pointed question over a long list.
+- Use memory: call back to what they said before, name patterns, notice when a commitment hasn't moved.
+- Hold them accountable to commitments they've made to the people who matter most to them, by name where you know it — the same way you'd hold a brother to a promise.
+- Encourage real relationships and real action, never foster dependence on the app.${doNotSuggest}${alwaysRemind}${voice}
+
+You are a tool, not a pastor, counselor, or substitute for the people in their life.
+
+${SCRIPTURE_GROUNDING}`;
 }
 
 // GET /api/verse
-router.get('/verse', (_req: Request, res: Response) => {
-  res.send(getVerseOfTheDay());
+router.get('/verse', async (req: Request, res: Response) => {
+  try {
+    const [profileRow] = await db.select().from(profileTable).where(eq(profileTable.userId, req.user!.id)).limit(1);
+    const profileData = normalizeProfileData(profileRow?.data ?? null);
+    res.send(getVerseOfTheDay(profileData));
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching verse of the day');
+    res.send(getVerseOfTheDay(null));
+  }
 });
 
 // GET /api/tasks
-router.get('/tasks', async (_req: Request, res: Response) => {
+router.get('/tasks', async (req: Request, res: Response) => {
   try {
     const rows = await db
       .select()
       .from(tasks)
-      .where(eq(tasks.done, false))
+      .where(and(eq(tasks.userId, req.user!.id), eq(tasks.done, false)))
       .orderBy(desc(tasks.createdAt))
-      .limit(3);
+      .limit(50);
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch tasks' });
@@ -73,7 +142,7 @@ router.post('/tasks', async (req: Request, res: Response) => {
     }
     const [row] = await db
       .insert(tasks)
-      .values({ text: text.trim(), category: category?.trim() || '', notes: notes?.trim() || '', partial: false, done: false })
+      .values({ userId: req.user!.id, text: text.trim(), category: category?.trim() || '', notes: notes?.trim() || '', partial: false, done: false })
       .returning();
     res.json(row);
   } catch (err) {
@@ -93,7 +162,7 @@ router.patch('/tasks/:id', async (req: Request, res: Response) => {
     if (typeof partial === 'boolean') updates.partial = partial;
     if (typeof notes === 'string') updates.notes = notes;
     if (Object.keys(updates).length === 0) { res.status(400).json({ error: 'No valid fields to update' }); return; }
-    await db.update(tasks).set(updates).where(eq(tasks.id, id));
+    await db.update(tasks).set(updates).where(and(eq(tasks.id, id), eq(tasks.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
     req.log?.error({ err }, 'Error updating task');
@@ -106,7 +175,7 @@ router.delete('/tasks/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid task id' }); return; }
-    await db.delete(tasks).where(eq(tasks.id, id));
+    await db.delete(tasks).where(and(eq(tasks.id, id), eq(tasks.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
     req.log?.error({ err }, 'Error deleting task');
@@ -121,7 +190,7 @@ router.get('/chat-history', async (req: Request, res: Response) => {
     const rows = await db
       .select()
       .from(chatMessages)
-      .where(eq(chatMessages.date, today))
+      .where(and(eq(chatMessages.userId, req.user!.id), eq(chatMessages.date, today)))
       .orderBy(asc(chatMessages.createdAt));
     res.json(rows);
   } catch (err) {
@@ -134,7 +203,7 @@ router.get('/chat-history', async (req: Request, res: Response) => {
 router.get('/journal', async (req: Request, res: Response) => {
   try {
     const today = new Date().toISOString().split('T')[0];
-    const rows = await db.select().from(journalEntries).where(eq(journalEntries.date, today)).limit(1);
+    const rows = await db.select().from(journalEntries).where(and(eq(journalEntries.userId, req.user!.id), eq(journalEntries.date, today))).limit(1);
     res.json(rows[0] || null);
   } catch (err) {
     req.log?.error({ err }, 'Error fetching journal entry');
@@ -149,9 +218,9 @@ router.post('/journal', async (req: Request, res: Response) => {
     const { reflect, commit_text } = req.body;
     await db
       .insert(journalEntries)
-      .values({ date: today, reflect: reflect || '', commitText: commit_text || '' })
+      .values({ userId: req.user!.id, date: today, reflect: reflect || '', commitText: commit_text || '' })
       .onConflictDoUpdate({
-        target: journalEntries.date,
+        target: [journalEntries.userId, journalEntries.date],
         set: { reflect: reflect || '', commitText: commit_text || '' },
       });
     res.json({ success: true });
@@ -162,9 +231,9 @@ router.post('/journal', async (req: Request, res: Response) => {
 });
 
 // GET /api/commits
-router.get('/commits', async (_req: Request, res: Response) => {
+router.get('/commits', async (req: Request, res: Response) => {
   try {
-    const rows = await db.select().from(commits).orderBy(desc(commits.createdAt));
+    const rows = await db.select().from(commits).where(eq(commits.userId, req.user!.id)).orderBy(desc(commits.createdAt));
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch commits' });
@@ -177,7 +246,7 @@ router.post('/commits', async (req: Request, res: Response) => {
     const { text } = req.body;
     if (!text?.trim()) { res.status(400).json({ error: 'Commit text is required' }); return; }
     const madeDate = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    const [row] = await db.insert(commits).values({ text: text.trim(), madeDate, done: false }).returning();
+    const [row] = await db.insert(commits).values({ userId: req.user!.id, text: text.trim(), madeDate, done: false }).returning();
     res.json(row);
   } catch (err) {
     req.log?.error({ err }, 'Error creating commit');
@@ -191,7 +260,7 @@ router.patch('/commits/:id', async (req: Request, res: Response) => {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
     const { done } = req.body;
-    if (typeof done === 'boolean') await db.update(commits).set({ done }).where(eq(commits.id, id));
+    if (typeof done === 'boolean') await db.update(commits).set({ done }).where(and(eq(commits.id, id), eq(commits.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update commit' });
@@ -203,7 +272,7 @@ router.delete('/commits/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    await db.delete(commits).where(eq(commits.id, id));
+    await db.delete(commits).where(and(eq(commits.id, id), eq(commits.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete commit' });
@@ -211,9 +280,9 @@ router.delete('/commits/:id', async (req: Request, res: Response) => {
 });
 
 // GET /api/jobs
-router.get('/jobs', async (_req: Request, res: Response) => {
+router.get('/jobs', async (req: Request, res: Response) => {
   try {
-    const rows = await db.select().from(jobs).orderBy(asc(jobs.createdAt));
+    const rows = await db.select().from(jobs).where(eq(jobs.userId, req.user!.id)).orderBy(asc(jobs.createdAt));
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch jobs' });
@@ -225,7 +294,7 @@ router.post('/jobs', async (req: Request, res: Response) => {
   try {
     const { biz, name, stage, due, pct } = req.body;
     if (!biz || !name) { res.status(400).json({ error: 'biz and name are required' }); return; }
-    const [row] = await db.insert(jobs).values({ biz, name, stage: stage || '', due: due || '', pct: pct ?? 0 }).returning();
+    const [row] = await db.insert(jobs).values({ userId: req.user!.id, biz, name, stage: stage || '', due: due || '', pct: pct ?? 0 }).returning();
     res.json(row);
   } catch (err) {
     req.log?.error({ err }, 'Error creating job');
@@ -245,7 +314,7 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
     if (stage !== undefined) updates.stage = stage;
     if (due !== undefined) updates.due = due;
     if (typeof pct === 'number') updates.pct = pct;
-    if (Object.keys(updates).length > 0) await db.update(jobs).set(updates).where(eq(jobs.id, id));
+    if (Object.keys(updates).length > 0) await db.update(jobs).set(updates).where(and(eq(jobs.id, id), eq(jobs.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update job' });
@@ -257,7 +326,7 @@ router.delete('/jobs/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    await db.delete(jobs).where(eq(jobs.id, id));
+    await db.delete(jobs).where(and(eq(jobs.id, id), eq(jobs.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete job' });
@@ -277,13 +346,13 @@ router.get('/coming-up', async (req: Request, res: Response) => {
       rows = await db
         .select()
         .from(comingUp)
-        .where(and(gte(comingUp.date, start), lte(comingUp.date, end)))
+        .where(and(eq(comingUp.userId, req.user!.id), gte(comingUp.date, start), lte(comingUp.date, end)))
         .orderBy(asc(comingUp.date), asc(comingUp.createdAt));
     } else {
       const today = new Date().toISOString().split('T')[0];
       rangeStart = today;
       rangeEnd = today;
-      rows = await db.select().from(comingUp).where(eq(comingUp.date, today)).orderBy(asc(comingUp.createdAt));
+      rows = await db.select().from(comingUp).where(and(eq(comingUp.userId, req.user!.id), eq(comingUp.date, today))).orderBy(asc(comingUp.createdAt));
     }
     let calendarRows: CalendarEvent[] = [];
     try {
@@ -303,7 +372,7 @@ router.post('/coming-up', async (req: Request, res: Response) => {
     const { time, title, sub, tag, kind, date } = req.body;
     if (!time || !title) { res.status(400).json({ error: 'time and title are required' }); return; }
     const day = (typeof date === 'string' && date) || new Date().toISOString().split('T')[0];
-    const [row] = await db.insert(comingUp).values({ date: day, time, title, sub: sub || '', tag: tag || '', kind: kind || 'work' }).returning();
+    const [row] = await db.insert(comingUp).values({ userId: req.user!.id, date: day, time, title, sub: sub || '', tag: tag || '', kind: kind || 'work' }).returning();
     res.json(row);
   } catch (err) {
     res.status(500).json({ error: 'Failed to create coming up event' });
@@ -315,7 +384,7 @@ router.delete('/coming-up/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    await db.delete(comingUp).where(eq(comingUp.id, id));
+    await db.delete(comingUp).where(and(eq(comingUp.id, id), eq(comingUp.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete coming up event' });
@@ -323,15 +392,25 @@ router.delete('/coming-up/:id', async (req: Request, res: Response) => {
 });
 
 // POST /api/chat
-router.post('/chat', async (req: Request, res: Response) => {
+router.post('/chat', aiRateLimit, async (req: Request, res: Response) => {
   try {
     const { message } = req.body;
+    if (typeof message !== 'string' || !message.trim()) {
+      res.status(400).json({ error: 'Message is required' });
+      return;
+    }
+    if (message.length > MAX_CHAT_MESSAGE_LENGTH) {
+      res.status(400).json({ error: `Message must be under ${MAX_CHAT_MESSAGE_LENGTH} characters` });
+      return;
+    }
+    const userId = req.user!.id;
     const today = new Date().toISOString().split('T')[0];
 
-    const [recentJournal, openTasks, todayChat] = await Promise.all([
-      db.select().from(journalEntries).orderBy(desc(journalEntries.date)).limit(3),
-      db.select().from(tasks).where(eq(tasks.done, false)).orderBy(desc(tasks.createdAt)).limit(5),
-      db.select().from(chatMessages).where(eq(chatMessages.date, today)).orderBy(asc(chatMessages.createdAt)),
+    const [recentJournal, openTasks, todayChat, profileRow] = await Promise.all([
+      db.select().from(journalEntries).where(eq(journalEntries.userId, userId)).orderBy(desc(journalEntries.date)).limit(3),
+      db.select().from(tasks).where(and(eq(tasks.userId, userId), eq(tasks.done, false))).orderBy(desc(tasks.createdAt)).limit(5),
+      db.select().from(chatMessages).where(and(eq(chatMessages.userId, userId), eq(chatMessages.date, today))).orderBy(asc(chatMessages.createdAt)),
+      db.select().from(profileTable).where(eq(profileTable.userId, userId)).limit(1),
     ]);
 
     let context = '';
@@ -353,20 +432,8 @@ router.post('/chat', async (req: Request, res: Response) => {
       context += '\n';
     }
 
-    const ARLO_SYSTEM_PROMPT = `You are Arlo, a personal accountability partner and brother to Bryant. Your voice is direct, gospel-centered, in the style of Pastor Joby Martin.
-
-Bryant's core challenge: he's a strong executor but gets to the starting line without a full picture (budget, materials, time, contingencies). Reality hits and tasks stall at ~80%. Your job is to help him plan ahead of the work, with him.
-
-Guidelines:
-- No flattery. No softening hard truths.
-- Root things in Scripture. Hold him to Ephesians 5:25 — love his wife as Christ loved the church, sacrificially, without keeping score.
-- Cut through excuses with pointed questions.
-- Warm but honest — a brother who loves him enough to tell the truth.
-- Conversational, not sermon-length.
-- Use memory: call back to what he said before, name patterns, notice when a commitment hasn't moved.
-- Encourage real relationships and real action, never foster dependence on the app.
-
-You are a tool, not a pastor or counselor or substitute for his wife.`;
+    const profileData = normalizeProfileData(profileRow[0]?.data ?? null);
+    const ARLO_SYSTEM_PROMPT = buildArloSystemPrompt(profileData, req.user!.firstName ?? "");
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
@@ -392,14 +459,14 @@ You are a tool, not a pastor or counselor or substitute for his wife.`;
         model: OPENAI_MODEL,
         instructions: ARLO_SYSTEM_PROMPT + (context ? `\n\n## Today's context:\n${context}` : ''),
         input: apiMessages,
-        max_output_tokens: 700,
+        max_output_tokens: 350,
       }),
     });
 
     if (!response.ok) {
       const error = await response.text();
       req.log?.error({ error, model: OPENAI_MODEL }, 'OpenAI API error');
-      res.status(500).json({ error: 'Failed to get response from Arlo' });
+      res.status(500).json({ error: 'Failed to get response from Steward', detail: error, model: OPENAI_MODEL });
       return;
     }
 
@@ -408,13 +475,13 @@ You are a tool, not a pastor or counselor or substitute for his wife.`;
 
     if (!assistantMessage) {
       req.log?.error({ data, model: OPENAI_MODEL }, 'OpenAI response missing assistant message');
-      res.status(500).json({ error: 'Failed to get response from Arlo' });
+      res.status(500).json({ error: 'Failed to get response from Steward' });
       return;
     }
 
     await Promise.all([
-      db.insert(chatMessages).values({ role: 'user', content: message, date: today }),
-      db.insert(chatMessages).values({ role: 'assistant', content: assistantMessage, date: today }),
+      db.insert(chatMessages).values({ userId, role: 'user', content: message, date: today }),
+      db.insert(chatMessages).values({ userId, role: 'assistant', content: assistantMessage, date: today }),
     ]);
 
     res.json({ message: assistantMessage });

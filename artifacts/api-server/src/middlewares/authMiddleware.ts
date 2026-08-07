@@ -6,6 +6,7 @@ import {
   getOidcConfig,
   getSessionId,
   getSession,
+  setSessionCookie,
   updateSession,
   type SessionData,
 } from "../lib/auth";
@@ -31,12 +32,12 @@ async function refreshIfExpired(
   session: SessionData,
 ): Promise<SessionData | null> {
   const now = Math.floor(Date.now() / 1000);
-  if (!session.expires_at || now <= session.expires_at) return session;
+  if (session.provider === "demo" || session.provider === "email" || !session.expires_at || now <= session.expires_at) return session;
 
   if (!session.refresh_token) return null;
 
   try {
-    const config = await getOidcConfig();
+    const config = await getOidcConfig(session.provider);
     const tokens = await oidc.refreshTokenGrant(
       config,
       session.refresh_token,
@@ -84,6 +85,13 @@ export async function authMiddleware(
     }
 
     req.user = refreshed.user;
+    // Sliding expiration keeps active users signed in across normal app use.
+    // Extend the DB row alongside the cookie — refreshIfExpired only touches
+    // it on OIDC token refresh, which never happens for demo sessions, so
+    // without this a demo user active every day still hard-expires at
+    // creation+30d while their cookie looks freshly slid.
+    setSessionCookie(res, sid);
+    await updateSession(sid, refreshed);
   } catch {
     // DB error — treat as unauthenticated rather than crashing every request
   }

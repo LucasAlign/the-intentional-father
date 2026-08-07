@@ -14,7 +14,7 @@ class RootErrorBoundary extends Component<
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error("Arlo render error", error, info);
+    console.error("Steward render error", error, info);
   }
 
   render() {
@@ -23,7 +23,7 @@ class RootErrorBoundary extends Component<
     return (
       <main className="min-h-screen bg-[#0C0E07] px-6 py-16 text-[#EEE4C4]">
         <div className="mx-auto flex max-w-sm flex-col items-center text-center">
-          <div className="mb-2 text-4xl">Arlo<span className="text-[#D8AA3E]">.</span></div>
+          <div className="mb-2 text-4xl">Steward<span className="text-[#D8AA3E]">.</span></div>
           <p className="mb-8 text-sm text-[#9C9272]">
             Something failed while opening your dashboard.
           </p>

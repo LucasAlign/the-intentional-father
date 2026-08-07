@@ -1,24 +1,37 @@
 import * as oidc from "openid-client";
+import crypto from "crypto";
 import { Router, type IRouter, type Request, type Response } from "express";
 import {
   GetCurrentAuthUserResponse,
   ExchangeMobileAuthorizationCodeBody,
   ExchangeMobileAuthorizationCodeResponse,
   LogoutMobileSessionResponse,
+  StartEmailLoginBody,
+  StartEmailLoginResponse,
+  VerifyEmailLoginBody,
+  VerifyEmailLoginResponse,
 } from "@workspace/api-zod";
-import { eq } from "drizzle-orm";
-import { db, googleCalendarConnections, usersTable } from "@workspace/db";
+import { and, desc, eq, isNull } from "drizzle-orm";
+import { db, googleCalendarConnections, usersTable, emailLoginCodes } from "@workspace/db";
 import {
   clearSession,
   getOidcConfig,
   getSessionId,
   createSession,
   deleteSession,
+  resolveInviteStatus,
   SESSION_COOKIE,
-  SESSION_TTL,
+  setSessionCookie,
   GOOGLE_ISSUER_URL,
+  generateEmailLoginCode,
+  hashEmailLoginCode,
+  EMAIL_CODE_TTL_MS,
+  EMAIL_CODE_MAX_ATTEMPTS,
+  type OidcProvider,
   type SessionData,
 } from "../lib/auth";
+import { emailStartRateLimit, emailVerifyRateLimit } from "../middlewares/emailAuthRateLimit";
+import { sendLoginCode } from "../lib/email";
 
 const OIDC_COOKIE_TTL = 10 * 60 * 1000;
 
@@ -32,16 +45,6 @@ function getOrigin(req: Request): string {
   const host =
     req.headers["x-forwarded-host"] || req.headers["host"] || "localhost";
   return `${proto}://${host}`;
-}
-
-function setSessionCookie(res: Response, sid: string) {
-  res.cookie(SESSION_COOKIE, sid, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge: SESSION_TTL,
-  });
 }
 
 function setOidcCookie(res: Response, name: string, value: string) {
@@ -71,12 +74,11 @@ function tokenExpiry(expiresIn = 3600): Date {
 
 async function storeGoogleCalendarConnection(
   userId: string,
+  googleEmail: string,
   tokens: oidc.TokenEndpointResponse & oidc.TokenEndpointResponseHelpers,
 ) {
   if (!tokens.access_token || !tokens.refresh_token) return;
-  const grantedScope =
-    tokens.scope ??
-    "openid email profile https://www.googleapis.com/auth/calendar.readonly";
+  const grantedScope = tokens.scope ?? "";
   if (
     !grantedScope
       .split(" ")
@@ -88,6 +90,7 @@ async function storeGoogleCalendarConnection(
     .insert(googleCalendarConnections)
     .values({
       userId,
+      googleEmail,
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token,
       scope: grantedScope,
@@ -95,7 +98,7 @@ async function storeGoogleCalendarConnection(
       updatedAt: new Date(),
     })
     .onConflictDoUpdate({
-      target: googleCalendarConnections.userId,
+      target: [googleCalendarConnections.userId, googleCalendarConnections.googleEmail],
       set: {
         accessToken: tokens.access_token,
         refreshToken: tokens.refresh_token,
@@ -143,6 +146,19 @@ async function upsertUser(claims: Record<string, unknown>) {
   }
 }
 
+function splitName(name: string): { firstName: string | null; lastName: string | null } {
+  const [firstName, ...rest] = name.trim().split(/\s+/);
+  return { firstName: firstName || null, lastName: rest.join(" ") || null };
+}
+
+async function findOrCreateUserByEmail(email: string, name?: string) {
+  const [existing] = await db.select().from(usersTable).where(eq(usersTable.email, email));
+  if (existing) return existing;
+  const { firstName, lastName } = name ? splitName(name) : { firstName: null, lastName: null };
+  const [created] = await db.insert(usersTable).values({ email, firstName, lastName }).returning();
+  return created;
+}
+
 router.get("/auth/user", (req: Request, res: Response) => {
   res.json(
     GetCurrentAuthUserResponse.parse({
@@ -151,113 +167,355 @@ router.get("/auth/user", (req: Request, res: Response) => {
   );
 });
 
-router.get("/login", async (req: Request, res: Response) => {
-  const config = await getOidcConfig();
+// Google keeps its original bare paths (/login, /callback) so the redirect_uri
+// already registered with the Google OAuth client doesn't need to change.
+// Additional providers get their own /login/:provider + /callback/:provider.
+function callbackPathFor(provider: OidcProvider): string {
+  return provider === "google" ? "/api/callback" : `/api/callback/${provider}`;
+}
 
-  // Priority: PUBLIC_URL (explicit config) → browser-reported origin → server headers.
-  // The browser value is the most reliable on mobile because x-forwarded-host can
-  // resolve to a Replit dev tunnel URL instead of the published app domain.
+function appendAuthError(target: string, error: string): string {
+  const separator = target.includes("?") ? "&" : "?";
+  return `${target}${separator}authError=${encodeURIComponent(error)}`;
+}
+
+function makeLoginHandler(provider: OidcProvider) {
+  return async (req: Request, res: Response) => {
+    let config: oidc.Configuration;
+    try {
+      config = await getOidcConfig(provider);
+    } catch (err) {
+      req.log?.error({ err, provider }, "Failed to initialize OIDC login");
+      res.status(503).json({
+        error: `${provider === "microsoft" ? "Microsoft" : "Google"} sign-in is not configured.`,
+      });
+      return;
+    }
+
+    // Priority: PUBLIC_URL (explicit config) → browser-reported origin → server headers.
+    // The browser value is the most reliable on mobile because x-forwarded-host can
+    // resolve to a Replit dev tunnel URL instead of the published app domain.
+    const rawClientOrigin = typeof req.query.appOrigin === "string" ? req.query.appOrigin : "";
+    const clientOrigin = /^https?:\/\/[a-zA-Z0-9][a-zA-Z0-9.-]*(:\d+)?$/.test(rawClientOrigin)
+      ? rawClientOrigin
+      : null;
+    const origin = process.env.PUBLIC_URL?.replace(/\/+$/, "")
+      ?? clientOrigin
+      ?? getOrigin(req);
+    const callbackUrl = `${origin}${callbackPathFor(provider)}`;
+
+    const returnTo = getSafeReturnTo(req.query.returnTo);
+
+    const state = oidc.randomState();
+    const nonce = oidc.randomNonce();
+    const codeVerifier = oidc.randomPKCECodeVerifier();
+    const codeChallenge = await oidc.calculatePKCECodeChallenge(codeVerifier);
+
+    // Google issues a refresh token for any access_type=offline request regardless
+    // of scope; Microsoft's v2.0 endpoint only does so when offline_access is
+    // explicitly requested — without it, sessions can't be refreshed past the
+    // ~60-90min access token lifetime and users get logged out.
+    const scope = provider === "microsoft" ? "openid email profile offline_access" : "openid email profile";
+
+    const redirectTo = oidc.buildAuthorizationUrl(config, {
+      redirect_uri: callbackUrl,
+      scope,
+      access_type: "offline",
+      include_granted_scopes: "true",
+      code_challenge: codeChallenge,
+      code_challenge_method: "S256",
+      prompt: "consent select_account",
+      state,
+      nonce,
+    });
+
+    setOidcCookie(res, "code_verifier", codeVerifier);
+    setOidcCookie(res, "nonce", nonce);
+    setOidcCookie(res, "state", state);
+    setOidcCookie(res, "return_to", returnTo);
+    // Store the origin so the callback uses the exact same redirect_uri
+    // and redirects the user back to the correct domain after login.
+    setOidcCookie(res, "app_origin", origin);
+
+    res.redirect(redirectTo.href);
+  };
+}
+
+// Query params are not validated because the OIDC provider may include
+// parameters not expressed in the schema.
+function makeCallbackHandler(provider: OidcProvider) {
+  return async (req: Request, res: Response) => {
+    let config: oidc.Configuration;
+    try {
+      config = await getOidcConfig(provider);
+    } catch (err) {
+      req.log?.error({ err, provider }, "Failed to initialize OIDC callback");
+      res.status(503).json({
+        error: `${provider === "microsoft" ? "Microsoft" : "Google"} sign-in is not configured.`,
+      });
+      return;
+    }
+    const loginPath = provider === "google" ? "/api/login" : `/api/login/${provider}`;
+
+    // Use the origin stored during login so the redirect_uri matches exactly.
+    const storedOrigin = req.cookies?.app_origin;
+    const callbackUrl = storedOrigin
+      ? `${storedOrigin}${callbackPathFor(provider)}`
+      : `${getOrigin(req)}${callbackPathFor(provider)}`;
+
+    const codeVerifier = req.cookies?.code_verifier;
+    const nonce = req.cookies?.nonce;
+    const expectedState = req.cookies?.state;
+
+    if (!codeVerifier || !expectedState) {
+      res.redirect(loginPath);
+      return;
+    }
+
+    const currentUrl = new URL(
+      `${callbackUrl}?${new URL(req.url, `http://${req.headers.host}`).searchParams}`,
+    );
+
+    let tokens: oidc.TokenEndpointResponse & oidc.TokenEndpointResponseHelpers;
+    try {
+      tokens = await oidc.authorizationCodeGrant(config, currentUrl, {
+        pkceCodeVerifier: codeVerifier,
+        expectedNonce: nonce,
+        expectedState,
+        idTokenExpected: true,
+      });
+    } catch {
+      res.redirect(loginPath);
+      return;
+    }
+
+    const returnTo = getSafeReturnTo(req.cookies?.return_to);
+
+    res.clearCookie("code_verifier", { path: "/" });
+    res.clearCookie("nonce", { path: "/" });
+    res.clearCookie("state", { path: "/" });
+    res.clearCookie("return_to", { path: "/" });
+    res.clearCookie("app_origin", { path: "/" });
+
+    const claims = tokens.claims();
+    if (!claims) {
+      res.redirect(loginPath);
+      return;
+    }
+
+    let dbUser: Awaited<ReturnType<typeof upsertUser>>;
+    try {
+      dbUser = await upsertUser(claims as unknown as Record<string, unknown>);
+    } catch (err) {
+      req.log?.error({ err }, "Failed to upsert user during login");
+      res.status(500).json({ error: "Login failed — could not save user." });
+      return;
+    }
+
+    const redirectTarget = storedOrigin ? `${storedOrigin}${returnTo}` : returnTo;
+
+    if (!dbUser.email) {
+      res.redirect(appendAuthError(redirectTarget, "pending_approval"));
+      return;
+    }
+
+    const inviteStatus = await resolveInviteStatus(dbUser.email);
+    if (inviteStatus !== "active") {
+      res.redirect(appendAuthError(redirectTarget, "pending_approval"));
+      return;
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const sessionData: SessionData = {
+      user: {
+        id: dbUser.id,
+        email: dbUser.email,
+        firstName: dbUser.firstName,
+        lastName: dbUser.lastName,
+        profileImageUrl: dbUser.profileImageUrl,
+      },
+      provider,
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      expires_at: tokens.expiresIn() ? now + tokens.expiresIn()! : claims.exp,
+    };
+
+    if (provider === "google") {
+      try {
+        await storeGoogleCalendarConnection(dbUser.id, dbUser.email, tokens);
+      } catch (err) {
+        req.log?.warn({ err }, "Failed to store Google Calendar connection during login");
+      }
+    }
+
+    let sid: string;
+    try {
+      sid = await createSession(sessionData);
+    } catch (err) {
+      req.log?.error({ err }, "Failed to create session during login");
+      res.status(500).json({ error: "Login failed — could not create session." });
+      return;
+    }
+
+    setSessionCookie(res, sid);
+    // Redirect to the full origin + path so mobile users land back on the
+    // correct domain, not the Replit dev tunnel URL.
+    res.redirect(redirectTarget);
+  };
+}
+
+router.get("/login", makeLoginHandler("google"));
+router.get("/callback", makeCallbackHandler("google"));
+router.get("/login/microsoft", makeLoginHandler("microsoft"));
+router.get("/callback/microsoft", makeCallbackHandler("microsoft"));
+
+// Email OTP: works for both registration and returning sign-ins. A new user
+// row and pending beta_invites row are created on first successful verify —
+// same self-serve-then-approve flow as the Google/Microsoft callback above,
+// just without requiring a social account.
+router.post(
+  "/login/email/start",
+  emailStartRateLimit,
+  async (req: Request, res: Response) => {
+    const parsed = StartEmailLoginBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "A valid email is required." });
+      return;
+    }
+    const email = parsed.data.email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      res.status(400).json({ error: "A valid email is required." });
+      return;
+    }
+
+    const code = generateEmailLoginCode();
+    try {
+      await db.insert(emailLoginCodes).values({
+        email,
+        codeHash: hashEmailLoginCode(code),
+        expiresAt: new Date(Date.now() + EMAIL_CODE_TTL_MS),
+      });
+      await sendLoginCode(email, code);
+    } catch (err) {
+      req.log?.error({ err }, "Failed to send email login code");
+      res.status(500).json({ error: "Could not send the code. Please try again." });
+      return;
+    }
+
+    res.json(StartEmailLoginResponse.parse({ sent: true }));
+  },
+);
+
+router.post(
+  "/login/email/verify",
+  emailVerifyRateLimit,
+  async (req: Request, res: Response) => {
+    const parsed = VerifyEmailLoginBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "A valid email and 6-digit code are required." });
+      return;
+    }
+    const email = parsed.data.email.trim().toLowerCase();
+    const { code, name } = parsed.data;
+
+    const [latest] = await db
+      .select()
+      .from(emailLoginCodes)
+      .where(and(eq(emailLoginCodes.email, email), isNull(emailLoginCodes.consumedAt)))
+      .orderBy(desc(emailLoginCodes.createdAt))
+      .limit(1);
+
+    if (!latest || latest.expiresAt < new Date()) {
+      res.status(400).json({ error: "That code has expired. Request a new one." });
+      return;
+    }
+    if (latest.attempts >= EMAIL_CODE_MAX_ATTEMPTS) {
+      res.status(400).json({ error: "Too many attempts. Request a new code." });
+      return;
+    }
+    if (latest.codeHash !== hashEmailLoginCode(code)) {
+      await db
+        .update(emailLoginCodes)
+        .set({ attempts: latest.attempts + 1 })
+        .where(eq(emailLoginCodes.id, latest.id));
+      res.status(400).json({ error: "That code isn't right. Try again." });
+      return;
+    }
+
+    await db
+      .update(emailLoginCodes)
+      .set({ consumedAt: new Date() })
+      .where(eq(emailLoginCodes.id, latest.id));
+
+    let dbUser: Awaited<ReturnType<typeof findOrCreateUserByEmail>>;
+    try {
+      dbUser = await findOrCreateUserByEmail(email, name);
+    } catch (err) {
+      req.log?.error({ err }, "Failed to upsert user during email login");
+      res.status(500).json({ error: "Login failed — could not save user." });
+      return;
+    }
+
+    const inviteStatus = await resolveInviteStatus(email);
+    if (inviteStatus !== "active") {
+      res.json(VerifyEmailLoginResponse.parse({ user: null, pendingApproval: true }));
+      return;
+    }
+
+    const sessionData: SessionData = {
+      user: {
+        id: dbUser.id,
+        email: dbUser.email,
+        firstName: dbUser.firstName,
+        lastName: dbUser.lastName,
+        profileImageUrl: dbUser.profileImageUrl,
+      },
+      provider: "email",
+      access_token: "email",
+    };
+
+    let sid: string;
+    try {
+      sid = await createSession(sessionData);
+    } catch (err) {
+      req.log?.error({ err }, "Failed to create session during email login");
+      res.status(500).json({ error: "Login failed — could not create session." });
+      return;
+    }
+
+    setSessionCookie(res, sid);
+    res.json(VerifyEmailLoginResponse.parse({ user: sessionData.user, pendingApproval: false }));
+  },
+);
+
+// No OAuth round-trip: creates a fresh throwaway user and session directly,
+// so anyone can try the app without a Google/Microsoft account. Bypasses the
+// beta-invite gate on purpose — that gate only protects the real providers.
+router.get("/login/demo", async (req: Request, res: Response) => {
   const rawClientOrigin = typeof req.query.appOrigin === "string" ? req.query.appOrigin : "";
   const clientOrigin = /^https?:\/\/[a-zA-Z0-9][a-zA-Z0-9.-]*(:\d+)?$/.test(rawClientOrigin)
     ? rawClientOrigin
     : null;
-  const origin = process.env.PUBLIC_URL?.replace(/\/+$/, "")
-    ?? clientOrigin
-    ?? getOrigin(req);
-  const callbackUrl = `${origin}/api/callback`;
-
+  const origin = process.env.PUBLIC_URL?.replace(/\/+$/, "") ?? clientOrigin ?? getOrigin(req);
   const returnTo = getSafeReturnTo(req.query.returnTo);
-
-  const state = oidc.randomState();
-  const nonce = oidc.randomNonce();
-  const codeVerifier = oidc.randomPKCECodeVerifier();
-  const codeChallenge = await oidc.calculatePKCECodeChallenge(codeVerifier);
-
-  const redirectTo = oidc.buildAuthorizationUrl(config, {
-    redirect_uri: callbackUrl,
-    scope:
-      "openid email profile https://www.googleapis.com/auth/calendar.readonly",
-    access_type: "offline",
-    include_granted_scopes: "true",
-    code_challenge: codeChallenge,
-    code_challenge_method: "S256",
-    prompt: "consent select_account",
-    state,
-    nonce,
-  });
-
-  setOidcCookie(res, "code_verifier", codeVerifier);
-  setOidcCookie(res, "nonce", nonce);
-  setOidcCookie(res, "state", state);
-  setOidcCookie(res, "return_to", returnTo);
-  // Store the origin so /api/callback uses the exact same redirect_uri
-  // and redirects the user back to the correct domain after login.
-  setOidcCookie(res, "app_origin", origin);
-
-  res.redirect(redirectTo.href);
-});
-
-// Query params are not validated because the OIDC provider may include
-// parameters not expressed in the schema.
-router.get("/callback", async (req: Request, res: Response) => {
-  const config = await getOidcConfig();
-
-  // Use the origin stored during /api/login so the redirect_uri matches exactly.
-  const storedOrigin = req.cookies?.app_origin;
-  const callbackUrl = storedOrigin
-    ? `${storedOrigin}/api/callback`
-    : `${getOrigin(req)}/api/callback`;
-
-  const codeVerifier = req.cookies?.code_verifier;
-  const nonce = req.cookies?.nonce;
-  const expectedState = req.cookies?.state;
-
-  if (!codeVerifier || !expectedState) {
-    res.redirect("/api/login");
-    return;
-  }
-
-  const currentUrl = new URL(
-    `${callbackUrl}?${new URL(req.url, `http://${req.headers.host}`).searchParams}`,
-  );
-
-  let tokens: oidc.TokenEndpointResponse & oidc.TokenEndpointResponseHelpers;
-  try {
-    tokens = await oidc.authorizationCodeGrant(config, currentUrl, {
-      pkceCodeVerifier: codeVerifier,
-      expectedNonce: nonce,
-      expectedState,
-      idTokenExpected: true,
-    });
-  } catch {
-    res.redirect("/api/login");
-    return;
-  }
-
-  const returnTo = getSafeReturnTo(req.cookies?.return_to);
-
-  res.clearCookie("code_verifier", { path: "/" });
-  res.clearCookie("nonce", { path: "/" });
-  res.clearCookie("state", { path: "/" });
-  res.clearCookie("return_to", { path: "/" });
-  res.clearCookie("app_origin", { path: "/" });
-
-  const claims = tokens.claims();
-  if (!claims) {
-    res.redirect("/api/login");
-    return;
-  }
 
   let dbUser: Awaited<ReturnType<typeof upsertUser>>;
   try {
-    dbUser = await upsertUser(claims as unknown as Record<string, unknown>);
+    const [user] = await db
+      .insert(usersTable)
+      .values({
+        email: `demo-${crypto.randomUUID()}@demo.local`,
+        firstName: "Demo",
+        lastName: "User",
+      })
+      .returning();
+    dbUser = user;
   } catch (err) {
-    req.log?.error({ err }, "Failed to upsert user during login");
-    res.status(500).json({ error: "Login failed — could not save user." });
+    req.log?.error({ err }, "Failed to create demo user");
+    res.status(500).json({ error: "Demo login failed — could not create user." });
     return;
   }
 
-  const now = Math.floor(Date.now() / 1000);
   const sessionData: SessionData = {
     user: {
       id: dbUser.id,
@@ -266,31 +524,21 @@ router.get("/callback", async (req: Request, res: Response) => {
       lastName: dbUser.lastName,
       profileImageUrl: dbUser.profileImageUrl,
     },
-    access_token: tokens.access_token,
-    refresh_token: tokens.refresh_token,
-    expires_at: tokens.expiresIn() ? now + tokens.expiresIn()! : claims.exp,
+    provider: "demo",
+    access_token: "demo",
   };
-
-  try {
-    await storeGoogleCalendarConnection(dbUser.id, tokens);
-  } catch (err) {
-    req.log?.warn({ err }, "Failed to store Google Calendar connection during login");
-  }
 
   let sid: string;
   try {
     sid = await createSession(sessionData);
   } catch (err) {
-    req.log?.error({ err }, "Failed to create session during login");
-    res.status(500).json({ error: "Login failed — could not create session." });
+    req.log?.error({ err }, "Failed to create session during demo login");
+    res.status(500).json({ error: "Demo login failed — could not create session." });
     return;
   }
 
   setSessionCookie(res, sid);
-  // Redirect to the full origin + path so mobile users land back on the
-  // correct domain, not the Replit dev tunnel URL.
-  const redirectTarget = storedOrigin ? `${storedOrigin}${returnTo}` : returnTo;
-  res.redirect(redirectTarget);
+  res.redirect(`${origin}${returnTo}`);
 });
 
 router.get("/logout", async (req: Request, res: Response) => {
@@ -311,7 +559,7 @@ router.post(
     const { code, code_verifier, redirect_uri, state, nonce } = parsed.data;
 
     try {
-      const config = await getOidcConfig();
+      const config = await getOidcConfig("google");
 
       const callbackUrl = new URL(redirect_uri);
       callbackUrl.searchParams.set("code", code);
@@ -335,6 +583,11 @@ router.post(
         claims as unknown as Record<string, unknown>,
       );
 
+      if (!dbUser.email || (await resolveInviteStatus(dbUser.email)) !== "active") {
+        res.status(401).json({ error: "Your account is pending approval." });
+        return;
+      }
+
       const now = Math.floor(Date.now() / 1000);
       const sessionData: SessionData = {
         user: {
@@ -344,13 +597,14 @@ router.post(
           lastName: dbUser.lastName,
           profileImageUrl: dbUser.profileImageUrl,
         },
+        provider: "google",
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
         expires_at: tokens.expiresIn() ? now + tokens.expiresIn()! : claims.exp,
       };
 
       try {
-        await storeGoogleCalendarConnection(dbUser.id, tokens);
+        await storeGoogleCalendarConnection(dbUser.id, dbUser.email ?? dbUser.id, tokens);
       } catch (err) {
         req.log.warn({ err }, "Failed to store Google Calendar connection during mobile login");
       }
