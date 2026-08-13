@@ -8,6 +8,8 @@ Arlo — personal OS for the ADD entrepreneur: a daily dashboard with a scriptur
 
 ## Run & Operate
 
+The dev servers below are already kept running by the Replit "Project" workflow — don't run them yourself; see **Replit Environment Rules**. Listed here for reference (what's running, on which port) and for non-Replit environments.
+
 - `pnpm --filter @workspace/api-server run dev` — run the API server (port 8080)
 - `pnpm --filter @workspace/arlo run dev` — run the Arlo frontend (port 22384)
 - `pnpm run typecheck` — full typecheck across all packages (builds `lib/*` project references first, then typechecks `artifacts/*` and `scripts`)
@@ -65,3 +67,12 @@ All app data tables are scoped by `user_id` — this is a multi-user app, not si
 - A composite TS project (like `lib/replit-auth-web`) that uses `import.meta.env` needs its own `src/env.d.ts` declaring `ImportMetaEnv`/`ImportMeta` — it has no Vite dependency, so `vite/client` types won't resolve. Skipping this breaks `typecheck:libs`, which `api-spec`'s `codegen` script runs at the end.
 - `OPENAI_API_KEY` must be set (as a Replit secret in deployed envs) for AI chat/interview features to work.
 - Journal and chat save on blur / form submit, not live.
+
+## Replit Environment Rules
+
+This project runs in Replit. The API server (`artifacts/api-server`, port 8080) and frontend (`artifacts/arlo`, port 22384) are managed by the Replit "Project" workflow (`.replit`'s `[workflows] runButton = "Project"`).
+
+- **Never start or restart the server.** Don't run `pnpm --filter @workspace/api-server run dev`, `pnpm --filter @workspace/arlo run dev`, or any command that binds to port 8080 or 22384. The Replit workflow manages both — not Claude Code.
+- **Edit files only.** Make code changes to files but don't try to run or serve the app. Replit handles hot-reloading for frontend changes automatically.
+- **Don't use Docker or virtual environments.** Replit uses Nix.
+- **Don't modify the root `package.json`, `artifacts/arlo/vite.config.ts`, or `lib/db/drizzle.config.ts`** unless intentional — these are managed by the Replit environment.
