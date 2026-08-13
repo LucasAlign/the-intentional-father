@@ -15,7 +15,7 @@ Arlo — personal OS for the ADD entrepreneur: a daily dashboard with a scriptur
 - `pnpm --filter @workspace/db run push` — push Drizzle schema changes to Postgres (dev only; `push-force` if it complains about data loss)
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate the Zod schemas and react-query client from `lib/api-spec/openapi.yaml` (runs `typecheck:libs` afterward)
 - Required env: `DATABASE_URL` (Postgres), `OPENAI_API_KEY` (Arlo AI chat)
-- Auth env: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`; optional `GOOGLE_ISSUER_URL` (defaults to `https://accounts.google.com`)
+- Auth env: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`; optional `GOOGLE_ISSUER_URL` (defaults to `https://accounts.google.com`). Microsoft is a second OIDC provider: `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET`; optional `MICROSOFT_ISSUER_URL` (defaults to `https://login.microsoftonline.com/common/v2.0`)
 - Email env: `RESEND_API_KEY` (approval emails via Resend; sending is skipped with a warning if unset); optional `RESEND_FROM_EMAIL` (defaults to `admin@lucasalign.com`)
 - No test suite exists yet — correctness is verified via `typecheck` plus manual exercise of the running app.
 
@@ -36,16 +36,22 @@ Arlo — personal OS for the ADD entrepreneur: a daily dashboard with a scriptur
 
 Whenever the API surface changes, update `openapi.yaml` first, then run the `codegen` script — don't hand-edit files under either package's `generated/` directory.
 
-**Request flow.** `artifacts/api-server/src/app.ts` wires: pino request logging → CORS → cookie/JSON parsing → `authMiddleware` (loads the user from the session cookie onto `req.user` for every request) → `/api` router. `routes/index.ts` mounts `health` and `auth` publicly, and gates `googleCalendar`, `arlo`, and `interview` routers behind `requireAuth` (401 if no session).
+**Request flow.** `artifacts/api-server/src/app.ts` wires: pino request logging → CORS → cookie/JSON parsing → `authMiddleware` (loads the user from the session cookie onto `req.user` for every request) → `/api` router. `routes/index.ts` mounts `health` and `auth` publicly, and gates `googleCalendar`, `arlo`, `interview`, and `admin` routers behind `requireAuth` (401 if no session).
 
-**Auth.** Google OIDC via `openid-client`, PKCE flow (`login` → `callback` in `routes/auth.ts`), session stored server-side (session table + cookie, see `lib/auth.ts`). There's also a mobile authorization-code exchange endpoint (`/mobile-auth/logout`, `ExchangeMobileAuthorizationCode*`) for a native client, and `beta_invites`/`email_login_codes` tables (`index.ts` bootstrap SQL) supporting an invite/email-code path alongside Google login. All app data tables are scoped by `user_id` — this is a multi-user app, not single-user (despite older docs saying otherwise).
+**Auth.** Four login paths, all converging on the same server-side session (session table + cookie, see `lib/auth.ts`) and the same `beta_invites` approval gate (a login only succeeds if the user's email has `status = 'active'`):
+  - Google and Microsoft OIDC via `openid-client`, PKCE flow (`makeLoginHandler`/`makeCallbackHandler` in `routes/auth.ts`, keyed by `OidcProvider`). Google keeps the bare `/login`/`/callback` paths (its redirect URI is already registered); Microsoft uses `/login/microsoft`/`/callback/microsoft`. A successful Google login also stores a Google Calendar connection (`storeGoogleCalendarConnection`) when the calendar scope was granted.
+  - Email OTP (`/login/email/start`, `/login/email/verify`) — a 6-digit code hashed into `email_login_codes`, emailed via `lib/email.ts`/Resend; works for both first-time registration and returning sign-in.
+  - Demo login (`/login/demo`) — creates a throwaway user and session with no OAuth round-trip and deliberately bypasses the beta-invite gate.
+  - A mobile authorization-code exchange endpoint (`/mobile-auth/token-exchange`, `/mobile-auth/logout`) for a native client, Google-only.
+
+All app data tables are scoped by `user_id` — this is a multi-user app, not single-user (despite older docs saying otherwise).
 
 **Schema bootstrap, not migrations.** `artifacts/api-server/src/index.ts` runs idempotent `CREATE TABLE IF NOT EXISTS` / `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements on boot to ensure auth/session tables exist. Day-to-day schema changes for app tables go through Drizzle (`lib/db/src/schema/arlo.ts`, `auth.ts`) + `pnpm --filter @workspace/db run push`.
 
 **Where things live:**
 - `artifacts/arlo/src/pages/Home.tsx` — the entire app UI: a 5-tab mobile layout (Today / Her / Work / Arlo / Week), styled with inline `CSSProperties` maps (`R` root/nav, `S` screens, `M` modal) to preserve exact mockup fidelity — woodgrain + brass/parchment theme. `artifacts/arlo/src/index.css` holds the palette/font `:root` vars.
 - `artifacts/api-server/src/routes/arlo.ts` — verse/tasks/chat/journal/commits/jobs/coming-up routes
-- `artifacts/api-server/src/routes/auth.ts` — Google OIDC + mobile auth exchange
+- `artifacts/api-server/src/routes/auth.ts` — Google/Microsoft OIDC, email-OTP login, demo login, mobile auth exchange
 - `artifacts/api-server/src/routes/googleCalendar.ts` — Google Calendar OAuth connect/events (feeds the "Coming Up" tab)
 - `artifacts/api-server/src/routes/interview.ts` — AI-driven onboarding interview, backed by `profile`/`interview_messages`
 - `artifacts/api-server/src/routes/admin.ts` — beta-invite listing/approval (admin-only); `lib/email.ts` sends the approval email via Resend when a `pending` invite is set to `active`

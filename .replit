@@ -1,5 +1,8 @@
 modules = ["nodejs-24", "postgresql-16"]
 
+[env]
+PATH = "/home/runner/workspace/.local/bin:${PATH}"
+
 [deployment]
 router = "application"
 deploymentTarget = "autoscale"
