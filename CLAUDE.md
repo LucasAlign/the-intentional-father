@@ -76,3 +76,17 @@ This project runs in Replit. The API server (`artifacts/api-server`, port 8080) 
 - **Edit files only.** Make code changes to files but don't try to run or serve the app. Replit handles hot-reloading for frontend changes automatically.
 - **Don't use Docker or virtual environments.** Replit uses Nix.
 - **Don't modify the root `package.json`, `artifacts/arlo/vite.config.ts`, or `lib/db/drizzle.config.ts`** unless intentional — these are managed by the Replit environment.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub issues in `LucasAlign/the-intentional-father`, managed via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`), used as-is. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout — one `CONTEXT.md` + `docs/adr/` at the repo root, created lazily as terms/decisions are resolved. See `docs/agents/domain.md`.
