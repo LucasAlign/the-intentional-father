@@ -13,7 +13,11 @@
       "Bash(curl -sv http://localhost:22384/api/healthz)",
       "Bash(curl *)",
       "Bash(netstat -tlnp)",
-      "Bash(awk '{print $2}')"
+      "Bash(awk '{print $2}')",
+      "Bash(gh pr *)",
+      "Bash(sort -t: -k3)",
+      "Bash(gh issue *)",
+      "Bash(gh api *)"
     ]
   }
 }
