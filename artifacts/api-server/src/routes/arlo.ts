@@ -1,11 +1,12 @@
 import { Router, Request, Response } from "express";
 import { db } from "@workspace/db";
-import { journalEntries, chatMessages, tasks, commits, jobs, comingUp, profile as profileTable } from "@workspace/db";
-import { eq, desc, asc, gte, lte, and } from "drizzle-orm";
+import { journalEntries, chatMessages, tasks, taskCompletions, commits, jobs, comingUp, profile as profileTable } from "@workspace/db";
+import { eq, desc, asc, gte, lte, and, isNull, inArray, sql } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
 import { normalizeProfileData, type ProfileData } from "../lib/profile";
 import { aiRateLimit } from "../middlewares/aiRateLimit";
 import { SCRIPTURE_GROUNDING, getVerseOfTheDay } from "../lib/verses";
+import { computeCurrentPeriodStats, computeStreak, type RecurrencePeriod } from "../lib/priorityPeriods";
 
 const router = Router();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
@@ -126,9 +127,39 @@ router.get('/tasks', async (req: Request, res: Response) => {
       .where(and(eq(tasks.userId, req.user!.id), eq(tasks.done, false)))
       .orderBy(desc(tasks.createdAt))
       .limit(50);
-    res.json(rows);
+    const todayKey = typeof req.query.today === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.today)
+      ? req.query.today : new Date().toISOString().split('T')[0];
+    const recurringIds = rows.filter(r => r.recurrencePeriod).map(r => r.id);
+    let completedToday = new Set<number>();
+    if (recurringIds.length > 0) {
+      const comps = await db.select({ taskId: taskCompletions.taskId }).from(taskCompletions)
+        .where(and(inArray(taskCompletions.taskId, recurringIds), eq(taskCompletions.completedDate, todayKey)));
+      completedToday = new Set(comps.map(c => c.taskId));
+    }
+    res.json(rows.map(r => ({ ...r, completedToday: completedToday.has(r.id) })));
   } catch (err) {
+    req.log?.error({ err }, 'Error fetching tasks');
     res.status(500).json({ error: 'Failed to fetch tasks' });
+  }
+});
+
+// GET /api/tasks/completed
+router.get('/tasks/completed', async (req: Request, res: Response) => {
+  try {
+    const uid = req.user!.id;
+    const [items, [{ count: openCount }]] = await Promise.all([
+      db.select().from(tasks).where(and(eq(tasks.userId, uid), eq(tasks.done, true), isNull(tasks.recurrencePeriod)))
+        .orderBy(desc(tasks.doneAt)).limit(200),
+      db.select({ count: sql<number>`count(*)::int` }).from(tasks)
+        .where(and(eq(tasks.userId, uid), eq(tasks.done, false), isNull(tasks.recurrencePeriod))),
+    ]);
+    const doneCount = items.length;
+    const total = doneCount + Number(openCount);
+    const pct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
+    res.json({ items, doneCount, totalCount: total, pct });
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching completed tasks');
+    res.status(500).json({ error: 'Failed to fetch completed tasks' });
   }
 });
 
@@ -156,9 +187,34 @@ router.patch('/tasks/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid task id' }); return; }
-    const { done, partial, notes } = req.body;
-    const updates: Partial<{ done: boolean; partial: boolean; notes: string }> = {};
-    if (typeof done === 'boolean') updates.done = done;
+    const [existing] = await db.select().from(tasks).where(and(eq(tasks.id, id), eq(tasks.userId, req.user!.id))).limit(1);
+    if (!existing) { res.status(404).json({ error: 'Task not found' }); return; }
+    const { done, partial, notes, recurrencePeriod, recurrenceTarget } = req.body;
+    const updates: Partial<{ done: boolean; doneAt: Date | null; partial: boolean; notes: string;
+      recurrencePeriod: string | null; recurrenceTarget: number | null }> = {};
+
+    if (recurrencePeriod !== undefined) {
+      if (recurrencePeriod === null) {
+        updates.recurrencePeriod = null;
+        updates.recurrenceTarget = null;
+      } else if (['daily', 'weekly', 'monthly'].includes(recurrencePeriod)) {
+        const target = Number.isInteger(recurrenceTarget) && recurrenceTarget > 0 ? recurrenceTarget : 1;
+        updates.recurrencePeriod = recurrencePeriod;
+        updates.recurrenceTarget = recurrencePeriod === 'daily' ? 1 : target;
+      } else {
+        res.status(400).json({ error: 'Invalid recurrencePeriod' });
+        return;
+      }
+    }
+    if (typeof done === 'boolean') {
+      const stillRecurring = recurrencePeriod !== undefined ? recurrencePeriod !== null : Boolean(existing.recurrencePeriod);
+      if (done === true && stillRecurring) {
+        res.status(400).json({ error: 'Recurring priorities cannot be marked fully done — remove recurrence first, or log a completion for today.' });
+        return;
+      }
+      updates.done = done;
+      updates.doneAt = done ? new Date() : null;
+    }
     if (typeof partial === 'boolean') updates.partial = partial;
     if (typeof notes === 'string') updates.notes = notes;
     if (Object.keys(updates).length === 0) { res.status(400).json({ error: 'No valid fields to update' }); return; }
@@ -180,6 +236,61 @@ router.delete('/tasks/:id', async (req: Request, res: Response) => {
   } catch (err) {
     req.log?.error({ err }, 'Error deleting task');
     res.status(500).json({ error: 'Failed to delete task' });
+  }
+});
+
+// POST /api/tasks/:id/complete
+router.post('/tasks/:id/complete', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id as string, 10);
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid task id' }); return; }
+    const { date } = req.body;
+    if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      res.status(400).json({ error: 'date (YYYY-MM-DD) is required' });
+      return;
+    }
+    const [task] = await db.select().from(tasks).where(and(eq(tasks.id, id), eq(tasks.userId, req.user!.id))).limit(1);
+    if (!task) { res.status(404).json({ error: 'Task not found' }); return; }
+    if (!task.recurrencePeriod) { res.status(400).json({ error: 'Task is not recurring' }); return; }
+    const inserted = await db.insert(taskCompletions)
+      .values({ userId: req.user!.id, taskId: id, completedDate: date })
+      .onConflictDoNothing({ target: [taskCompletions.taskId, taskCompletions.completedDate] })
+      .returning();
+    res.json({ success: true, alreadyCompleted: inserted.length === 0 });
+  } catch (err) {
+    req.log?.error({ err }, 'Error logging task completion');
+    res.status(500).json({ error: 'Failed to log completion' });
+  }
+});
+
+// GET /api/tasks/:id/history
+router.get('/tasks/:id/history', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id as string, 10);
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid task id' }); return; }
+    const [task] = await db.select().from(tasks).where(and(eq(tasks.id, id), eq(tasks.userId, req.user!.id))).limit(1);
+    if (!task) { res.status(404).json({ error: 'Task not found' }); return; }
+    const rows = await db.select({ completedDate: taskCompletions.completedDate }).from(taskCompletions)
+      .where(and(eq(taskCompletions.taskId, id), eq(taskCompletions.userId, req.user!.id)))
+      .orderBy(desc(taskCompletions.completedDate));
+    const completions = rows.map(r => r.completedDate);
+    const todayKey = typeof req.query.today === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.today)
+      ? req.query.today : new Date().toISOString().split('T')[0];
+
+    let streak = 0;
+    let currentPeriod: { key: string; completedCount: number; target: number; pct: number } | null = null;
+    const completedToday = completions.includes(todayKey);
+    if (task.recurrencePeriod) {
+      const period = task.recurrencePeriod as RecurrencePeriod;
+      const target = task.recurrenceTarget ?? 1;
+      const createdKey = task.createdAt.toISOString().split('T')[0];
+      currentPeriod = computeCurrentPeriodStats(period, target, completions, todayKey);
+      streak = computeStreak(period, target, completions, todayKey, createdKey);
+    }
+    res.json({ task, completions, streak, currentPeriod, completedToday });
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching task history');
+    res.status(500).json({ error: 'Failed to fetch task history' });
   }
 });
 

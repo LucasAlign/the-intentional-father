@@ -25,12 +25,29 @@ export const tasks = pgTable("tasks", {
   notes: text("notes").notNull().default(""),
   partial: boolean("partial").notNull().default(false),
   done: boolean("done").notNull().default(false),
+  doneAt: timestamp("done_at"),
+  recurrencePeriod: text("recurrence_period"),
+  recurrenceTarget: integer("recurrence_target"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
 export const insertTaskSchema = createInsertSchema(tasks).omit({ id: true, createdAt: true });
 export type InsertTask = z.infer<typeof insertTaskSchema>;
 export type Task = typeof tasks.$inferSelect;
+
+export const taskCompletions = pgTable("task_completions", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  taskId: integer("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+  completedDate: text("completed_date").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  unique("task_completions_task_date_unique").on(table.taskId, table.completedDate),
+]);
+
+export const insertTaskCompletionSchema = createInsertSchema(taskCompletions).omit({ id: true, createdAt: true });
+export type InsertTaskCompletion = z.infer<typeof insertTaskCompletionSchema>;
+export type TaskCompletion = typeof taskCompletions.$inferSelect;
 
 export const chatMessages = pgTable("chat_messages", {
   id: serial("id").primaryKey(),

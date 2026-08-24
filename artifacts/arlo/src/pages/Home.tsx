@@ -40,7 +40,19 @@ function useSpeech(onResult: (text: string) => void) {
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-interface Task { id: number; text: string; category: string; partial: boolean; done: boolean; }
+interface Task {
+  id: number; text: string; category: string; partial: boolean; done: boolean;
+  recurrencePeriod: "daily" | "weekly" | "monthly" | null;
+  recurrenceTarget: number | null;
+  completedToday: boolean;
+}
+interface TaskHistory {
+  task: Task;
+  completions: string[];
+  streak: number;
+  currentPeriod: { key: string; completedCount: number; target: number; pct: number } | null;
+  completedToday: boolean;
+}
 interface Commit { id: number; text: string; madeDate: string; done: boolean; }
 interface Job { id: number; biz: string; name: string; stage: string; due: string; pct: number; }
 interface Event { id: number; date: string; time: string; title: string; sub: string; tag: string; kind: string; }
@@ -194,19 +206,20 @@ function primaryRelationship(profile: ProfileData | null): Relationship | null {
   return profile?.relationships?.[0] ?? null;
 }
 
-const EXERCISE_PROMPTS = [
-  "Walk outside, move your body, or stretch before the day starts.",
-  "Get 20 minutes of movement in before the work takes over.",
-  "Do something simple: walk, pushups, mobility, or a steady sweat.",
-  "Move early so your body is not the last thing you remember.",
-];
-
 function dayOfYear(date = new Date()) {
   return Math.floor((date.getTime() - new Date(date.getFullYear(), 0, 0).getTime()) / 86400000);
 }
 
 function rotatingItem(items: string[]) {
   return items[dayOfYear() % items.length];
+}
+
+function cadenceLabel(t: Task): string {
+  if (!t.recurrencePeriod) return "";
+  if (t.recurrencePeriod === "daily") return "Daily";
+  const n = t.recurrenceTarget ?? 1;
+  const unit = t.recurrencePeriod === "weekly" ? "week" : "month";
+  return n <= 1 ? `Once a ${unit}` : `${n}x/${unit}`;
 }
 
 function parseJobDueDate(due: string): string | null {
@@ -275,9 +288,11 @@ export default function Home() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [profileMenu, setProfileMenu] = useState(false);
   const [profile, setProfile] = useState<ProfileData | null>(null);
+  const [priorityDetail, setPriorityDetail] = useState<Task | null>(null);
+  const [completedLogOpen, setCompletedLogOpen] = useState(false);
 
   const refreshTasks = useCallback(() => {
-    getList<Task>(`${API}/tasks`).then(setTasks);
+    getList<Task>(`${API}/tasks?today=${ymd(new Date())}`).then(setTasks);
   }, []);
   const refreshCommits = useCallback(() => {
     getList<Commit>(`${API}/commits`).then(setCommits);
@@ -370,7 +385,7 @@ export default function Home() {
       </div>
 
       <div style={R.screen}>
-        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} />}
+        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} />}
         {tab === "her" && <Relationships commits={commits} refresh={refreshCommits} primaryRel={primaryRel} label={relTabLabel} />}
         {tab === "work" && <Work jobs={jobs} onJob={() => setJobModal(true)} onEdit={setEditJob} />}
         {tab === "arlo" && <ArloChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} />}
@@ -394,6 +409,8 @@ export default function Home() {
       {jobModal && <JobModal onClose={() => setJobModal(false)} onCreated={refreshJobs} bizSuggestions={[...new Set(jobs.map(j => j.biz))]} />}
       {editJob && <JobEditModal job={editJob} onClose={() => setEditJob(null)} onSaved={refreshJobs} onDeleted={refreshJobs} />}
       {profileMenu && <ProfileMenu name={user?.firstName} email={user?.email} onClose={() => setProfileMenu(false)} onLogout={logout} />}
+      {priorityDetail && <PriorityDetailModal task={priorityDetail} onClose={() => setPriorityDetail(null)} onChanged={refreshTasks} />}
+      {completedLogOpen && <CompletedLogModal onClose={() => setCompletedLogOpen(false)} />}
     </div>
   );
 }
@@ -413,11 +430,12 @@ function ProfileMenu({ name, email, onClose, onLogout }: { name?: string | null;
 }
 
 // ── Today ───────────────────────────────────────────────────────────────────
-function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks }: {
+function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks, onOpenPriority, onViewCompleted }: {
   verse: string; tasks: Task[]; journal: Journal; events: Event[]; name?: string | null;
   profile: ProfileData | null; primaryRel: Relationship | null;
   onSend: (m?: string) => void; ci: string; setCi: (v: string) => void; sending: boolean;
   onSaveJournal: (j: Journal) => void; refreshTasks: () => void;
+  onOpenPriority: (t: Task) => void; onViewCompleted: () => void;
 }) {
   const [intent, setIntent] = useState(journal.commit_text);
   const [reflect, setReflect] = useState(journal.reflect);
@@ -425,7 +443,6 @@ function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSen
   const [adding, setAdding] = useState(false);
   const [newTask, setNewTask] = useState("");
   const [deletingIds, setDeletingIds] = useState<number[]>([]);
-  const [exerciseDone, setExerciseDone] = useState(false);
   useEffect(() => { setIntent(journal.commit_text); setReflect(journal.reflect); }, [journal.commit_text, journal.reflect]);
 
   const hr = new Date().getHours();
@@ -435,7 +452,6 @@ function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSen
   const vText = sep === -1 ? verse : verse.slice(sep + 3);
   const openTasks = tasks.filter(t => !deletingIds.includes(t.id));
   const journalPrompt = rotatingItem(journalPromptsFor(profile));
-  const exercisePrompt = rotatingItem(EXERCISE_PROMPTS);
   const isSpouseRel = primaryRel && isSpouseType(primaryRel.type);
   const intentionLabel = isSpouseRel ? "MARRIAGE INTENTION" : primaryRel ? `${(primaryRel.type || "relationship").toUpperCase()} INTENTION` : "RELATIONSHIP INTENTION";
   const intentionPlaceholder = isSpouseRel
@@ -472,6 +488,18 @@ function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSen
       setDeletingIds(prev => prev.filter(item => item !== id));
     }
   }
+  async function logToday(id: number): Promise<boolean> {
+    try {
+      const r = await fetch(`${API}/tasks/${id}/complete`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: ymd(new Date()) }),
+      });
+      if (r.ok) refreshTasks();
+      return r.ok;
+    } catch {
+      return false;
+    }
+  }
 
   return (
     <div style={S.scroll}>
@@ -498,23 +526,18 @@ function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSen
         />
       </div>
 
-      <div style={{ ...S.exerciseCard, ...(exerciseDone ? S.exerciseDone : {}) }}>
-        <div style={{ flex: 1 }}>
-          <div style={S.eyebrow}><Icon name="clock" /><span style={S.eyeText}>MORNING 20 MIN</span></div>
-          <div style={S.exerciseText}>{exerciseDone ? "Movement logged for today." : exercisePrompt}</div>
-        </div>
-        <button style={{ ...S.exerciseBtn, ...(exerciseDone ? S.exerciseBtnDone : {}) }} onClick={() => setExerciseDone(done => !done)}>{exerciseDone ? "Done" : "Log"}</button>
-      </div>
-
       <div style={S.card}>
-        <div style={S.eyebrow}><Icon name="target" /><span style={S.eyeText}>PRIORITIES</span></div>
+        <div style={S.prioHeadRow}>
+          <div style={S.eyebrow}><Icon name="target" /><span style={S.eyeText}>PRIORITIES</span></div>
+          <button style={S.prioLogLink} onClick={onViewCompleted}>View completed ›</button>
+        </div>
         {openTasks.length === 0 ? (
           <div style={S.empty}>No open priorities. Add the one thing that matters most.</div>
         ) : (
           <div style={{ position: "relative", marginTop: 4 }}>
             <div style={S.prioLine} />
             {openTasks.map((t, i) => (
-              <SwipePriority key={t.id} task={t} index={i} isLast={i === openTasks.length - 1} onComplete={complete} onDelete={deleteTask} />
+              <SwipePriority key={t.id} task={t} index={i} isLast={i === openTasks.length - 1} onComplete={complete} onDelete={deleteTask} onLogToday={logToday} onOpenDetail={onOpenPriority} />
             ))}
           </div>
         )}
@@ -573,18 +596,32 @@ function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSen
   );
 }
 
-function SwipePriority({ task, index, isLast, onComplete, onDelete }: { task: Task; index: number; isLast: boolean; onComplete: (id: number) => Promise<boolean>; onDelete: (id: number) => void }) {
+function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, onOpenDetail }: {
+  task: Task; index: number; isLast: boolean;
+  onComplete: (id: number) => Promise<boolean>;
+  onDelete: (id: number) => void;
+  onLogToday: (id: number) => Promise<boolean>;
+  onOpenDetail: (task: Task) => void;
+}) {
   const [startX, setStartX] = useState<number | null>(null);
   const [offset, setOffset] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [crossedOff, setCrossedOff] = useState(false);
+  const [pulsed, setPulsed] = useState(false);
 
-  function crossOff() {
-    setCrossedOff(true);
-    setTimeout(async () => {
-      const ok = await onComplete(task.id);
-      if (!ok) setCrossedOff(false);
-    }, 260);
+  async function tapNumber() {
+    if (task.recurrencePeriod) {
+      if (task.completedToday) return;
+      setPulsed(true);
+      const ok = await onLogToday(task.id);
+      if (!ok) setPulsed(false);
+    } else {
+      setCrossedOff(true);
+      setTimeout(async () => {
+        const ok = await onComplete(task.id);
+        if (!ok) setCrossedOff(false);
+      }, 260);
+    }
   }
 
   function down(e: PointerEvent<HTMLDivElement>) {
@@ -603,6 +640,8 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete }: { task: Ta
     setDragging(false);
   }
 
+  const numDone = task.recurrencePeriod ? (task.completedToday || pulsed) : crossedOff;
+
   return (
     <div style={{ ...S.swipeWrap, marginBottom: isLast ? 0 : 20 }}>
       <div style={S.deleteCue}>Delete</div>
@@ -613,11 +652,21 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete }: { task: Ta
         onPointerUp={up}
         onPointerCancel={up}
       >
-        <button style={S.prioNum} title="Mark done" onClick={crossOff} disabled={crossedOff}>{index + 1}</button>
+        <button
+          style={{ ...S.prioNum, ...(numDone ? S.prioNumDone : {}) }}
+          title={task.recurrencePeriod ? "Complete for today" : "Mark done"}
+          onClick={tapNumber}
+          disabled={crossedOff || (task.recurrencePeriod ? task.completedToday || pulsed : false)}
+        >
+          {index + 1}
+        </button>
         <div style={{ flex: 1, paddingTop: 3, opacity: crossedOff ? 0.45 : 1, transition: "opacity 0.2s ease" }}>
           <div style={{ ...S.prioTitle, textDecoration: crossedOff ? "line-through" : "none", transition: "text-decoration-color 0.2s ease" }}>{task.text}</div>
-          {task.category && <div style={S.prioSub}>{task.category}</div>}
+          {(task.recurrencePeriod ? cadenceLabel(task) : task.category) ? (
+            <div style={S.prioSub}>{task.recurrencePeriod ? cadenceLabel(task) : task.category}</div>
+          ) : null}
         </div>
+        <button style={S.prioDetailBtn} title="View details" onClick={() => onOpenDetail(task)}>›</button>
       </div>
     </div>
   );
@@ -943,6 +992,144 @@ function JobEditModal({ job, onClose, onSaved, onDeleted }: { job: Job; onClose:
   );
 }
 
+// ── Priority detail modal ─────────────────────────────────────────────────────
+function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose: () => void; onChanged: () => void }) {
+  const [history, setHistory] = useState<TaskHistory | null>(null);
+  const [period, setPeriod] = useState<"daily" | "weekly" | "monthly">(task.recurrencePeriod ?? "weekly");
+  const [target, setTarget] = useState(task.recurrenceTarget ?? 1);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  const load = useCallback(() => {
+    fetch(`${API}/tasks/${task.id}/history?today=${ymd(new Date())}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(setHistory);
+  }, [task.id]);
+  useEffect(() => { load(); }, [load]);
+
+  async function saveRecurrence() {
+    setSaving(true); setErr("");
+    try {
+      const r = await fetch(`${API}/tasks/${task.id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recurrencePeriod: period, recurrenceTarget: period === "daily" ? 1 : target }),
+      });
+      if (r.ok) { onChanged(); load(); } else setErr("Couldn't save. Try again.");
+    } catch { setErr("Couldn't reach the server."); }
+    setSaving(false);
+  }
+  async function removeRecurrence() {
+    setSaving(true);
+    try {
+      const r = await fetch(`${API}/tasks/${task.id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recurrencePeriod: null, recurrenceTarget: null }),
+      });
+      if (r.ok) { onChanged(); onClose(); }
+    } catch { /* ignore */ }
+    setSaving(false);
+  }
+  async function logToday() {
+    const r = await fetch(`${API}/tasks/${task.id}/complete`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date: ymd(new Date()) }),
+    });
+    if (r.ok) { onChanged(); load(); }
+  }
+  async function del() {
+    const r = await fetch(`${API}/tasks/${task.id}`, { method: "DELETE" });
+    if (r.ok) { onChanged(); onClose(); }
+  }
+
+  const periodNoun = task.recurrencePeriod === "daily" ? "day" : task.recurrencePeriod === "monthly" ? "month" : "week";
+
+  return (
+    <div style={M.overlay}>
+      <div style={M.sheet}>
+        <div style={M.strip} />
+        <div style={M.head}><div style={M.title}>{task.text}</div></div>
+
+        {task.recurrencePeriod ? (
+          <>
+            <div style={{ ...S.prioSub, marginBottom: 10 }}>
+              Streak: {history ? history.streak : "…"} {task.recurrencePeriod === "daily" ? "days" : task.recurrencePeriod === "weekly" ? "weeks" : "months"}
+            </div>
+            <div style={M.track}><div style={{ ...M.fill, width: `${history?.currentPeriod?.pct ?? 0}%` }} /></div>
+            <div style={{ ...S.prioSub, marginBottom: 16 }}>
+              {history?.currentPeriod?.completedCount ?? 0} / {history?.currentPeriod?.target ?? task.recurrenceTarget} this {periodNoun}
+            </div>
+            <button style={M.next} disabled={saving || history?.completedToday} onClick={logToday}>
+              {history?.completedToday ? "Completed today ✓" : "Complete for today"}
+            </button>
+            <div style={E.fieldGroup}>
+              <div style={E.label}>HISTORY</div>
+              {(history?.completions ?? []).length === 0 && <div style={S.prioSub}>Nothing logged yet.</div>}
+              {(history?.completions ?? []).slice(0, 30).map(d => <div key={d} style={S.prioSub}>{d}</div>)}
+            </div>
+            <button style={{ ...M.cancel, color: C.brassSoft }} disabled={saving} onClick={removeRecurrence}>Remove recurring</button>
+          </>
+        ) : (
+          <>
+            <div style={E.fieldGroup}>
+              <div style={E.label}>MAKE THIS RECURRING</div>
+              <div style={E.chipRow}>
+                {(["daily", "weekly", "monthly"] as const).map(p => (
+                  <button key={p} style={{ ...E.chip, ...(period === p ? { background: C.brass, color: C.ink } : {}) }} onClick={() => setPeriod(p)}>
+                    {p.charAt(0).toUpperCase() + p.slice(1)}
+                  </button>
+                ))}
+              </div>
+              {period !== "daily" && (
+                <input type="number" min={1} style={M.input} value={target} onChange={e => setTarget(Math.max(1, Number(e.target.value)))} placeholder="Times per period" />
+              )}
+            </div>
+            <button style={M.next} disabled={saving} onClick={saveRecurrence}>{saving ? "Saving…" : "Save"}</button>
+            {history && history.completions.length > 0 && (
+              <div style={E.fieldGroup}>
+                <div style={E.label}>PAST HISTORY (from before recurrence was removed)</div>
+                {history.completions.slice(0, 30).map(d => <div key={d} style={S.prioSub}>{d}</div>)}
+              </div>
+            )}
+          </>
+        )}
+        {err && <div style={{ ...S.empty, color: "#D4A090" }}>{err}</div>}
+        <button style={{ ...M.cancel, color: "#C87060" }} onClick={del}>Delete priority</button>
+        <button style={M.cancel} onClick={onClose}>Close</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Completed priorities log modal ────────────────────────────────────────────
+function CompletedLogModal({ onClose }: { onClose: () => void }) {
+  const [data, setData] = useState<{ items: Task[]; doneCount: number; totalCount: number; pct: number } | null>(null);
+  useEffect(() => {
+    fetch(`${API}/tasks/completed`).then(r => r.ok ? r.json() : null).then(setData);
+  }, []);
+  return (
+    <div style={M.overlay}>
+      <div style={M.sheet}>
+        <div style={M.strip} />
+        <div style={M.head}><div style={M.title}>Completed Priorities</div></div>
+        <div style={M.track}><div style={{ ...M.fill, width: `${data?.pct ?? 0}%` }} /></div>
+        <div style={{ ...S.prioSub, marginBottom: 14 }}>{data?.doneCount ?? 0} of {data?.totalCount ?? 0} priorities completed ({data?.pct ?? 0}%)</div>
+        <div>
+          {(data?.items ?? []).map(t => (
+            <div key={t.id} style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 14 }}>
+              <span style={{ color: "#A8C888", fontSize: 14, lineHeight: 1.4 }}>✓</span>
+              <div>
+                <div style={{ ...S.prioTitle, textDecoration: "line-through" }}>{t.text}</div>
+                {t.category && <div style={S.prioSub}>{t.category}</div>}
+              </div>
+            </div>
+          ))}
+          {data && data.items.length === 0 && <div style={S.empty}>Nothing completed yet.</div>}
+        </div>
+        <button style={M.cancel} onClick={onClose}>Close</button>
+      </div>
+    </div>
+  );
+}
+
 // ── Auth gate ───────────────────────────────────────────────────────────────────
 type EmailLoginStartResult = { ok: true } | { ok: false; error: string };
 type EmailLoginVerifyResult = { ok: true; pendingApproval: boolean } | { ok: false; error: string };
@@ -1170,6 +1357,8 @@ const S: Record<string, CSSProperties> = {
   card: { ...glass, padding: "18px 20px", marginBottom: 14 },
   cardCentered: { ...glass, padding: "22px 20px", marginBottom: 14, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" },
   eyebrow: { display: "flex", alignItems: "center", gap: 7, marginBottom: 12 },
+  prioHeadRow: { display: "flex", justifyContent: "space-between", alignItems: "center" },
+  prioLogLink: { background: "none", border: "none", color: C.brassSoft, fontSize: 12, cursor: "pointer", fontFamily: F },
   eyeText: { fontSize: 11, letterSpacing: "0.16em", color: C.brassSoft, fontWeight: 600 },
   verseText: { fontSize: 18, lineHeight: 1.6, color: C.parchment, marginBottom: 14, textAlign: "center" },
   verseRef: { fontSize: 11, letterSpacing: "0.12em", color: C.brassSoft },
@@ -1179,6 +1368,8 @@ const S: Record<string, CSSProperties> = {
   prioLine: { position: "absolute", left: 19, top: 18, bottom: 20, width: 2, background: `linear-gradient(180deg,${C.walnutLite},${C.walnut})`, boxShadow: "0 0 4px rgba(0,0,0,0.5)" },
   prioRow: { display: "flex", gap: 14, alignItems: "flex-start", position: "relative" },
   prioNum: { width: 40, height: 40, borderRadius: "50%", flexShrink: 0, background: `radial-gradient(circle at 35% 28%,${C.walnutMid},${C.walnut} 70%,#3E2814)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, color: C.parchment, boxShadow: `0 3px 10px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,220,160,0.25),inset 0 -2px 4px rgba(0,0,0,0.4),0 0 0 5px rgba(20,18,11,0.85)`, zIndex: 1, textShadow: "0 1px 2px rgba(0,0,0,0.5)", border: "none", cursor: "pointer" },
+  prioNumDone: { background: `radial-gradient(circle at 35% 28%,#7A9860,#4E6838 70%,#26361A)`, opacity: 0.85 },
+  prioDetailBtn: { flexShrink: 0, alignSelf: "center", background: "none", border: "none", color: C.parchmentDim, fontSize: 18, padding: "6px 4px", cursor: "pointer", fontFamily: F },
   prioTitle: { fontSize: 15, color: C.parchment, lineHeight: 1.4, marginBottom: 3 },
   prioSub: { fontSize: 12, color: C.parchmentDim, lineHeight: 1.4 },
   swipeWrap: { position: "relative", overflow: "hidden", borderRadius: 12, touchAction: "pan-y" },
@@ -1196,11 +1387,6 @@ const S: Record<string, CSSProperties> = {
   journalCard: { ...glass, padding: "16px 20px", marginBottom: 14, display: "flex", alignItems: "center", gap: 12 },
   journalText: { fontSize: 13, color: C.parchmentMid, marginTop: 2 },
   journalInput: { width: "100%", marginTop: 10, background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: "10px 12px", outline: "none", resize: "vertical", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
-  exerciseCard: { ...glass, padding: "14px 16px", marginBottom: 14, display: "flex", alignItems: "center", gap: 12, border: "1px solid rgba(138,180,106,0.28)" },
-  exerciseDone: { opacity: 0.72, borderColor: "rgba(138,180,106,0.42)" },
-  exerciseText: { fontSize: 13, color: C.parchmentMid, lineHeight: 1.45, marginTop: -2 },
-  exerciseBtn: { flexShrink: 0, background: "rgba(30,26,16,0.7)", border: "1px solid rgba(138,180,106,0.46)", borderRadius: 18, color: "#A8C888", fontSize: 12, fontWeight: 700, padding: "8px 13px", cursor: "pointer", fontFamily: F },
-  exerciseBtnDone: { background: "rgba(138,180,106,0.22)", color: C.parchment },
   writeBtn: { flexShrink: 0, alignSelf: "flex-start", background: "transparent", border: `1.5px solid ${C.brass}`, borderRadius: 24, color: C.brass, fontSize: 13, fontWeight: 600, padding: "10px 18px", cursor: "pointer", boxShadow: `0 0 16px ${C.brassGlow},inset 0 0 8px rgba(216,170,62,0.1)` },
   msgBar: { display: "flex", alignItems: "center", gap: 11, background: "rgba(8,10,5,0.55)", backdropFilter: "blur(8px)", borderRadius: 30, padding: "11px 11px 11px 17px", marginBottom: 14, border: "1px solid rgba(210,190,130,0.16)", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.5),0 2px 8px rgba(0,0,0,0.3)" },
   msgInput: { flex: 1, background: "none", border: "none", color: C.parchment, fontSize: 14, outline: "none", fontFamily: F },
