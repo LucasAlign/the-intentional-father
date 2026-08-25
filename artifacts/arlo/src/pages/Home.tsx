@@ -216,6 +216,8 @@ function rotatingItem(items: string[]) {
   return items[dayOfYear() % items.length];
 }
 
+const PRIORITIES_VISIBLE_CAP = 3;
+
 function cadenceLabel(t: Task): string {
   if (!t.recurrencePeriod) return "";
   if (t.recurrencePeriod === "daily") return "Daily";
@@ -445,6 +447,7 @@ function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSen
   const [adding, setAdding] = useState(false);
   const [newTask, setNewTask] = useState("");
   const [deletingIds, setDeletingIds] = useState<number[]>([]);
+  const [prioritiesExpanded, setPrioritiesExpanded] = useState(false);
   useEffect(() => { setIntent(journal.commit_text); setReflect(journal.reflect); }, [journal.commit_text, journal.reflect]);
 
   const hr = new Date().getHours();
@@ -453,6 +456,8 @@ function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSen
   const vRef = sep === -1 ? "" : verse.slice(0, sep);
   const vText = sep === -1 ? verse : verse.slice(sep + 3);
   const openTasks = tasks.filter(t => !deletingIds.includes(t.id));
+  const visibleTasks = prioritiesExpanded ? openTasks : openTasks.slice(0, PRIORITIES_VISIBLE_CAP);
+  const hiddenTaskCount = openTasks.length - visibleTasks.length;
   const journalPrompt = rotatingItem(journalPromptsFor(profile));
   const isSpouseRel = primaryRel && isSpouseType(primaryRel.type);
   const intentionLabel = isSpouseRel ? "MARRIAGE INTENTION" : primaryRel ? `${(primaryRel.type || "relationship").toUpperCase()} INTENTION` : "RELATIONSHIP INTENTION";
@@ -536,12 +541,19 @@ function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSen
         {openTasks.length === 0 ? (
           <div style={S.empty}>No open priorities. Add the one thing that matters most.</div>
         ) : (
-          <div style={{ position: "relative", marginTop: 4 }}>
-            <div style={S.prioLine} />
-            {openTasks.map((t, i) => (
-              <SwipePriority key={t.id} task={t} index={i} isLast={i === openTasks.length - 1} onComplete={complete} onDelete={deleteTask} onLogToday={logToday} onOpenDetail={onOpenPriority} />
-            ))}
-          </div>
+          <>
+            <div style={{ position: "relative", marginTop: 4 }}>
+              <div style={S.prioLine} />
+              {visibleTasks.map((t, i) => (
+                <SwipePriority key={t.id} task={t} index={i} isLast={i === visibleTasks.length - 1} onComplete={complete} onDelete={deleteTask} onLogToday={logToday} onOpenDetail={onOpenPriority} />
+              ))}
+            </div>
+            {openTasks.length > PRIORITIES_VISIBLE_CAP && (
+              <button style={S.prioExpandBtn} onClick={() => setPrioritiesExpanded(e => !e)}>
+                {prioritiesExpanded ? "Show less ▴" : `Show ${hiddenTaskCount} more ▾`}
+              </button>
+            )}
+          </>
         )}
         {adding ? (
           <div style={{ ...S.logRow, marginTop: 14, marginBottom: 0 }}>
@@ -643,13 +655,35 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
   }
 
   const numDone = task.recurrencePeriod ? (task.completedToday || pulsed) : crossedOff;
-  const needsAttention = task.partial || (Boolean(task.recurrencePeriod) && task.slipping);
+
+  // Every row carries a status color, not just flagged ones: yellow (still
+  // moving) is the default, red is stuck/slipping, green is "done" — either
+  // a recurring priority completed today, or a one-off flashing green in the
+  // moment it's crossed off, just before it leaves the list.
+  const statusColor: "yellow" | "red" | "green" = crossedOff
+    ? "green"
+    : task.partial || (Boolean(task.recurrencePeriod) && task.slipping)
+    ? "red"
+    : task.recurrencePeriod && task.completedToday
+    ? "green"
+    : "yellow";
+  const rowStyle = statusColor === "red" ? S.prioRowRed : statusColor === "green" ? S.prioRowGreen : S.prioRowYellow;
+  const subStyle = statusColor === "red" ? S.prioSubRed : statusColor === "green" ? S.prioSubGreen : S.prioSub;
+  const subText = task.partial
+    ? "Stuck — needs a nudge"
+    : task.recurrencePeriod && task.slipping
+    ? "Streak broke — needs a nudge"
+    : task.recurrencePeriod && task.completedToday
+    ? "Completed today ✓"
+    : task.recurrencePeriod
+    ? cadenceLabel(task)
+    : task.category;
 
   return (
     <div style={{ ...S.swipeWrap, marginBottom: isLast ? 0 : 20 }}>
       <div style={S.deleteCue}>Delete</div>
       <div
-        style={{ ...S.prioRow, ...S.swipeFront, ...(needsAttention ? S.prioRowStuck : {}), transform: "translateX(" + offset + "px)", transition: dragging ? "none" : "transform 0.18s ease" }}
+        style={{ ...S.prioRow, ...S.swipeFront, ...rowStyle, transform: "translateX(" + offset + "px)", transition: dragging ? "none" : "transform 0.18s ease" }}
         onPointerDown={down}
         onPointerMove={move}
         onPointerUp={up}
@@ -665,13 +699,7 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
         </button>
         <div style={{ flex: 1, paddingTop: 3, opacity: crossedOff ? 0.45 : 1, transition: "opacity 0.2s ease" }}>
           <div style={{ ...S.prioTitle, textDecoration: crossedOff ? "line-through" : "none", transition: "text-decoration-color 0.2s ease" }}>{task.text}</div>
-          {task.partial ? (
-            <div style={S.prioSubStuck}>Stuck — needs a nudge</div>
-          ) : task.recurrencePeriod && task.slipping ? (
-            <div style={S.prioSubStuck}>Streak broke — needs a nudge</div>
-          ) : (task.recurrencePeriod ? cadenceLabel(task) : task.category) ? (
-            <div style={S.prioSub}>{task.recurrencePeriod ? cadenceLabel(task) : task.category}</div>
-          ) : null}
+          {subText && <div style={subStyle}>{subText}</div>}
         </div>
         <button style={S.prioDetailBtn} title="View details" onClick={() => onOpenDetail(task)}>›</button>
       </div>
@@ -1105,7 +1133,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
             <div style={{ ...S.prioSub, marginBottom: 10 }}>
               Streak: {history ? history.streak : "…"} {task.recurrencePeriod === "daily" ? "days" : task.recurrencePeriod === "weekly" ? "weeks" : "months"}
             </div>
-            {history?.slipping && <div style={{ ...S.prioSubStuck, marginBottom: 10 }}>Streak broke — Steward may check in on this.</div>}
+            {history?.slipping && <div style={{ ...S.prioSubRed, marginBottom: 10 }}>Streak broke — Steward may check in on this.</div>}
             <div style={M.track}><div style={{ ...M.fill, width: `${history?.currentPeriod?.pct ?? 0}%` }} /></div>
             <div style={{ ...S.prioSub, marginBottom: 16 }}>
               {history?.currentPeriod?.completedCount ?? 0} / {history?.currentPeriod?.target ?? task.recurrenceTarget} this {periodNoun}
@@ -1426,6 +1454,7 @@ const S: Record<string, CSSProperties> = {
   eyebrow: { display: "flex", alignItems: "center", gap: 7, marginBottom: 12 },
   prioHeadRow: { display: "flex", justifyContent: "space-between", alignItems: "center" },
   prioLogLink: { background: "none", border: "none", color: C.brassSoft, fontSize: 12, cursor: "pointer", fontFamily: F },
+  prioExpandBtn: { width: "100%", background: "none", border: "1px dashed rgba(210,190,130,0.22)", borderRadius: 12, color: C.brassSoft, fontSize: 12.5, fontWeight: 600, padding: "10px", cursor: "pointer", fontFamily: F, marginTop: 4 },
   eyeText: { fontSize: 11, letterSpacing: "0.16em", color: C.brassSoft, fontWeight: 600 },
   verseText: { fontSize: 18, lineHeight: 1.6, color: C.parchment, marginBottom: 14, textAlign: "center" },
   verseRef: { fontSize: 11, letterSpacing: "0.12em", color: C.brassSoft },
@@ -1436,8 +1465,11 @@ const S: Record<string, CSSProperties> = {
   prioRow: { display: "flex", gap: 14, alignItems: "flex-start", position: "relative" },
   prioNum: { width: 40, height: 40, borderRadius: "50%", flexShrink: 0, background: `radial-gradient(circle at 35% 28%,${C.walnutMid},${C.walnut} 70%,#3E2814)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, color: C.parchment, boxShadow: `0 3px 10px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,220,160,0.25),inset 0 -2px 4px rgba(0,0,0,0.4),0 0 0 5px rgba(20,18,11,0.85)`, zIndex: 1, textShadow: "0 1px 2px rgba(0,0,0,0.5)", border: "none", cursor: "pointer" },
   prioNumDone: { background: `radial-gradient(circle at 35% 28%,#7A9860,#4E6838 70%,#26361A)`, opacity: 0.85 },
-  prioRowStuck: { boxShadow: "inset 3px 0 0 0 #C89A5A" },
-  prioSubStuck: { fontSize: 12, color: "#C89A5A", lineHeight: 1.4 },
+  prioRowYellow: { boxShadow: `inset 3px 0 0 0 ${C.brass}` },
+  prioRowRed: { boxShadow: "inset 3px 0 0 0 #C87060" },
+  prioRowGreen: { boxShadow: "inset 3px 0 0 0 #8FAE6E" },
+  prioSubRed: { fontSize: 12, color: "#C87060", lineHeight: 1.4 },
+  prioSubGreen: { fontSize: 12, color: "#8FAE6E", lineHeight: 1.4 },
   prioDetailBtn: { flexShrink: 0, alignSelf: "center", background: "none", border: "none", color: C.parchmentDim, fontSize: 18, padding: "6px 4px", cursor: "pointer", fontFamily: F },
   prioTitle: { fontSize: 15, color: C.parchment, lineHeight: 1.4, marginBottom: 3 },
   prioSub: { fontSize: 12, color: C.parchmentDim, lineHeight: 1.4 },
