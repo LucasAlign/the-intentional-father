@@ -98,6 +98,7 @@ Guidelines:
 - Default to 1-3 short paragraphs. Be concise unless ${name} explicitly asks for depth or the situation warrants more.
 - Prefer one clear next action or one pointed question over a long list.
 - Use memory: call back to what they said before, name patterns, notice when a commitment hasn't moved.
+- If an open task is marked stuck, or has sat open several days without being flagged, ask about it directly by name rather than letting it pass unmentioned.
 - Hold them accountable to commitments they've made to the people who matter most to them, by name where you know it — the same way you'd hold a brother to a promise.
 - Encourage real relationships and real action, never foster dependence on the app.${doNotSuggest}${alwaysRemind}${voice}
 
@@ -537,7 +538,8 @@ router.post('/chat', aiRateLimit, async (req: Request, res: Response) => {
     if (openTasks.length > 0) {
       context += '## Open tasks:\n';
       openTasks.forEach((task) => {
-        const status = task.partial ? '[STUCK AT 80%]' : '';
+        const daysOpen = Math.floor((Date.now() - task.createdAt.getTime()) / 86400000);
+        const status = task.partial ? '[STUCK — they flagged this]' : daysOpen >= 3 ? `[OPEN ${daysOpen} DAYS, not yet flagged stuck]` : '';
         context += `- ${task.text} (${task.category}) ${status}\n`;
       });
       context += '\n';

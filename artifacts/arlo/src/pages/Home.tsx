@@ -41,7 +41,7 @@ function useSpeech(onResult: (text: string) => void) {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Task {
-  id: number; text: string; category: string; partial: boolean; done: boolean;
+  id: number; text: string; category: string; partial: boolean; done: boolean; notes: string;
   recurrencePeriod: "daily" | "weekly" | "monthly" | null;
   recurrenceTarget: number | null;
   completedToday: boolean;
@@ -388,7 +388,7 @@ export default function Home() {
         {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} />}
         {tab === "her" && <Relationships commits={commits} refresh={refreshCommits} primaryRel={primaryRel} label={relTabLabel} />}
         {tab === "work" && <Work jobs={jobs} onJob={() => setJobModal(true)} onEdit={setEditJob} />}
-        {tab === "arlo" && <ArloChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} />}
+        {tab === "arlo" && <ArloChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} />}
         {tab === "week" && <WeekView events={week} jobs={jobs} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await fetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
       </div>
 
@@ -646,7 +646,7 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
     <div style={{ ...S.swipeWrap, marginBottom: isLast ? 0 : 20 }}>
       <div style={S.deleteCue}>Delete</div>
       <div
-        style={{ ...S.prioRow, ...S.swipeFront, transform: "translateX(" + offset + "px)", transition: dragging ? "none" : "transform 0.18s ease" }}
+        style={{ ...S.prioRow, ...S.swipeFront, ...(task.partial ? S.prioRowStuck : {}), transform: "translateX(" + offset + "px)", transition: dragging ? "none" : "transform 0.18s ease" }}
         onPointerDown={down}
         onPointerMove={move}
         onPointerUp={up}
@@ -662,7 +662,9 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
         </button>
         <div style={{ flex: 1, paddingTop: 3, opacity: crossedOff ? 0.45 : 1, transition: "opacity 0.2s ease" }}>
           <div style={{ ...S.prioTitle, textDecoration: crossedOff ? "line-through" : "none", transition: "text-decoration-color 0.2s ease" }}>{task.text}</div>
-          {(task.recurrencePeriod ? cadenceLabel(task) : task.category) ? (
+          {task.partial ? (
+            <div style={S.prioSubStuck}>Stuck — needs a nudge</div>
+          ) : (task.recurrencePeriod ? cadenceLabel(task) : task.category) ? (
             <div style={S.prioSub}>{task.recurrencePeriod ? cadenceLabel(task) : task.category}</div>
           ) : null}
         </div>
@@ -783,7 +785,12 @@ function Work({ jobs, onJob, onEdit }: { jobs: Job[]; onJob: () => void; onEdit:
 }
 
 // ── Arlo chat ───────────────────────────────────────────────────────────────
-function ArloChat({ messages, input, setInput, send, sending }: { messages: Message[]; input: string; setInput: (v: string) => void; send: () => void; sending: boolean }) {
+function tasksMentionedIn(content: string, tasks: Task[]): Task[] {
+  const lower = content.toLowerCase();
+  return tasks.filter(t => t.text.trim().length > 3 && lower.includes(t.text.trim().toLowerCase()));
+}
+
+function ArloChat({ messages, input, setInput, send, sending, tasks, onOpenPriority }: { messages: Message[]; input: string; setInput: (v: string) => void; send: () => void; sending: boolean; tasks: Task[]; onOpenPriority: (t: Task) => void }) {
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
   return (
@@ -791,12 +798,22 @@ function ArloChat({ messages, input, setInput, send, sending }: { messages: Mess
       <div style={{ padding: "4px 18px 0" }}><div style={S.pageTitle}>Steward</div><div style={S.pageSub}>Your partner. Straight talk only.</div></div>
       <div style={S.chatMsgs}>
         {messages.length === 0 && <div style={{ ...S.empty, marginTop: 24 }}>No messages yet. Brain dump anything.</div>}
-        {messages.map((m, i) => (
-          <div key={i} style={{ ...S.bubble, ...(m.role === "user" ? S.bubbleU : S.bubbleA) }}>
-            {m.role === "assistant" && <div style={S.bubbleName}>STEWARD</div>}
-            <div style={{ ...S.bubbleText, ...(m.role === "user" ? S.bubbleTextU : {}) }}>{m.content}</div>
-          </div>
-        ))}
+        {messages.map((m, i) => {
+          const mentioned = m.role === "assistant" ? tasksMentionedIn(m.content, tasks) : [];
+          return (
+            <div key={i} style={{ ...S.bubble, ...(m.role === "user" ? S.bubbleU : S.bubbleA) }}>
+              {m.role === "assistant" && <div style={S.bubbleName}>STEWARD</div>}
+              <div style={{ ...S.bubbleText, ...(m.role === "user" ? S.bubbleTextU : {}) }}>{m.content}</div>
+              {mentioned.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
+                  {mentioned.map(t => (
+                    <button key={t.id} style={S.chatPrioChip} onClick={() => onOpenPriority(t)}>View priority ›</button>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
         {sending && <div style={{ ...S.bubble, ...S.bubbleA }}><div style={S.bubbleName}>STEWARD</div><div style={{ ...S.bubbleText, color: C.parchmentDim }}>…</div></div>}
         <div ref={endRef} />
       </div>
@@ -997,6 +1014,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
   const [history, setHistory] = useState<TaskHistory | null>(null);
   const [period, setPeriod] = useState<"daily" | "weekly" | "monthly">(task.recurrencePeriod ?? "weekly");
   const [target, setTarget] = useState(task.recurrenceTarget ?? 1);
+  const [status, setStatusState] = useState<"open" | "stuck">(task.partial ? "stuck" : "open");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
 
@@ -1039,6 +1057,28 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
     const r = await fetch(`${API}/tasks/${task.id}`, { method: "DELETE" });
     if (r.ok) { onChanged(); onClose(); }
   }
+  async function setStatusValue(next: "open" | "stuck" | "done") {
+    if (next === "done") {
+      const r = await fetch(`${API}/tasks/${task.id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ done: true, partial: false }),
+      });
+      if (r.ok) { onChanged(); onClose(); }
+      return;
+    }
+    setStatusState(next);
+    await fetch(`${API}/tasks/${task.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ partial: next === "stuck" }),
+    });
+    onChanged();
+  }
+  async function saveNotes(value: string) {
+    await fetch(`${API}/tasks/${task.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notes: value }),
+    });
+  }
 
   const periodNoun = task.recurrencePeriod === "daily" ? "day" : task.recurrencePeriod === "monthly" ? "month" : "week";
 
@@ -1069,6 +1109,22 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
           </>
         ) : (
           <>
+            <div style={E.fieldGroup}>
+              <div style={E.label}>STATUS</div>
+              {([
+                ["open", "Still moving"],
+                ["stuck", "Stuck — need a nudge"],
+                ["done", "Done"],
+              ] as const).map(([s, label]) => (
+                <button key={s} style={{ ...M.statusOpt, ...((s === "done" ? false : s === status) ? M.statusOptOn : {}) }} onClick={() => setStatusValue(s)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div style={E.fieldGroup}>
+              <div style={E.label}>NOTES</div>
+              <textarea defaultValue={task.notes} onBlur={e => saveNotes(e.target.value)} placeholder="Add detail on what's blocking this, or anything worth remembering." style={M.notesArea} />
+            </div>
             <div style={E.fieldGroup}>
               <div style={E.label}>MAKE THIS RECURRING</div>
               <div style={E.chipRow}>
@@ -1369,6 +1425,8 @@ const S: Record<string, CSSProperties> = {
   prioRow: { display: "flex", gap: 14, alignItems: "flex-start", position: "relative" },
   prioNum: { width: 40, height: 40, borderRadius: "50%", flexShrink: 0, background: `radial-gradient(circle at 35% 28%,${C.walnutMid},${C.walnut} 70%,#3E2814)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, color: C.parchment, boxShadow: `0 3px 10px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,220,160,0.25),inset 0 -2px 4px rgba(0,0,0,0.4),0 0 0 5px rgba(20,18,11,0.85)`, zIndex: 1, textShadow: "0 1px 2px rgba(0,0,0,0.5)", border: "none", cursor: "pointer" },
   prioNumDone: { background: `radial-gradient(circle at 35% 28%,#7A9860,#4E6838 70%,#26361A)`, opacity: 0.85 },
+  prioRowStuck: { boxShadow: "inset 3px 0 0 0 #C89A5A" },
+  prioSubStuck: { fontSize: 12, color: "#C89A5A", lineHeight: 1.4 },
   prioDetailBtn: { flexShrink: 0, alignSelf: "center", background: "none", border: "none", color: C.parchmentDim, fontSize: 18, padding: "6px 4px", cursor: "pointer", fontFamily: F },
   prioTitle: { fontSize: 15, color: C.parchment, lineHeight: 1.4, marginBottom: 3 },
   prioSub: { fontSize: 12, color: C.parchmentDim, lineHeight: 1.4 },
@@ -1424,6 +1482,7 @@ const S: Record<string, CSSProperties> = {
   bubbleU: { marginLeft: "auto" },
   bubbleName: { fontSize: 9, letterSpacing: "0.14em", color: C.brassSoft, marginBottom: 5, fontWeight: 600 },
   bubbleText: { ...glass, padding: "13px 15px", fontSize: 14, lineHeight: 1.65, color: C.parchment, display: "inline-block", whiteSpace: "pre-wrap", borderTopLeftRadius: 5 },
+  chatPrioChip: { alignSelf: "flex-start", background: "rgba(216,170,62,0.14)", border: "1px solid rgba(216,170,62,0.4)", borderRadius: 16, color: C.brassSoft, fontSize: 12, fontWeight: 600, padding: "6px 12px", cursor: "pointer", fontFamily: F },
   bubbleTextU: { background: `linear-gradient(135deg,${C.walnut},${C.walnutMid})`, border: `1px solid ${C.walnutLite}50`, borderTopLeftRadius: 18, borderTopRightRadius: 5 },
   chatBar: { display: "flex", gap: 8, padding: "10px 18px 16px", borderTop: "1px solid rgba(210,190,130,0.12)", alignItems: "center" },
   calendarCard: { ...glass, padding: "14px 16px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
@@ -1454,6 +1513,9 @@ const M: Record<string, CSSProperties> = {
   grid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 },
   choice: { background: "rgba(34,30,18,0.9)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 12, color: C.parchment, fontSize: 14, padding: "16px", cursor: "pointer", fontFamily: F, boxShadow: "0 2px 8px rgba(0,0,0,0.4)" },
   input: { width: "100%", background: "rgba(8,10,5,0.7)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 12, color: C.parchment, fontSize: 15, fontFamily: F, padding: "14px", outline: "none", marginBottom: 12, boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
+  statusOpt: { width: "100%", textAlign: "left", background: "rgba(8,10,5,0.4)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchmentDim, fontSize: 14, fontFamily: F, padding: "13px 16px", marginBottom: 8, cursor: "pointer" },
+  statusOptOn: { borderColor: C.brass, background: "rgba(216,170,62,0.14)", color: C.parchment },
+  notesArea: { width: "100%", minHeight: 80, background: "rgba(8,10,5,0.7)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: 14, outline: "none", marginBottom: 4, resize: "vertical" },
   next: { width: "100%", background: `linear-gradient(135deg,${C.brass},${C.brassDeep})`, border: "none", borderRadius: 12, color: C.ink, fontSize: 15, fontWeight: 700, padding: "15px", cursor: "pointer", marginBottom: 8, fontFamily: F, boxShadow: `0 4px 18px ${C.brassGlow}` },
   cancel: { width: "100%", background: "none", border: "none", color: C.parchmentDim, fontSize: 13, cursor: "pointer", padding: "10px", fontFamily: F },
 };
