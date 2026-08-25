@@ -19,6 +19,7 @@ The dev servers below are already kept running by the Replit "Project" workflow 
 - Required env: `DATABASE_URL` (Postgres), `OPENAI_API_KEY` (Arlo AI chat)
 - Auth env: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`; optional `GOOGLE_ISSUER_URL` (defaults to `https://accounts.google.com`). Microsoft is a second OIDC provider: `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET`; optional `MICROSOFT_ISSUER_URL` (defaults to `https://login.microsoftonline.com/common/v2.0`)
 - Email env: `RESEND_API_KEY` (approval and login-code emails via Resend); optional `RESEND_FROM_EMAIL` (defaults to `admin@lucasalign.com`). If unset: approval emails are skipped with a warning in every environment; login-code emails are skipped with a warning (code logged to console) in development, but `sendLoginCode` throws in production so `/login/email/start` fails loudly instead of returning a fake `{sent: true}`
+- Admin env: `ADMIN_EMAIL` for one admin email; `ADMIN_EMAILS` remains supported for a comma-separated allowlist
 - No test suite exists yet — correctness is verified via `typecheck` plus manual exercise of the running app.
 
 ## Stack

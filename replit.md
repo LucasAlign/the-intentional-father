@@ -11,6 +11,7 @@ Personal OS for the ADD entrepreneur — a daily dashboard featuring a scripture
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
 - Required env: `DATABASE_URL` — Postgres connection string
 - Required env: `OPENAI_API_KEY` — for the Arlo AI chat
+- Admin env: `ADMIN_EMAIL` for one admin email; `ADMIN_EMAILS` is also supported for a comma-separated allowlist
 - Google auth env: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`; optional `GOOGLE_ISSUER_URL` defaults to `https://accounts.google.com`
 - Microsoft auth env: `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET`; optional `MICROSOFT_ISSUER_URL` defaults to `https://login.microsoftonline.com/common/v2.0`. In the Microsoft Entra app registration, add `${PUBLIC_URL}/api/callback/microsoft` as a **Web** redirect URI (or use the exact deployed app origin when `PUBLIC_URL` is not set).
 
