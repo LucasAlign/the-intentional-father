@@ -84,3 +84,18 @@ export function computeStreak(
   }
   return streak;
 }
+
+// A recurring priority is "slipping" when its streak is broken — but only
+// once it's actually had a chance to break: a priority created within the
+// current period hasn't had any period close on it yet, so streak 0 there
+// just means "brand new," not "missed."
+export function isSlipping(
+  period: RecurrencePeriod,
+  target: number,
+  completions: string[],
+  todayKey: string,
+  createdKey: string
+): boolean {
+  if (periodKey(period, createdKey) === periodKey(period, todayKey)) return false;
+  return computeStreak(period, target, completions, todayKey, createdKey) === 0;
+}

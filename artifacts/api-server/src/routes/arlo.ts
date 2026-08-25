@@ -6,7 +6,7 @@ import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCa
 import { normalizeProfileData, type ProfileData } from "../lib/profile";
 import { aiRateLimit } from "../middlewares/aiRateLimit";
 import { SCRIPTURE_GROUNDING, getVerseOfTheDay } from "../lib/verses";
-import { computeCurrentPeriodStats, computeStreak, type RecurrencePeriod } from "../lib/priorityPeriods";
+import { computeCurrentPeriodStats, computeStreak, isSlipping, type RecurrencePeriod } from "../lib/priorityPeriods";
 
 const router = Router();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
@@ -99,6 +99,7 @@ Guidelines:
 - Prefer one clear next action or one pointed question over a long list.
 - Use memory: call back to what they said before, name patterns, notice when a commitment hasn't moved.
 - If an open task is marked stuck, or has sat open several days without being flagged, ask about it directly by name rather than letting it pass unmentioned.
+- If a recurring priority is flagged slipping (its streak just broke), mention it directly when relevant — but only when it's genuinely notable, not as routine commentary on ordinary progress.
 - Hold them accountable to commitments they've made to the people who matter most to them, by name where you know it — the same way you'd hold a brother to a promise.
 - Encourage real relationships and real action, never foster dependence on the app.${doNotSuggest}${alwaysRemind}${voice}
 
@@ -132,12 +133,26 @@ router.get('/tasks', async (req: Request, res: Response) => {
       ? req.query.today : new Date().toISOString().split('T')[0];
     const recurringIds = rows.filter(r => r.recurrencePeriod).map(r => r.id);
     let completedToday = new Set<number>();
+    let slippingIds = new Set<number>();
     if (recurringIds.length > 0) {
-      const comps = await db.select({ taskId: taskCompletions.taskId }).from(taskCompletions)
-        .where(and(inArray(taskCompletions.taskId, recurringIds), eq(taskCompletions.completedDate, todayKey)));
-      completedToday = new Set(comps.map(c => c.taskId));
+      const comps = await db.select({ taskId: taskCompletions.taskId, completedDate: taskCompletions.completedDate })
+        .from(taskCompletions).where(inArray(taskCompletions.taskId, recurringIds));
+      const completionsByTask = new Map<number, string[]>();
+      for (const c of comps) {
+        if (c.completedDate === todayKey) completedToday.add(c.taskId);
+        if (!completionsByTask.has(c.taskId)) completionsByTask.set(c.taskId, []);
+        completionsByTask.get(c.taskId)!.push(c.completedDate);
+      }
+      for (const r of rows) {
+        if (!r.recurrencePeriod) continue;
+        const createdKey = r.createdAt.toISOString().split('T')[0];
+        const completions = completionsByTask.get(r.id) ?? [];
+        if (isSlipping(r.recurrencePeriod as RecurrencePeriod, r.recurrenceTarget ?? 1, completions, todayKey, createdKey)) {
+          slippingIds.add(r.id);
+        }
+      }
     }
-    res.json(rows.map(r => ({ ...r, completedToday: completedToday.has(r.id) })));
+    res.json(rows.map(r => ({ ...r, completedToday: completedToday.has(r.id), slipping: slippingIds.has(r.id) })));
   } catch (err) {
     req.log?.error({ err }, 'Error fetching tasks');
     res.status(500).json({ error: 'Failed to fetch tasks' });
@@ -207,8 +222,8 @@ router.patch('/tasks/:id', async (req: Request, res: Response) => {
         return;
       }
     }
+    const stillRecurring = recurrencePeriod !== undefined ? recurrencePeriod !== null : Boolean(existing.recurrencePeriod);
     if (typeof done === 'boolean') {
-      const stillRecurring = recurrencePeriod !== undefined ? recurrencePeriod !== null : Boolean(existing.recurrencePeriod);
       if (done === true && stillRecurring) {
         res.status(400).json({ error: 'Recurring priorities cannot be marked fully done — remove recurrence first, or log a completion for today.' });
         return;
@@ -216,7 +231,13 @@ router.patch('/tasks/:id', async (req: Request, res: Response) => {
       updates.done = done;
       updates.doneAt = done ? new Date() : null;
     }
-    if (typeof partial === 'boolean') updates.partial = partial;
+    if (typeof partial === 'boolean') {
+      if (partial === true && stillRecurring) {
+        res.status(400).json({ error: 'Recurring priorities use an automatic slipping signal instead of manual stuck — remove recurrence first if you need this.' });
+        return;
+      }
+      updates.partial = partial;
+    }
     if (typeof notes === 'string') updates.notes = notes;
     if (Object.keys(updates).length === 0) { res.status(400).json({ error: 'No valid fields to update' }); return; }
     await db.update(tasks).set(updates).where(and(eq(tasks.id, id), eq(tasks.userId, req.user!.id)));
@@ -280,6 +301,7 @@ router.get('/tasks/:id/history', async (req: Request, res: Response) => {
 
     let streak = 0;
     let currentPeriod: { key: string; completedCount: number; target: number; pct: number } | null = null;
+    let slipping = false;
     const completedToday = completions.includes(todayKey);
     if (task.recurrencePeriod) {
       const period = task.recurrencePeriod as RecurrencePeriod;
@@ -287,8 +309,9 @@ router.get('/tasks/:id/history', async (req: Request, res: Response) => {
       const createdKey = task.createdAt.toISOString().split('T')[0];
       currentPeriod = computeCurrentPeriodStats(period, target, completions, todayKey);
       streak = computeStreak(period, target, completions, todayKey, createdKey);
+      slipping = isSlipping(period, target, completions, todayKey, createdKey);
     }
-    res.json({ task, completions, streak, currentPeriod, completedToday });
+    res.json({ task, completions, streak, currentPeriod, completedToday, slipping });
   } catch (err) {
     req.log?.error({ err }, 'Error fetching task history');
     res.status(500).json({ error: 'Failed to fetch task history' });
@@ -536,11 +559,31 @@ router.post('/chat', aiRateLimit, async (req: Request, res: Response) => {
     }
 
     if (openTasks.length > 0) {
+      const recurringOpenIds = openTasks.filter((t) => t.recurrencePeriod).map((t) => t.id);
+      const completionsByTask = new Map<number, string[]>();
+      if (recurringOpenIds.length > 0) {
+        const comps = await db.select({ taskId: taskCompletions.taskId, completedDate: taskCompletions.completedDate })
+          .from(taskCompletions).where(inArray(taskCompletions.taskId, recurringOpenIds));
+        for (const c of comps) {
+          if (!completionsByTask.has(c.taskId)) completionsByTask.set(c.taskId, []);
+          completionsByTask.get(c.taskId)!.push(c.completedDate);
+        }
+      }
       context += '## Open tasks:\n';
       openTasks.forEach((task) => {
-        const daysOpen = Math.floor((Date.now() - task.createdAt.getTime()) / 86400000);
-        const status = task.partial ? '[STUCK — they flagged this]' : daysOpen >= 3 ? `[OPEN ${daysOpen} DAYS, not yet flagged stuck]` : '';
-        context += `- ${task.text} (${task.category}) ${status}\n`;
+        let status = '';
+        if (task.recurrencePeriod) {
+          const createdKey = task.createdAt.toISOString().split('T')[0];
+          const completions = completionsByTask.get(task.id) ?? [];
+          if (isSlipping(task.recurrencePeriod as RecurrencePeriod, task.recurrenceTarget ?? 1, completions, today, createdKey)) {
+            status = '[SLIPPING — streak broke]';
+          }
+        } else {
+          const daysOpen = Math.floor((Date.now() - task.createdAt.getTime()) / 86400000);
+          status = task.partial ? '[STUCK — they flagged this]' : daysOpen >= 3 ? `[OPEN ${daysOpen} DAYS, not yet flagged stuck]` : '';
+        }
+        const note = task.notes ? ` — note: "${task.notes.slice(0, 150)}"` : '';
+        context += `- ${task.text} (${task.category})${status ? ' ' + status : ''}${note}\n`;
       });
       context += '\n';
     }

@@ -45,6 +45,7 @@ interface Task {
   recurrencePeriod: "daily" | "weekly" | "monthly" | null;
   recurrenceTarget: number | null;
   completedToday: boolean;
+  slipping: boolean;
 }
 interface TaskHistory {
   task: Task;
@@ -52,6 +53,7 @@ interface TaskHistory {
   streak: number;
   currentPeriod: { key: string; completedCount: number; target: number; pct: number } | null;
   completedToday: boolean;
+  slipping: boolean;
 }
 interface Commit { id: number; text: string; madeDate: string; done: boolean; }
 interface Job { id: number; biz: string; name: string; stage: string; due: string; pct: number; }
@@ -641,12 +643,13 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
   }
 
   const numDone = task.recurrencePeriod ? (task.completedToday || pulsed) : crossedOff;
+  const needsAttention = task.partial || (Boolean(task.recurrencePeriod) && task.slipping);
 
   return (
     <div style={{ ...S.swipeWrap, marginBottom: isLast ? 0 : 20 }}>
       <div style={S.deleteCue}>Delete</div>
       <div
-        style={{ ...S.prioRow, ...S.swipeFront, ...(task.partial ? S.prioRowStuck : {}), transform: "translateX(" + offset + "px)", transition: dragging ? "none" : "transform 0.18s ease" }}
+        style={{ ...S.prioRow, ...S.swipeFront, ...(needsAttention ? S.prioRowStuck : {}), transform: "translateX(" + offset + "px)", transition: dragging ? "none" : "transform 0.18s ease" }}
         onPointerDown={down}
         onPointerMove={move}
         onPointerUp={up}
@@ -664,6 +667,8 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
           <div style={{ ...S.prioTitle, textDecoration: crossedOff ? "line-through" : "none", transition: "text-decoration-color 0.2s ease" }}>{task.text}</div>
           {task.partial ? (
             <div style={S.prioSubStuck}>Stuck — needs a nudge</div>
+          ) : task.recurrencePeriod && task.slipping ? (
+            <div style={S.prioSubStuck}>Streak broke — needs a nudge</div>
           ) : (task.recurrencePeriod ? cadenceLabel(task) : task.category) ? (
             <div style={S.prioSub}>{task.recurrencePeriod ? cadenceLabel(task) : task.category}</div>
           ) : null}
@@ -1082,6 +1087,13 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
 
   const periodNoun = task.recurrencePeriod === "daily" ? "day" : task.recurrencePeriod === "monthly" ? "month" : "week";
 
+  const notesSection = (
+    <div style={E.fieldGroup}>
+      <div style={E.label}>NOTES</div>
+      <textarea defaultValue={task.notes} onBlur={e => saveNotes(e.target.value)} placeholder="Add detail on what's blocking this, or anything worth remembering." style={M.notesArea} />
+    </div>
+  );
+
   return (
     <div style={M.overlay}>
       <div style={M.sheet}>
@@ -1093,6 +1105,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
             <div style={{ ...S.prioSub, marginBottom: 10 }}>
               Streak: {history ? history.streak : "…"} {task.recurrencePeriod === "daily" ? "days" : task.recurrencePeriod === "weekly" ? "weeks" : "months"}
             </div>
+            {history?.slipping && <div style={{ ...S.prioSubStuck, marginBottom: 10 }}>Streak broke — Steward may check in on this.</div>}
             <div style={M.track}><div style={{ ...M.fill, width: `${history?.currentPeriod?.pct ?? 0}%` }} /></div>
             <div style={{ ...S.prioSub, marginBottom: 16 }}>
               {history?.currentPeriod?.completedCount ?? 0} / {history?.currentPeriod?.target ?? task.recurrenceTarget} this {periodNoun}
@@ -1100,6 +1113,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
             <button style={M.next} disabled={saving || history?.completedToday} onClick={logToday}>
               {history?.completedToday ? "Completed today ✓" : "Complete for today"}
             </button>
+            {notesSection}
             <div style={E.fieldGroup}>
               <div style={E.label}>HISTORY</div>
               {(history?.completions ?? []).length === 0 && <div style={S.prioSub}>Nothing logged yet.</div>}
@@ -1121,10 +1135,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
                 </button>
               ))}
             </div>
-            <div style={E.fieldGroup}>
-              <div style={E.label}>NOTES</div>
-              <textarea defaultValue={task.notes} onBlur={e => saveNotes(e.target.value)} placeholder="Add detail on what's blocking this, or anything worth remembering." style={M.notesArea} />
-            </div>
+            {notesSection}
             <div style={E.fieldGroup}>
               <div style={E.label}>MAKE THIS RECURRING</div>
               <div style={E.chipRow}>
