@@ -3,6 +3,7 @@ import { Router, type Request, type Response } from "express";
 import { db } from "@workspace/db";
 import { googleCalendarConnections } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
+import { getOrigin } from "../lib/origin";
 
 const router = Router();
 
@@ -38,12 +39,6 @@ export type CalendarEvent = {
   tag: string;
   kind: string;
 };
-
-function getOrigin(req: Request): string {
-  const proto = req.headers["x-forwarded-proto"] || "https";
-  const host = req.headers["x-forwarded-host"] || req.headers["host"] || "localhost";
-  return proto + "://" + host;
-}
 
 function getGoogleConfig() {
   const clientId = process.env.GOOGLE_CLIENT_ID;

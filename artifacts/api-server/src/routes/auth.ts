@@ -32,20 +32,11 @@ import {
 } from "../lib/auth";
 import { emailStartRateLimit, emailVerifyRateLimit } from "../middlewares/emailAuthRateLimit";
 import { sendLoginCode } from "../lib/email";
+import { getOrigin } from "../lib/origin";
 
 const OIDC_COOKIE_TTL = 10 * 60 * 1000;
 
 const router: IRouter = Router();
-
-function getOrigin(req: Request): string {
-  if (process.env.PUBLIC_URL) {
-    return process.env.PUBLIC_URL.replace(/\/+$/, "");
-  }
-  const proto = req.headers["x-forwarded-proto"] || "https";
-  const host =
-    req.headers["x-forwarded-host"] || req.headers["host"] || "localhost";
-  return `${proto}://${host}`;
-}
 
 function setOidcCookie(res: Response, name: string, value: string) {
   res.cookie(name, value, {
