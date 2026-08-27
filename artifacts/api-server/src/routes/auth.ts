@@ -12,7 +12,7 @@ import {
   VerifyEmailLoginResponse,
 } from "@workspace/api-zod";
 import { and, desc, eq, isNull } from "drizzle-orm";
-import { db, googleCalendarConnections, usersTable, emailLoginCodes } from "@workspace/db";
+import { db, beginUserSession, googleCalendarConnections, usersTable, emailLoginCodes } from "@workspace/db";
 import {
   clearSession,
   getOidcConfig,
@@ -68,7 +68,9 @@ async function storeGoogleCalendarConnection(
   googleEmail: string,
   tokens: oidc.TokenEndpointResponse & oidc.TokenEndpointResponseHelpers,
 ) {
-  if (!tokens.access_token || !tokens.refresh_token) return;
+  const accessToken = tokens.access_token;
+  const refreshToken = tokens.refresh_token;
+  if (!accessToken || !refreshToken) return;
   const grantedScope = tokens.scope ?? "";
   if (
     !grantedScope
@@ -76,28 +78,43 @@ async function storeGoogleCalendarConnection(
       .includes("https://www.googleapis.com/auth/calendar.readonly")
   )
     return;
+  const expiresAt = tokenExpiry(tokens.expiresIn());
 
-  await db
-    .insert(googleCalendarConnections)
-    .values({
-      userId,
-      googleEmail,
-      accessToken: tokens.access_token,
-      refreshToken: tokens.refresh_token,
-      scope: grantedScope,
-      expiresAt: tokenExpiry(tokens.expiresIn()),
-      updatedAt: new Date(),
-    })
-    .onConflictDoUpdate({
-      target: [googleCalendarConnections.userId, googleCalendarConnections.googleEmail],
-      set: {
-        accessToken: tokens.access_token,
-        refreshToken: tokens.refresh_token,
-        scope: grantedScope,
-        expiresAt: tokenExpiry(tokens.expiresIn()),
-        updatedAt: new Date(),
-      },
+  // Runs outside requireAuth's chain (this is the OIDC callback itself, before
+  // a session cookie exists), so this table's RLS policy needs its own user
+  // context rather than inheriting one from request middleware.
+  const session = await beginUserSession(userId);
+  try {
+    let write!: Promise<unknown>;
+    session.runSync(() => {
+      write = db
+        .insert(googleCalendarConnections)
+        .values({
+          userId,
+          googleEmail,
+          accessToken,
+          refreshToken,
+          scope: grantedScope,
+          expiresAt,
+          updatedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: [googleCalendarConnections.userId, googleCalendarConnections.googleEmail],
+          set: {
+            accessToken,
+            refreshToken,
+            scope: grantedScope,
+            expiresAt,
+            updatedAt: new Date(),
+          },
+        });
     });
+    await write;
+    await session.commit();
+  } catch (err) {
+    await session.rollback();
+    throw err;
+  }
 }
 
 async function upsertUser(claims: Record<string, unknown>) {
