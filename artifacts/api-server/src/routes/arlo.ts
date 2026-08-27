@@ -1,5 +1,5 @@
 import { Router, Request, Response } from "express";
-import { db } from "@workspace/db";
+import { db, withUserSession } from "@workspace/db";
 import { journalEntries, chatMessages, tasks, taskCompletions, commits, jobs, comingUp, profile as profileTable } from "@workspace/db";
 import { eq, desc, asc, gte, lte, and, isNull, inArray, sql } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
@@ -615,6 +615,11 @@ router.post('/chat', aiRateLimit, async (req: Request, res: Response) => {
       { role: 'user' as const, content: message },
     ];
 
+    // Commit the ambient per-request DB session before the slow OpenAI call
+    // rather than holding a pooled connection idle-in-transaction for it —
+    // the writes below open their own short-lived session instead.
+    await req.dbSession?.commit();
+
     const response = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST',
       headers: {
@@ -653,10 +658,12 @@ router.post('/chat', aiRateLimit, async (req: Request, res: Response) => {
     const suggestTone = toneMatch && toneMatch[1] !== currentTone ? (toneMatch[1] as ToneVoice) : null;
     const cleanMessage = toneMatch ? assistantMessage.slice(0, toneMatch.index).trimEnd() : assistantMessage;
 
-    await Promise.all([
-      db.insert(chatMessages).values({ userId, role: 'user', content: message, date: today }),
-      db.insert(chatMessages).values({ userId, role: 'assistant', content: cleanMessage, date: today }),
-    ]);
+    await withUserSession(userId, () =>
+      Promise.all([
+        db.insert(chatMessages).values({ userId, role: 'user', content: message, date: today }),
+        db.insert(chatMessages).values({ userId, role: 'assistant', content: cleanMessage, date: today }),
+      ]),
+    );
 
     res.json({ message: cleanMessage, suggestTone });
   } catch (err) {

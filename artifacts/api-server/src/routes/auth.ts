@@ -12,7 +12,7 @@ import {
   VerifyEmailLoginResponse,
 } from "@workspace/api-zod";
 import { and, desc, eq, isNull } from "drizzle-orm";
-import { db, beginUserSession, googleCalendarConnections, usersTable, emailLoginCodes } from "@workspace/db";
+import { db, withUserSession, googleCalendarConnections, usersTable, emailLoginCodes } from "@workspace/db";
 import {
   clearSession,
   getOidcConfig,
@@ -83,38 +83,29 @@ async function storeGoogleCalendarConnection(
   // Runs outside requireAuth's chain (this is the OIDC callback itself, before
   // a session cookie exists), so this table's RLS policy needs its own user
   // context rather than inheriting one from request middleware.
-  const session = await beginUserSession(userId);
-  try {
-    let write!: Promise<unknown>;
-    session.runSync(() => {
-      write = db
-        .insert(googleCalendarConnections)
-        .values({
-          userId,
-          googleEmail,
+  await withUserSession(userId, () =>
+    db
+      .insert(googleCalendarConnections)
+      .values({
+        userId,
+        googleEmail,
+        accessToken,
+        refreshToken,
+        scope: grantedScope,
+        expiresAt,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: [googleCalendarConnections.userId, googleCalendarConnections.googleEmail],
+        set: {
           accessToken,
           refreshToken,
           scope: grantedScope,
           expiresAt,
           updatedAt: new Date(),
-        })
-        .onConflictDoUpdate({
-          target: [googleCalendarConnections.userId, googleCalendarConnections.googleEmail],
-          set: {
-            accessToken,
-            refreshToken,
-            scope: grantedScope,
-            expiresAt,
-            updatedAt: new Date(),
-          },
-        });
-    });
-    await write;
-    await session.commit();
-  } catch (err) {
-    await session.rollback();
-    throw err;
-  }
+        },
+      }),
+  );
 }
 
 async function upsertUser(claims: Record<string, unknown>) {

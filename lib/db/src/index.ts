@@ -34,11 +34,11 @@ export const db: NodePgDatabase<typeof schema> = new Proxy(poolDb, {
 });
 
 export type UserDbSession = {
-  /** Establishes the session as the AsyncLocalStorage context for `fn`, called synchronously. */
-  runSync: (fn: () => void) => void;
-  /** Commits the underlying transaction and returns the connection to the pool. */
+  /** Establishes the session as the AsyncLocalStorage context for the duration of `fn` (sync or async). */
+  run: <T>(fn: () => T) => T;
+  /** Commits the underlying transaction and returns the connection to the pool. Idempotent. */
   commit: () => Promise<void>;
-  /** Rolls back the underlying transaction and returns the connection to the pool. */
+  /** Rolls back the underlying transaction and returns the connection to the pool. Idempotent. */
   rollback: () => Promise<void>;
 };
 
@@ -78,10 +78,31 @@ export async function beginUserSession(userId: string): Promise<UserDbSession> {
     }
   }
   return {
-    runSync: (fn) => requestContext.run({ db: scopedDb }, fn),
+    run: (fn) => requestContext.run({ db: scopedDb }, fn),
     commit: () => end(true),
     rollback: () => end(false),
   };
+}
+
+/**
+ * Self-contained version of beginUserSession for one-off async DB work that
+ * needs to happen *between* other slow, non-DB work within a single request
+ * — e.g. a route that reads, calls a slow external API, then writes, and
+ * shouldn't hold a pooled connection open for the external call. Opens its
+ * own session, scopes `fn` to it, and always commits/rolls back before
+ * returning — independent of any ambient session (such as the one
+ * dbUserContext already holds open for the rest of the request).
+ */
+export async function withUserSession<T>(userId: string, fn: () => Promise<T>): Promise<T> {
+  const session = await beginUserSession(userId);
+  try {
+    const result = await session.run(fn);
+    await session.commit();
+    return result;
+  } catch (err) {
+    await session.rollback();
+    throw err;
+  }
 }
 
 export * from "./schema";
