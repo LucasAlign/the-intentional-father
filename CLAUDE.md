@@ -16,9 +16,12 @@ The dev servers below are already kept running by the Replit "Project" workflow 
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/db run push` — push Drizzle schema changes to Postgres (dev only; `push-force` if it complains about data loss)
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate the Zod schemas and react-query client from `lib/api-spec/openapi.yaml` (runs `typecheck:libs` afterward)
-- Required env: `DATABASE_URL` (Postgres), `OPENAI_API_KEY` (Arlo AI chat)
+- Required env: `DATABASE_URL` (Postgres), `OPENAI_API_KEY` (Arlo AI chat); optional `OPENAI_MODEL` (defaults to `gpt-5.4-mini`)
 - Auth env: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`; optional `GOOGLE_ISSUER_URL` (defaults to `https://accounts.google.com`). Microsoft is a second OIDC provider: `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET`; optional `MICROSOFT_ISSUER_URL` (defaults to `https://login.microsoftonline.com/common/v2.0`)
 - Email env: `RESEND_API_KEY` (approval and login-code emails via Resend); optional `RESEND_FROM_EMAIL` (defaults to `admin@lucasalign.com`). If unset: approval emails are skipped with a warning in every environment; login-code emails are skipped with a warning (code logged to console) in development, but `sendLoginCode` throws in production so `/login/email/start` fails loudly instead of returning a fake `{sent: true}`
+- `PUBLIC_URL` (e.g. `https://1arlo.replit.app`): the canonical app origin. Takes priority over request headers (`x-forwarded-proto`/`x-forwarded-host`) everywhere an OAuth `redirect_uri` or an absolute link in an email is built (`lib/origin.ts`, `lib/email.ts`) — unset in a deployment, those fall back to proxy-forwarded headers, which can diverge from what's registered with the OAuth provider and cause `redirect_uri_mismatch`. Set it explicitly in any deployment that sits behind a proxy.
+- `ADMIN_EMAILS` (comma-separated, case-insensitive): grants admin access (beta-invite approval, `routes/admin.ts`) and bypasses the beta-invite gate. Defaults to `witeyford@gmail.com` if unset. Read once at server startup (`lib/auth.ts`) — changing it in a running deployment's Secrets requires an actual redeploy/restart, not just a save, to take effect. Note the trailing **S** — a secret named `ADMIN_EMAIL` (singular) is silently ignored and the default applies instead.
+- `LOG_LEVEL` (optional, defaults to `info`): pino log level (`lib/logger.ts`).
 - No test suite exists yet — correctness is verified via `typecheck` plus manual exercise of the running app.
 
 ## Stack
