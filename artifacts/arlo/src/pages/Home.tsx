@@ -61,7 +61,11 @@ interface Event { id: number; date: string; time: string; title: string; sub: st
 interface Message { role: "user" | "assistant"; content: string; }
 interface Journal { reflect: string; commit_text: string; }
 interface Relationship { name: string | null; type: string; notes?: string | null; commitments?: string | null; biggest_challenge?: string | null; }
-interface ProfileData { name?: string | null; season_of_life?: string | null; relationships?: Relationship[]; }
+type ToneVoice = "straight_talk" | "middle_of_the_road" | "take_it_easy";
+interface ProfileData { name?: string | null; season_of_life?: string | null; relationships?: Relationship[]; voice?: ToneVoice | null; }
+
+const TONE_LABEL: Record<ToneVoice, string> = { straight_talk: "Straight Talk", middle_of_the_road: "Middle of the Road", take_it_easy: "Take it Easy" };
+function isToneVoice(v: unknown): v is ToneVoice { return v === "straight_talk" || v === "middle_of_the_road" || v === "take_it_easy"; }
 
 const API = "/api";
 const WOOD = `${import.meta.env.BASE_URL}woodgrain.png`;
@@ -294,6 +298,15 @@ export default function Home() {
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [priorityDetail, setPriorityDetail] = useState<Task | null>(null);
   const [completedLogOpen, setCompletedLogOpen] = useState(false);
+  const [suggestedTone, setSuggestedTone] = useState<ToneVoice | null>(null);
+
+  async function setTone(voice: ToneVoice) {
+    setProfile(p => ({ ...(p ?? {}), voice }));
+    setSuggestedTone(null);
+    try {
+      await fetch(`${API}/profile`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voice }) });
+    } catch { /* optimistic update already applied; a stale read on next load self-corrects */ }
+  }
 
   const refreshTasks = useCallback(() => {
     getList<Task>(`${API}/tasks?today=${ymd(new Date())}`).then(setTasks);
@@ -346,11 +359,13 @@ export default function Home() {
     if (tab !== "arlo") setTab("arlo");
     setChat(p => [...p, { role: "user", content: text }]);
     setSending(true);
+    setSuggestedTone(null);
     try {
       const r = await fetch(`${API}/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: text }) });
       if (r.ok) {
         const d = await r.json();
         setChat(p => [...p, { role: "assistant", content: d.message }]);
+        setSuggestedTone(isToneVoice(d.suggestTone) ? d.suggestTone : null);
       } else {
         const errorText = await r.text();
         setChat(p => [...p, { role: "assistant", content: "Steward is connected, but the chat request failed (" + r.status + "): " + (errorText || "No error details returned.") }]);
@@ -392,7 +407,7 @@ export default function Home() {
         {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} />}
         {tab === "her" && <Relationships commits={commits} refresh={refreshCommits} primaryRel={primaryRel} label={relTabLabel} />}
         {tab === "work" && <Work jobs={jobs} onJob={() => setJobModal(true)} onEdit={setEditJob} />}
-        {tab === "arlo" && <ArloChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} />}
+        {tab === "arlo" && <ArloChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} />}
         {tab === "week" && <WeekView events={week} jobs={jobs} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await fetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
       </div>
 
@@ -823,16 +838,28 @@ function tasksMentionedIn(content: string, tasks: Task[]): Task[] {
   return tasks.filter(t => t.text.trim().length > 3 && lower.includes(t.text.trim().toLowerCase()));
 }
 
-function ArloChat({ messages, input, setInput, send, sending, tasks, onOpenPriority }: { messages: Message[]; input: string; setInput: (v: string) => void; send: () => void; sending: boolean; tasks: Task[]; onOpenPriority: (t: Task) => void }) {
+function ArloChat({ messages, input, setInput, send, sending, tasks, onOpenPriority, tone, onSetTone, suggestedTone }: {
+  messages: Message[]; input: string; setInput: (v: string) => void; send: () => void; sending: boolean; tasks: Task[]; onOpenPriority: (t: Task) => void;
+  tone: ToneVoice; onSetTone: (t: ToneVoice) => void; suggestedTone: ToneVoice | null;
+}) {
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
   return (
     <div style={S.chatWrap}>
-      <div style={{ padding: "4px 18px 0" }}><div style={S.pageTitle}>Steward</div><div style={S.pageSub}>Your partner. Straight talk only.</div></div>
+      <div style={{ padding: "4px 18px 0" }}>
+        <div style={S.pageTitle}>Steward</div>
+        <div style={S.pageSub}>Your partner. Straight talk only.</div>
+        <div style={S.toneRow}>
+          {(["straight_talk", "middle_of_the_road", "take_it_easy"] as const).map(t => (
+            <button key={t} style={{ ...S.toneOpt, ...(tone === t ? S.toneOptOn : {}) }} onClick={() => onSetTone(t)}>{TONE_LABEL[t]}</button>
+          ))}
+        </div>
+      </div>
       <div style={S.chatMsgs}>
         {messages.length === 0 && <div style={{ ...S.empty, marginTop: 24 }}>No messages yet. Brain dump anything.</div>}
         {messages.map((m, i) => {
           const mentioned = m.role === "assistant" ? tasksMentionedIn(m.content, tasks) : [];
+          const isLastAssistant = m.role === "assistant" && i === messages.length - 1;
           return (
             <div key={i} style={{ ...S.bubble, ...(m.role === "user" ? S.bubbleU : S.bubbleA) }}>
               {m.role === "assistant" && <div style={S.bubbleName}>STEWARD</div>}
@@ -843,6 +870,9 @@ function ArloChat({ messages, input, setInput, send, sending, tasks, onOpenPrior
                     <button key={t.id} style={S.chatPrioChip} onClick={() => onOpenPriority(t)}>View priority ›</button>
                   ))}
                 </div>
+              )}
+              {isLastAssistant && suggestedTone && (
+                <button style={{ ...S.chatPrioChip, marginTop: 8 }} onClick={() => onSetTone(suggestedTone)}>Switch to {TONE_LABEL[suggestedTone]} ›</button>
               )}
             </div>
           );
@@ -1497,6 +1527,9 @@ const S: Record<string, CSSProperties> = {
   bottomTag: { textAlign: "center", fontSize: 10, letterSpacing: "0.18em", color: C.brassSoft, opacity: 0.7, marginBottom: 8 },
   pageTitle: { fontSize: 28, fontWeight: 400, color: C.parchment, marginBottom: 4, textShadow: "0 2px 6px rgba(0,0,0,0.5)" },
   pageSub: { fontSize: 13, color: C.parchmentDim, marginBottom: 18 },
+  toneRow: { display: "flex", gap: 6, marginBottom: 14, marginTop: -4 },
+  toneOpt: { flex: 1, background: "rgba(24,20,12,0.55)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 14, color: C.parchmentDim, fontSize: 11.5, fontWeight: 600, padding: "7px 4px", cursor: "pointer", fontFamily: F },
+  toneOptOn: { borderColor: C.brass, background: "rgba(216,170,62,0.16)", color: C.parchment },
   logRow: { display: "flex", gap: 8, marginBottom: 14 },
   logInput: { flex: 1, background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: "12px 14px", outline: "none", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
   logBtn: { background: `linear-gradient(135deg,${C.walnutMid},${C.walnut})`, border: "none", borderRadius: 12, color: C.parchment, fontSize: 13, fontWeight: 700, padding: "12px 18px", cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,220,160,0.15)" },

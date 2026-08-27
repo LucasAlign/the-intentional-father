@@ -27,6 +27,14 @@ export interface PlanningProfile {
   where_ai_helps_most?: string | null;
 }
 
+export const TONE_VOICES = ["straight_talk", "middle_of_the_road", "take_it_easy"] as const;
+export type ToneVoice = (typeof TONE_VOICES)[number];
+export const DEFAULT_TONE_VOICE: ToneVoice = "straight_talk";
+
+export function isToneVoice(value: unknown): value is ToneVoice {
+  return typeof value === "string" && (TONE_VOICES as readonly string[]).includes(value);
+}
+
 export interface ProfileData {
   name?: string | null;
   season_of_life?: string | null;
@@ -35,10 +43,10 @@ export interface ProfileData {
   relationships?: RelationshipProfile[];
   planning_profile?: PlanningProfile | null;
   guardrails?: { do_not_suggest?: string[]; always_remind_of?: string | null };
-  voice?: string | null;
+  voice: ToneVoice;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -136,6 +144,6 @@ export function normalizeProfileData(raw: unknown): ProfileData | null {
       do_not_suggest: doNotSuggest,
       always_remind_of: typeof rawGuardrails?.always_remind_of === "string" ? rawGuardrails.always_remind_of : null,
     },
-    voice: typeof raw.voice === "string" ? raw.voice : null,
+    voice: isToneVoice(raw.voice) ? raw.voice : DEFAULT_TONE_VOICE,
   };
 }

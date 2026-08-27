@@ -3,7 +3,7 @@ import { db } from "@workspace/db";
 import { journalEntries, chatMessages, tasks, taskCompletions, commits, jobs, comingUp, profile as profileTable } from "@workspace/db";
 import { eq, desc, asc, gte, lte, and, isNull, inArray, sql } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
-import { normalizeProfileData, type ProfileData } from "../lib/profile";
+import { normalizeProfileData, isToneVoice, DEFAULT_TONE_VOICE, type ProfileData, type ToneVoice } from "../lib/profile";
 import { aiRateLimit } from "../middlewares/aiRateLimit";
 import { SCRIPTURE_GROUNDING, getVerseOfTheDay } from "../lib/verses";
 import { computeCurrentPeriodStats, computeStreak, isSlipping, type RecurrencePeriod } from "../lib/priorityPeriods";
@@ -29,6 +29,14 @@ function getOpenAIMessage(data: OpenAIResponsesApiResponse): string | undefined 
     .map((content) => content.text)
     .find((text): text is string => Boolean(text));
 }
+
+// Delivery only — the brother/Pastor-Joby-Martin identity and the "no
+// flattery, no softening the truth" guideline above never change per tone.
+const TONE_DELIVERY: Record<ToneVoice, string> = {
+  straight_talk: "",
+  middle_of_the_road: "Lead with a brief, genuine acknowledgment before the direct point — don't overdo it. Still point straight at the truth without sugarcoating; just less blunt in how you get there.",
+  take_it_easy: "Invite reflection rather than confronting immediately, but don't take long to get to the truth — this isn't a license to stall. Honesty still outranks empathy; empathy has its place but never becomes flattery or avoidance.",
+};
 
 function buildArloSystemPrompt(profileData: ProfileData | null, fallbackName: string): string {
   const name = profileData?.name || fallbackName || "friend";
@@ -84,7 +92,8 @@ function buildArloSystemPrompt(profileData: ProfileData | null, fallbackName: st
   const alwaysRemind = profileData?.guardrails?.always_remind_of
     ? `\nAlways keep in view: ${profileData.guardrails.always_remind_of}.`
     : "";
-  const voice = profileData?.voice ? `\nPreferred voice: ${profileData.voice}.` : "";
+  const tone: ToneVoice = isToneVoice(profileData?.voice) ? profileData.voice : DEFAULT_TONE_VOICE;
+  const toneDelivery = TONE_DELIVERY[tone] ? `\nDelivery for this user (Straight Talk is the baseline; this adjusts pacing only, never the honesty): ${TONE_DELIVERY[tone]}` : "";
 
   return `You are Steward, a personal accountability partner and brother to ${name}. Your voice is direct, gospel-centered, in the style of Pastor Joby Martin.
 
@@ -101,7 +110,8 @@ Guidelines:
 - If an open task is marked stuck, or has sat open several days without being flagged, ask about it directly by name rather than letting it pass unmentioned.
 - If a recurring priority is flagged slipping (its streak just broke), mention it directly when relevant — but only when it's genuinely notable, not as routine commentary on ordinary progress.
 - Hold them accountable to commitments they've made to the people who matter most to them, by name where you know it — the same way you'd hold a brother to a promise.
-- Encourage real relationships and real action, never foster dependence on the app.${doNotSuggest}${alwaysRemind}${voice}
+- Encourage real relationships and real action, never foster dependence on the app.${doNotSuggest}${alwaysRemind}${toneDelivery}
+- If ${name}'s current message clearly signals they want your delivery adjusted right now (e.g. "can you ease up" or "just give it to me straight"), say so in your reply, then end it with a tag on its own line: [SUGGEST_TONE:straight_talk], [SUGGEST_TONE:middle_of_the_road], or [SUGGEST_TONE:take_it_easy] — whichever they're asking for. Only include this tag when the signal is clear and it differs from their current setting; never include it as routine commentary.
 
 You are a tool, not a pastor, counselor, or substitute for the people in their life.
 
@@ -635,12 +645,20 @@ router.post('/chat', aiRateLimit, async (req: Request, res: Response) => {
       return;
     }
 
+    // Strip the [SUGGEST_TONE:...] tag before saving/returning — it must not
+    // leak into stored history or future context, and the chip it drives is
+    // relevant only to this turn.
+    const currentTone = profileData?.voice ?? DEFAULT_TONE_VOICE;
+    const toneMatch = assistantMessage.match(/\[SUGGEST_TONE:(straight_talk|middle_of_the_road|take_it_easy)\]\s*$/);
+    const suggestTone = toneMatch && toneMatch[1] !== currentTone ? (toneMatch[1] as ToneVoice) : null;
+    const cleanMessage = toneMatch ? assistantMessage.slice(0, toneMatch.index).trimEnd() : assistantMessage;
+
     await Promise.all([
       db.insert(chatMessages).values({ userId, role: 'user', content: message, date: today }),
-      db.insert(chatMessages).values({ userId, role: 'assistant', content: assistantMessage, date: today }),
+      db.insert(chatMessages).values({ userId, role: 'assistant', content: cleanMessage, date: today }),
     ]);
 
-    res.json({ message: assistantMessage });
+    res.json({ message: cleanMessage, suggestTone });
   } catch (err) {
     req.log?.error({ err }, 'Chat error');
     res.status(500).json({ error: 'Internal server error' });

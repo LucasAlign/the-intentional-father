@@ -2,7 +2,7 @@ import { Router, Request, Response } from "express";
 import { db } from "@workspace/db";
 import { profile as profileTable, interviewMessages } from "@workspace/db";
 import { eq, asc } from "drizzle-orm";
-import { normalizeProfileData } from "../lib/profile";
+import { normalizeProfileData, isToneVoice, isRecord, TONE_VOICES } from "../lib/profile";
 import { aiRateLimit } from "../middlewares/aiRateLimit";
 import { SCRIPTURE_GROUNDING } from "../lib/verses";
 
@@ -27,13 +27,14 @@ function getOpenAIMessage(data: OpenAIResponsesApiResponse): string | undefined 
 const INTERVIEW_SYSTEM_PROMPT = `You are Steward — a direct, gospel-centered planning partner meeting someone for the first time.
 Your mission: get to know them well enough to be genuinely useful across all of life — work, marriage, family, faith.
 
-Work through these 6 areas naturally, like a mentor conversation — not a form or checklist. You have up to 10 questions total, so use any extras to push deeper with a follow-up before moving on:
+Work through these 7 areas naturally, like a mentor conversation — not a form or checklist. You have up to 10 questions total, so use any extras to push deeper with a follow-up before moving on:
 1. Name, role, and season of life — ask this open-ended (single, dating, married, parenting young kids, empty nester, widowed, retired, or anything else). Don't assume marriage or kids.
 2. Their #1 priority — what comes first? What's non-negotiable?
 3. Businesses or main work — what do they do, any patterns or common blockers?
 4. Key relationships — who matters most to them right now given their season of life (a spouse, kids, parents, close friends, a mentee — whatever actually fits), names if they share them, and the biggest friction point in those relationships right now
 5. Where do plans stall? What drains decisions? Where does execution break down?
-6. Guardrails — what should you never suggest? How direct do they want you to be?
+6. Guardrails — what should you never suggest?
+7. How direct do they want you to be — ask plainly whether they want it straight (no cushioning), a middle ground (acknowledge first, then the direct point), or eased into (invite reflection, still get to the truth quickly). Frame it in your own words, not as a multiple-choice list.
 
 Rules:
 - Start with a warm, direct greeting and ask their name.
@@ -87,7 +88,7 @@ Use this exact schema (use null for unknown fields). Order the "relationships" a
     "do_not_suggest": ["array of strings"],
     "always_remind_of": "string or null"
   },
-  "voice": "string describing preferred communication style or null"
+  "voice": "exactly one of: straight_talk, middle_of_the_road, take_it_easy — pick whichever best matches how directly they said they want Steward to talk to them; default to straight_talk if they didn't express a preference"
 }`;
 
 async function callOpenAI(
@@ -133,6 +134,38 @@ router.get("/profile", async (req: Request, res: Response) => {
   } catch (err) {
     req.log?.error({ err }, "Error fetching profile");
     res.status(500).json({ error: "Failed to fetch profile" });
+  }
+});
+
+// PATCH /api/profile — updates a single field on the user's profile without
+// re-running the interview. Only `voice` today; the only writer of profile
+// data before this was interview completion (and the dev-only test seed).
+router.patch("/profile", async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const { voice } = req.body as { voice?: unknown };
+    if (!isToneVoice(voice)) {
+      res.status(400).json({ error: `voice must be one of: ${TONE_VOICES.join(", ")}` });
+      return;
+    }
+    const [existing] = await db
+      .select()
+      .from(profileTable)
+      .where(eq(profileTable.userId, userId))
+      .limit(1);
+    const existingData = isRecord(existing?.data) ? existing.data : {};
+    const data = { ...existingData, voice };
+    await db
+      .insert(profileTable)
+      .values({ userId, data, onboarded: existing?.onboarded ?? false, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: profileTable.userId,
+        set: { data, updatedAt: new Date() },
+      });
+    res.json({ voice });
+  } catch (err) {
+    req.log?.error({ err }, "Error updating profile");
+    res.status(500).json({ error: "Failed to update profile" });
   }
 });
 
@@ -383,7 +416,7 @@ router.post("/test/complete-interview", async (req: Request, res: Response) => {
         do_not_suggest: ["working weekends", "sacrificing family"],
         always_remind_of: "wife's needs come first",
       },
-      voice: "direct, no fluff",
+      voice: "straight_talk",
     };
 
     await db
