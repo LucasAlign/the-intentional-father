@@ -130,14 +130,14 @@ function Icon({ name, size = 15, color = C.brassSoft, stroke = 1.6 }: { name: Ic
   return <svg {...p}>{m[name]}</svg>;
 }
 
-const NAV: { id: TabId; icon: IconName | "arloA"; label: string }[] = [
+const NAV: { id: TabId; icon: IconName | "stewardIcon"; label: string }[] = [
   { id: "today", icon: "sun", label: "Today" },
   { id: "her", icon: "heart", label: "Relationships" },
   { id: "work", icon: "work", label: "Work" },
-  { id: "arlo", icon: "arloA", label: "Steward" },
+  { id: "steward", icon: "stewardIcon", label: "Steward" },
   { id: "week", icon: "cal", label: "Week" },
 ];
-type TabId = "today" | "her" | "work" | "arlo" | "week";
+type TabId = "today" | "her" | "work" | "steward" | "week";
 
 const BIZ_PALETTE = ["#8AB46A", "#6AAEC8", "#C89840", "#B080C0", "#C87060", "#60A8B4", "#A890C0"];
 function bizC(b: string, bizList: string[]) {
@@ -356,7 +356,7 @@ export default function Home() {
     const text = (msg ?? ci).trim();
     if (!text || sending) return;
     setCi("");
-    if (tab !== "arlo") setTab("arlo");
+    if (tab !== "steward") setTab("steward");
     setChat(p => [...p, { role: "user", content: text }]);
     setSending(true);
     setSuggestedTone(null);
@@ -407,7 +407,7 @@ export default function Home() {
         {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} />}
         {tab === "her" && <Relationships commits={commits} refresh={refreshCommits} primaryRel={primaryRel} label={relTabLabel} />}
         {tab === "work" && <Work jobs={jobs} onJob={() => setJobModal(true)} onEdit={setEditJob} />}
-        {tab === "arlo" && <ArloChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} />}
+        {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} />}
         {tab === "week" && <WeekView events={week} jobs={jobs} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await fetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
       </div>
 
@@ -416,8 +416,8 @@ export default function Home() {
         <nav style={R.nav}>
           {NAV.map(n => (
             <button key={n.id} style={R.navBtn} onClick={() => setTab(n.id)}>
-              {n.icon === "arloA"
-                ? <div style={{ ...R.arloA, ...(tab === n.id ? R.arloAOn : {}) }}>S</div>
+              {n.icon === "stewardIcon"
+                ? <div style={{ ...R.stewardIcon, ...(tab === n.id ? R.stewardIconOn : {}) }}>S</div>
                 : <Icon name={n.icon as IconName} size={20} color={tab === n.id ? C.brass : C.parchmentLow} stroke={tab === n.id ? 1.9 : 1.6} />}
               <span style={{ ...R.navLabel, ...(tab === n.id ? R.navLabelOn : {}) }}>{n.id === "her" ? relTabLabel : n.label}</span>
             </button>
@@ -832,13 +832,13 @@ function Work({ jobs, onJob, onEdit }: { jobs: Job[]; onJob: () => void; onEdit:
   );
 }
 
-// ── Arlo chat ───────────────────────────────────────────────────────────────
+// ── Steward chat ────────────────────────────────────────────────────────────
 function tasksMentionedIn(content: string, tasks: Task[]): Task[] {
   const lower = content.toLowerCase();
   return tasks.filter(t => t.text.trim().length > 3 && lower.includes(t.text.trim().toLowerCase()));
 }
 
-function ArloChat({ messages, input, setInput, send, sending, tasks, onOpenPriority, tone, onSetTone, suggestedTone }: {
+function StewardChat({ messages, input, setInput, send, sending, tasks, onOpenPriority, tone, onSetTone, suggestedTone }: {
   messages: Message[]; input: string; setInput: (v: string) => void; send: () => void; sending: boolean; tasks: Task[]; onOpenPriority: (t: Task) => void;
   tone: ToneVoice; onSetTone: (t: ToneVoice) => void; suggestedTone: ToneVoice | null;
 }) {
@@ -880,12 +880,12 @@ function ArloChat({ messages, input, setInput, send, sending, tasks, onOpenPrior
         {sending && <div style={{ ...S.bubble, ...S.bubbleA }}><div style={S.bubbleName}>STEWARD</div><div style={{ ...S.bubbleText, color: C.parchmentDim }}>…</div></div>}
         <div ref={endRef} />
       </div>
-      <ArloChatBar input={input} setInput={setInput} send={send} sending={sending} />
+      <StewardChatBar input={input} setInput={setInput} send={send} sending={sending} />
     </div>
   );
 }
 
-function ArloChatBar({ input, setInput, send, sending }: { input: string; setInput: (v: string) => void; send: () => void; sending: boolean }) {
+function StewardChatBar({ input, setInput, send, sending }: { input: string; setInput: (v: string) => void; send: () => void; sending: boolean }) {
   const { listening, toggle } = useSpeech(setInput);
   return (
     <div style={S.chatBar}>
@@ -1467,8 +1467,8 @@ const R: Record<string, CSSProperties> = {
   navLine: { height: 1, background: `linear-gradient(90deg,transparent,${C.brassDeep},${C.brass},${C.brassDeep},transparent)`, boxShadow: `0 0 10px ${C.brassGlow}` },
   nav: { display: "flex", padding: "10px 0 20px" },
   navBtn: { flex: 1, background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 5 },
-  arloA: { width: 20, height: 20, borderRadius: "50%", border: `1.6px solid ${C.parchmentLow}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: C.parchmentLow, fontFamily: F },
-  arloAOn: { borderColor: C.brass, color: C.brass, boxShadow: `0 0 10px ${C.brassGlow}` },
+  stewardIcon: { width: 20, height: 20, borderRadius: "50%", border: `1.6px solid ${C.parchmentLow}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: C.parchmentLow, fontFamily: F },
+  stewardIconOn: { borderColor: C.brass, color: C.brass, boxShadow: `0 0 10px ${C.brassGlow}` },
   navLabel: { fontSize: 11, color: C.parchmentLow },
   navLabelOn: { color: C.brass },
 };

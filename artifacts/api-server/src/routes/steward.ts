@@ -38,7 +38,7 @@ const TONE_DELIVERY: Record<ToneVoice, string> = {
   take_it_easy: "Invite reflection rather than confronting immediately, but don't take long to get to the truth — this isn't a license to stall. Honesty still outranks empathy; empathy has its place but never becomes flattery or avoidance.",
 };
 
-function buildArloSystemPrompt(profileData: ProfileData | null, fallbackName: string): string {
+function buildStewardSystemPrompt(profileData: ProfileData | null, fallbackName: string): string {
   const name = profileData?.name || fallbackName || "friend";
   const season = profileData?.season_of_life ? `\nTheir season of life: ${profileData.season_of_life}.` : "";
   const topPriority = profileData?.core_identity?.top_priority
@@ -599,7 +599,7 @@ router.post('/chat', aiRateLimit, async (req: Request, res: Response) => {
     }
 
     const profileData = normalizeProfileData(profileRow[0]?.data ?? null);
-    const ARLO_SYSTEM_PROMPT = buildArloSystemPrompt(profileData, req.user!.firstName ?? "");
+    const STEWARD_SYSTEM_PROMPT = buildStewardSystemPrompt(profileData, req.user!.firstName ?? "");
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
@@ -628,7 +628,7 @@ router.post('/chat', aiRateLimit, async (req: Request, res: Response) => {
       },
       body: JSON.stringify({
         model: OPENAI_MODEL,
-        instructions: ARLO_SYSTEM_PROMPT + (context ? `\n\n## Today's context:\n${context}` : ''),
+        instructions: STEWARD_SYSTEM_PROMPT + (context ? `\n\n## Today's context:\n${context}` : ''),
         input: apiMessages,
         max_output_tokens: 350,
       }),
