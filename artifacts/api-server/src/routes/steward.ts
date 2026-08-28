@@ -357,14 +357,19 @@ router.get('/journal', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/journal
+// POST /api/journal — date defaults to today (the Today tab's save-on-blur
+// path); an explicit date lets the journal-history modal edit a past entry.
 router.post('/journal', async (req: Request, res: Response) => {
   try {
-    const today = new Date().toISOString().split('T')[0];
-    const { reflect, commit_text } = req.body;
+    const { reflect, commit_text, date } = req.body;
+    if (date !== undefined && (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date))) {
+      res.status(400).json({ error: 'date (YYYY-MM-DD) must be a valid date string' });
+      return;
+    }
+    const entryDate = date || new Date().toISOString().split('T')[0];
     await db
       .insert(journalEntries)
-      .values({ userId: req.user!.id, date: today, reflect: reflect || '', commitText: commit_text || '' })
+      .values({ userId: req.user!.id, date: entryDate, reflect: reflect || '', commitText: commit_text || '' })
       .onConflictDoUpdate({
         target: [journalEntries.userId, journalEntries.date],
         set: { reflect: reflect || '', commitText: commit_text || '' },
@@ -373,6 +378,19 @@ router.post('/journal', async (req: Request, res: Response) => {
   } catch (err) {
     req.log?.error({ err }, 'Error saving journal entry');
     res.status(500).json({ error: 'Failed to save journal entry' });
+  }
+});
+
+// GET /api/journal/history — every entry for the user, newest first. No
+// pagination (matches /tasks/completed's existing "fetch everything"
+// approach) — fine at beta scale.
+router.get('/journal/history', async (req: Request, res: Response) => {
+  try {
+    const rows = await db.select().from(journalEntries).where(eq(journalEntries.userId, req.user!.id)).orderBy(desc(journalEntries.date));
+    res.json(rows);
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching journal history');
+    res.status(500).json({ error: 'Failed to fetch journal history' });
   }
 });
 

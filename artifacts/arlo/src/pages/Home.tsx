@@ -318,6 +318,7 @@ export default function Home() {
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [priorityDetail, setPriorityDetail] = useState<Task | null>(null);
   const [completedLogOpen, setCompletedLogOpen] = useState(false);
+  const [journalHistoryOpen, setJournalHistoryOpen] = useState(false);
   const [suggestedTone, setSuggestedTone] = useState<ToneVoice | null>(null);
 
   async function setTone(voice: ToneVoice) {
@@ -351,6 +352,9 @@ export default function Home() {
   const refreshPulseChecks = useCallback(() => {
     getList<PulseCheckEntry>(`${API}/pulse-checks?date=${ymd(new Date())}`).then(setPulseChecks);
   }, []);
+  const refreshJournal = useCallback(() => {
+    getJson(`${API}/journal`, null).then((d) => { if (isRecord(d)) setJournal({ reflect: String(d.reflect || ""), commit_text: String(d.commitText ?? d.commit_text ?? "") }); });
+  }, []);
 
   async function savePulseCheck(category: PulseCategory, state: PulseState, note: string) {
     setPulseChecks(prev => [...prev.filter(p => p.category !== category), { category, state, note }]);
@@ -375,14 +379,14 @@ export default function Home() {
     const days = weekDays();
     const start = days[0].key, end = days[6].key;
     fetch(`${API}/verse`).then(r => r.ok ? r.text() : "").then(v => v && setVerse(v)).catch(() => {});
-    getJson(`${API}/journal`, null).then((d) => { if (isRecord(d)) setJournal({ reflect: String(d.reflect || ""), commit_text: String(d.commitText ?? d.commit_text ?? "") }); });
+    refreshJournal();
     getList<Event>(`${API}/coming-up`).then(setToday);
     getList<Event>(`${API}/coming-up?start=${start}&end=${end}`).then(setWeek);
     getList<Message>(`${API}/chat-history`).then((m) => setChat(prev => prev.length ? prev : m));
     getJson(`${API}/admin/is-admin`, { isAdmin: false }).then((d) => setIsAdmin(isRecord(d) && d.isAdmin === true));
     getJson(`${API}/profile`, null).then((d) => { if (isRecord(d) && isRecord(d.data)) setProfile(d.data as unknown as ProfileData); });
     refreshTasks(); refreshCommits(); refreshJobs(); refreshCalendarStatus(); refreshPulseChecks(); refreshRelationships(); refreshPursuits();
-  }, [isAuthenticated, setLocation, refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus, refreshPulseChecks, refreshRelationships, refreshPursuits]);
+  }, [isAuthenticated, setLocation, refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus, refreshPulseChecks, refreshRelationships, refreshPursuits, refreshJournal]);
 
   async function saveJournal(next: Journal) {
     setJournal(next);
@@ -442,7 +446,7 @@ export default function Home() {
       </div>
 
       <div style={R.screen}>
-        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} />}
+        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} onOpenJournalHistory={() => setJournalHistoryOpen(true)} />}
         {tab === "her" && <Relationships relationships={relationships} refreshRelationships={refreshRelationships} commits={commits} refreshCommits={refreshCommits} />}
         {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} />}
         {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} />}
@@ -470,6 +474,7 @@ export default function Home() {
       {profileMenu && <ProfileMenu name={user?.firstName} email={user?.email} onClose={() => setProfileMenu(false)} onLogout={logout} />}
       {priorityDetail && <PriorityDetailModal task={priorityDetail} onClose={() => setPriorityDetail(null)} onChanged={refreshTasks} />}
       {completedLogOpen && <CompletedLogModal onClose={() => setCompletedLogOpen(false)} />}
+      {journalHistoryOpen && <JournalHistoryModal onClose={() => setJournalHistoryOpen(false)} onSaved={refreshJournal} />}
     </div>
   );
 }
@@ -489,13 +494,14 @@ function ProfileMenu({ name, email, onClose, onLogout }: { name?: string | null;
 }
 
 // ── Today ───────────────────────────────────────────────────────────────────
-function Today({ verse, tasks, journal, events, name, profile, relationships, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks, onOpenPriority, onViewCompleted, pulseChecks, onSavePulseCheck }: {
+function Today({ verse, tasks, journal, events, name, profile, relationships, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks, onOpenPriority, onViewCompleted, pulseChecks, onSavePulseCheck, onOpenJournalHistory }: {
   verse: string; tasks: Task[]; journal: Journal; events: Event[]; name?: string | null;
   profile: ProfileData | null; relationships: Relationship[]; primaryRel: Relationship | null;
   onSend: (m?: string) => void; ci: string; setCi: (v: string) => void; sending: boolean;
   onSaveJournal: (j: Journal) => void; refreshTasks: () => void;
   onOpenPriority: (t: Task) => void; onViewCompleted: () => void;
   pulseChecks: PulseCheckEntry[]; onSavePulseCheck: (category: PulseCategory, state: PulseState, note: string) => void;
+  onOpenJournalHistory: () => void;
 }) {
   const [intent, setIntent] = useState(journal.commit_text);
   const [reflect, setReflect] = useState(journal.reflect);
@@ -643,7 +649,10 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
 
       <div style={S.journalCard}>
         <div style={{ flex: 1 }}>
-          <div style={S.eyebrow}><Icon name="pen" /><span style={S.eyeText}>DAILY JOURNAL PROMPT</span></div>
+          <div style={S.prioHeadRow}>
+            <div style={S.eyebrow}><Icon name="pen" /><span style={S.eyeText}>DAILY JOURNAL PROMPT</span></div>
+            <button style={S.prioLogLink} onClick={onOpenJournalHistory}>History ›</button>
+          </div>
           <div style={S.journalText}>{journalPrompt}</div>
           {writing && (
             <textarea
@@ -1592,6 +1601,76 @@ function CompletedLogModal({ onClose }: { onClose: () => void }) {
             </div>
           ))}
           {data && data.items.length === 0 && <div style={S.empty}>Nothing completed yet.</div>}
+        </div>
+        <button style={M.cancel} onClick={onClose}>Close</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Journal history modal ─────────────────────────────────────────────────────
+interface JournalHistoryEntry { date: string; reflect: string; commitText: string; }
+
+function JournalHistoryModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [entries, setEntries] = useState<JournalHistoryEntry[] | null>(null);
+  const [editingDate, setEditingDate] = useState<string | null>(null);
+  const [intentDraft, setIntentDraft] = useState("");
+  const [reflectDraft, setReflectDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(() => {
+    getList<JournalHistoryEntry>(`${API}/journal/history`).then(setEntries);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  function startEdit(entry: JournalHistoryEntry) {
+    setEditingDate(entry.date);
+    setIntentDraft(entry.commitText);
+    setReflectDraft(entry.reflect);
+  }
+
+  async function save(date: string) {
+    setSaving(true);
+    try {
+      const r = await fetch(`${API}/journal`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date, commit_text: intentDraft, reflect: reflectDraft }),
+      });
+      if (r.ok) { setEditingDate(null); load(); onSaved(); }
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <div style={M.overlay}>
+      <div style={M.sheet}>
+        <div style={M.strip} />
+        <div style={M.head}><div style={M.title}>Journal History</div></div>
+        <div>
+          {(entries ?? []).map(entry => (
+            <div key={entry.date} style={S.card}>
+              <div style={S.prioSub}>{entry.date}</div>
+              {editingDate === entry.date ? (
+                <>
+                  <div style={{ ...E.fieldGroup, marginTop: 8 }}>
+                    <div style={E.label}>Intention</div>
+                    <input style={M.input} value={intentDraft} onChange={e => setIntentDraft(e.target.value)} placeholder="—" />
+                  </div>
+                  <div style={E.fieldGroup}>
+                    <div style={E.label}>Reflection</div>
+                    <textarea style={{ ...M.input, resize: "none" }} rows={3} value={reflectDraft} onChange={e => setReflectDraft(e.target.value)} placeholder="—" />
+                  </div>
+                  <button style={M.next} disabled={saving} onClick={() => save(entry.date)}>{saving ? "Saving…" : "Save"}</button>
+                  <button style={M.cancel} onClick={() => setEditingDate(null)}>Cancel</button>
+                </>
+              ) : (
+                <button style={{ background: "none", border: "none", padding: 0, width: "100%", textAlign: "left", cursor: "pointer", fontFamily: F, marginTop: 6 }} onClick={() => startEdit(entry)}>
+                  <div style={S.prioTitle}>{entry.commitText || "—"}</div>
+                  <div style={S.prioSub}>{entry.reflect || "—"}</div>
+                </button>
+              )}
+            </div>
+          ))}
+          {entries && entries.length === 0 && <div style={S.empty}>No journal entries yet.</div>}
         </div>
         <button style={M.cancel} onClick={onClose}>Close</button>
       </div>
