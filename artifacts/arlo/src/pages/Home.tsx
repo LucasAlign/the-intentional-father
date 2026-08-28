@@ -56,7 +56,11 @@ interface TaskHistory {
   slipping: boolean;
 }
 interface Commit { id: number; text: string; madeDate: string; done: boolean; relationshipId: number | null; }
-interface Job { id: number; biz: string; name: string; stage: string; due: string; pct: number; }
+interface Job { id: number; biz: string; name: string; stage: string; due: string; pct: number; pursuitId: number | null; }
+type PursuitCategory = "job" | "business" | "volunteer" | "other";
+interface Pursuit { id: number; name: string; category: PursuitCategory; notes: string; }
+const PURSUIT_CATEGORIES: PursuitCategory[] = ["job", "business", "volunteer", "other"];
+const PURSUIT_CATEGORY_LABEL: Record<PursuitCategory, string> = { job: "Job", business: "Business", volunteer: "Volunteer", other: "Other" };
 interface Event { id: number; date: string; time: string; title: string; sub: string; tag: string; kind: string; }
 interface Message { role: "user" | "assistant"; content: string; }
 interface Journal { reflect: string; commit_text: string; }
@@ -154,8 +158,8 @@ const NAV: { id: TabId; icon: IconName | "stewardIcon"; label: string }[] = [
 type TabId = "today" | "her" | "work" | "steward" | "week";
 
 const BIZ_PALETTE = ["#8AB46A", "#6AAEC8", "#C89840", "#B080C0", "#C87060", "#60A8B4", "#A890C0"];
-function bizC(b: string, bizList: string[]) {
-  const i = bizList.indexOf(b);
+function pursuitColor(pursuitId: number | null, ids: number[]) {
+  const i = pursuitId === null ? -1 : ids.indexOf(pursuitId);
   return BIZ_PALETTE[i >= 0 ? i % BIZ_PALETTE.length : 0];
 }
 
@@ -270,7 +274,7 @@ function parseJobDueDate(due: string): string | null {
   return null;
 }
 
-function jobCalendarEvent(job: Job): Event | null {
+function jobCalendarEvent(job: Job, pursuitName: string): Event | null {
   const date = parseJobDueDate(job.due);
   if (!date) return null;
   return {
@@ -279,7 +283,7 @@ function jobCalendarEvent(job: Job): Event | null {
     time: "Due",
     title: job.name,
     sub: job.stage,
-    tag: job.biz,
+    tag: pursuitName,
     kind: "work",
   };
 }
@@ -296,6 +300,7 @@ export default function Home() {
   const [commits, setCommits] = useState<Commit[]>([]);
   const [relationships, setRelationships] = useState<Relationship[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [pursuits, setPursuits] = useState<Pursuit[]>([]);
   const [today, setToday] = useState<Event[]>([]);
   const [week, setWeek] = useState<Event[]>([]);
   const [chat, setChat] = useState<Message[]>([]);
@@ -305,6 +310,8 @@ export default function Home() {
   const [sending, setSending] = useState(false);
   const [jobModal, setJobModal] = useState(false);
   const [editJob, setEditJob] = useState<Job | null>(null);
+  const [pursuitModal, setPursuitModal] = useState(false);
+  const [editPursuit, setEditPursuit] = useState<Pursuit | null>(null);
   const [calendarAccounts, setCalendarAccounts] = useState<string[]>([]);
   const [isAdmin, setIsAdmin] = useState(false);
   const [profileMenu, setProfileMenu] = useState(false);
@@ -332,6 +339,9 @@ export default function Home() {
   }, []);
   const refreshJobs = useCallback(() => {
     getList<Job>(`${API}/jobs`).then(setJobs);
+  }, []);
+  const refreshPursuits = useCallback(() => {
+    getList<Pursuit>(`${API}/pursuits`).then(setPursuits);
   }, []);
   const refreshCalendarStatus = useCallback(() => {
     getJson(`${API}/google-calendar/status`, { accounts: [] }).then((d) => {
@@ -371,8 +381,8 @@ export default function Home() {
     getList<Message>(`${API}/chat-history`).then((m) => setChat(prev => prev.length ? prev : m));
     getJson(`${API}/admin/is-admin`, { isAdmin: false }).then((d) => setIsAdmin(isRecord(d) && d.isAdmin === true));
     getJson(`${API}/profile`, null).then((d) => { if (isRecord(d) && isRecord(d.data)) setProfile(d.data as unknown as ProfileData); });
-    refreshTasks(); refreshCommits(); refreshJobs(); refreshCalendarStatus(); refreshPulseChecks(); refreshRelationships();
-  }, [isAuthenticated, setLocation, refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus, refreshPulseChecks, refreshRelationships]);
+    refreshTasks(); refreshCommits(); refreshJobs(); refreshCalendarStatus(); refreshPulseChecks(); refreshRelationships(); refreshPursuits();
+  }, [isAuthenticated, setLocation, refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus, refreshPulseChecks, refreshRelationships, refreshPursuits]);
 
   async function saveJournal(next: Journal) {
     setJournal(next);
@@ -434,9 +444,9 @@ export default function Home() {
       <div style={R.screen}>
         {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} />}
         {tab === "her" && <Relationships relationships={relationships} refreshRelationships={refreshRelationships} commits={commits} refreshCommits={refreshCommits} />}
-        {tab === "work" && <Work jobs={jobs} onJob={() => setJobModal(true)} onEdit={setEditJob} />}
+        {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} />}
         {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} />}
-        {tab === "week" && <WeekView events={week} jobs={jobs} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await fetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
+        {tab === "week" && <WeekView events={week} jobs={jobs} pursuits={pursuits} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await fetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
       </div>
 
       <div style={R.navWrap}>
@@ -453,8 +463,10 @@ export default function Home() {
         </nav>
       </div>
 
-      {jobModal && <JobModal onClose={() => setJobModal(false)} onCreated={refreshJobs} bizSuggestions={[...new Set(jobs.map(j => j.biz))]} />}
-      {editJob && <JobEditModal job={editJob} onClose={() => setEditJob(null)} onSaved={refreshJobs} onDeleted={refreshJobs} />}
+      {jobModal && <JobModal pursuits={pursuits} onClose={() => setJobModal(false)} onCreated={refreshJobs} />}
+      {editJob && <JobEditModal job={editJob} pursuits={pursuits} onClose={() => setEditJob(null)} onSaved={refreshJobs} onDeleted={refreshJobs} />}
+      {pursuitModal && <PursuitModal onClose={() => setPursuitModal(false)} onSaved={refreshPursuits} />}
+      {editPursuit && <PursuitModal pursuit={editPursuit} onClose={() => setEditPursuit(null)} onSaved={refreshPursuits} onDeleted={() => { refreshPursuits(); refreshJobs(); }} />}
       {profileMenu && <ProfileMenu name={user?.firstName} email={user?.email} onClose={() => setProfileMenu(false)} onLogout={logout} />}
       {priorityDetail && <PriorityDetailModal task={priorityDetail} onClose={() => setPriorityDetail(null)} onChanged={refreshTasks} />}
       {completedLogOpen && <CompletedLogModal onClose={() => setCompletedLogOpen(false)} />}
@@ -1010,38 +1022,65 @@ function RelationshipModal({ relationship, onClose, onSaved, onDeleted }: {
 }
 
 // ── Work ───────────────────────────────────────────────────────────────────
-function Work({ jobs, onJob, onEdit }: { jobs: Job[]; onJob: () => void; onEdit: (j: Job) => void }) {
-  const sortedJobs = [...jobs].sort((a, b) => a.biz.localeCompare(b.biz) || a.due.localeCompare(b.due) || a.name.localeCompare(b.name));
-  const groups = [...new Set(sortedJobs.map(j => j.biz))];
-  let lastBiz = "";
+function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit }: {
+  jobs: Job[]; pursuits: Pursuit[]; onJob: () => void; onEdit: (j: Job) => void;
+  onAddPursuit: () => void; onEditPursuit: (p: Pursuit) => void;
+}) {
+  const pursuitIds = pursuits.map(p => p.id);
+  const jobsByPursuit = new Map<number | null, Job[]>();
+  for (const j of jobs) {
+    const key = j.pursuitId;
+    if (!jobsByPursuit.has(key)) jobsByPursuit.set(key, []);
+    jobsByPursuit.get(key)!.push(j);
+  }
+  for (const list of jobsByPursuit.values()) list.sort((a, b) => a.due.localeCompare(b.due) || a.name.localeCompare(b.name));
+  const unsorted = jobsByPursuit.get(null) ?? [];
+
+  function renderJobRow(j: Job, color: string) {
+    return (
+      <button key={j.id} style={S.workRow} onClick={() => onEdit(j)}>
+        <div style={S.workMain}>
+          <div style={S.workName}>{j.name}</div>
+          <div style={S.workMeta}>{[j.stage, j.due].filter(Boolean).join("  •  ") || "No stage or due date"}</div>
+        </div>
+        <div style={S.workPct}>{j.pct}%</div>
+        <div style={S.workTrack}><div style={{ ...S.workTrackFill, width: j.pct + "%", background: j.pct >= 80 ? C.brass : color }} /></div>
+      </button>
+    );
+  }
+
   return (
     <div style={S.scroll}>
       <div style={S.pageTitle}>Work</div>
-      <div style={S.pageSub}>Active jobs by category. Tap a row to edit.</div>
-      {sortedJobs.length === 0 ? (
-        <div style={S.card}><div style={S.empty}>No active jobs yet. Add one to start planning ahead.</div></div>
+      <div style={S.pageSub}>Active jobs by pursuit. Tap a row to edit.</div>
+      {pursuits.length === 0 && jobs.length === 0 ? (
+        <div style={S.card}><div style={S.empty}>No pursuits yet. Add one to start planning ahead.</div></div>
       ) : (
         <div style={S.workList}>
-          {sortedJobs.map(j => {
-            const showHeader = j.biz !== lastBiz;
-            lastBiz = j.biz;
+          {pursuits.map(p => {
+            const color = pursuitColor(p.id, pursuitIds);
+            const pursuitJobs = jobsByPursuit.get(p.id) ?? [];
             return (
-              <div key={j.id}>
-                {showHeader && <div style={{ ...S.workGroup, color: bizC(j.biz, groups) }}>{j.biz.toUpperCase()}</div>}
-                <button style={S.workRow} onClick={() => onEdit(j)}>
-                  <div style={S.workMain}>
-                    <div style={S.workName}>{j.name}</div>
-                    <div style={S.workMeta}>{[j.stage, j.due].filter(Boolean).join("  •  ") || "No stage or due date"}</div>
-                  </div>
-                  <div style={S.workPct}>{j.pct}%</div>
-                  <div style={S.workTrack}><div style={{ ...S.workTrackFill, width: j.pct + "%", background: j.pct >= 80 ? C.brass : bizC(j.biz, groups) }} /></div>
+              <div key={p.id}>
+                <button style={{ ...S.workGroup, color, background: "none", border: "none", cursor: "pointer", textAlign: "left", padding: 0 }} onClick={() => onEditPursuit(p)}>
+                  {p.name.toUpperCase()}
                 </button>
+                {pursuitJobs.length === 0
+                  ? <div style={{ ...S.empty, textAlign: "left", padding: "0 0 10px" }}>No jobs yet.</div>
+                  : pursuitJobs.map(j => renderJobRow(j, color))}
               </div>
             );
           })}
+          {unsorted.length > 0 && (
+            <div>
+              <div style={S.workGroup}>UNSORTED</div>
+              {unsorted.map(j => renderJobRow(j, C.parchmentLow))}
+            </div>
+          )}
         </div>
       )}
-      <button style={{ ...S.intakeBtn, marginTop: 12 }} onClick={onJob}>＋  Add new job</button>
+      <button style={{ ...S.intakeBtn, marginTop: 12 }} onClick={onAddPursuit}>＋  Add pursuit</button>
+      <button style={{ ...S.intakeBtn, marginTop: 8 }} onClick={onJob}>＋  Add new job</button>
       <div style={{ height: 32 }} />
     </div>
   );
@@ -1114,10 +1153,13 @@ function StewardChatBar({ input, setInput, send, sending }: { input: string; set
 }
 
 // ── Week ───────────────────────────────────────────────────────────────────
-function WeekView({ events, jobs, calendarAccounts, onConnectCalendar, onDisconnectCalendar }: { events: Event[]; jobs: Job[]; calendarAccounts: string[]; onConnectCalendar: () => void; onDisconnectCalendar: (email: string) => void }) {
+function WeekView({ events, jobs, pursuits, calendarAccounts, onConnectCalendar, onDisconnectCalendar }: { events: Event[]; jobs: Job[]; pursuits: Pursuit[]; calendarAccounts: string[]; onConnectCalendar: () => void; onDisconnectCalendar: (email: string) => void }) {
   const days = weekDays();
   const todayKey = ymd(new Date());
-  const datedWork = jobs.map(jobCalendarEvent).filter((event): event is Event => Boolean(event));
+  const pursuitNameById = new Map(pursuits.map(p => [p.id, p.name]));
+  const datedWork = jobs
+    .map(j => jobCalendarEvent(j, (j.pursuitId !== null && pursuitNameById.get(j.pursuitId)) || ""))
+    .filter((event): event is Event => Boolean(event));
   const calendarEvents = [...events, ...datedWork].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
   return (
     <div style={S.scroll}>
@@ -1157,15 +1199,16 @@ function WeekView({ events, jobs, calendarAccounts, onConnectCalendar, onDisconn
 }
 
 // ── Job intake modal ─────────────────────────────────────────────────────────
-function JobModal({ onClose, onCreated, bizSuggestions }: { onClose: () => void; onCreated: () => void; bizSuggestions: string[] }) {
+function JobModal({ pursuits, onClose, onCreated }: { pursuits: Pursuit[]; onClose: () => void; onCreated: () => void }) {
   const Qs = [
-    { q: "Which business?", type: "text" as const, ph: "Business name", key: "biz" },
-    { q: "What's the job?", type: "text" as const, ph: "e.g. First Baptist — monument sign", key: "name" },
-    { q: "When does it need to be done?", type: "text" as const, ph: "e.g. June 20, end of month", key: "due" },
-    { q: "Materials needed?", type: "text" as const, ph: "e.g. 4×8 aluminum, vinyl", key: "materials" },
-    { q: "Rough budget or quote?", type: "text" as const, ph: "e.g. $2,400 or not sure", key: "budget" },
-    { q: "Anything that could slow you down?", type: "text" as const, ph: "e.g. approval, weather", key: "risk" },
+    { q: "What's the job?", ph: "e.g. First Baptist — monument sign", key: "name" },
+    { q: "When does it need to be done?", ph: "e.g. June 20, end of month", key: "due" },
+    { q: "Materials needed?", ph: "e.g. 4×8 aluminum, vinyl", key: "materials" },
+    { q: "Rough budget or quote?", ph: "e.g. $2,400 or not sure", key: "budget" },
+    { q: "Anything that could slow you down?", ph: "e.g. approval, weather", key: "risk" },
   ];
+  const [pickingPursuit, setPickingPursuit] = useState(pursuits.length > 0);
+  const [pursuitId, setPursuitId] = useState<number | null>(null);
   const [step, setStep] = useState(0);
   const [val, setVal] = useState("");
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -1173,12 +1216,17 @@ function JobModal({ onClose, onCreated, bizSuggestions }: { onClose: () => void;
   const [err, setErr] = useState("");
   const q = Qs[step];
 
+  function choosePursuit(id: number | null) {
+    setPursuitId(id);
+    setPickingPursuit(false);
+  }
+
   async function submit(final: Record<string, string>) {
     setSaving(true); setErr("");
     try {
       const r = await fetch(`${API}/jobs`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ biz: final.biz || "General", name: final.name || "Untitled job", due: final.due || "", stage: "New", pct: 0 }),
+        body: JSON.stringify({ name: final.name || "Untitled job", due: final.due || "", stage: "New", pct: 0, pursuitId }),
       });
       if (r.ok) { onCreated(); onClose(); }
       else { setErr("Couldn't save the job. Try again."); setSaving(false); }
@@ -1191,6 +1239,25 @@ function JobModal({ onClose, onCreated, bizSuggestions }: { onClose: () => void;
     else submit(next);
   }
 
+  if (pickingPursuit) {
+    return (
+      <div style={M.overlay}>
+        <div style={M.sheet}>
+          <div style={M.strip} />
+          <div style={M.head}><div style={M.title}>New Job</div></div>
+          <div style={M.q}>Which pursuit is this for?</div>
+          <div style={E.chipRow}>
+            {pursuits.map(p => (
+              <button key={p.id} style={E.chip} onClick={() => choosePursuit(p.id)}>{p.name}</button>
+            ))}
+          </div>
+          <button style={M.cancel} onClick={() => choosePursuit(null)}>Skip — not tied to a pursuit</button>
+          <button style={M.cancel} onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={M.overlay}>
       <div style={M.sheet}>
@@ -1200,13 +1267,6 @@ function JobModal({ onClose, onCreated, bizSuggestions }: { onClose: () => void;
         <div style={M.q}>{q.q}</div>
         <>
           <input style={M.input} value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => e.key === "Enter" && val.trim() && advance(val)} placeholder={q.ph} autoFocus />
-          {step === 0 && bizSuggestions.length > 0 && (
-            <div style={E.chipRow}>
-              {bizSuggestions.map(b => (
-                <button key={b} style={E.chip} onClick={() => advance(b)}>{b}</button>
-              ))}
-            </div>
-          )}
           <button style={M.next} disabled={saving} onClick={() => advance(val)}>{step < Qs.length - 1 ? "Next →" : saving ? "Saving…" : "Add Job ✓"}</button>
         </>
         {err && <div style={{ ...S.empty, color: "#D4A090", marginTop: 4 }}>{err}</div>}
@@ -1217,9 +1277,9 @@ function JobModal({ onClose, onCreated, bizSuggestions }: { onClose: () => void;
 }
 
 // ── Job edit modal ────────────────────────────────────────────────────────────
-function JobEditModal({ job, onClose, onSaved, onDeleted }: { job: Job; onClose: () => void; onSaved: () => void; onDeleted: () => void }) {
+function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job; pursuits: Pursuit[]; onClose: () => void; onSaved: () => void; onDeleted: () => void }) {
   const [name, setName] = useState(job.name);
-  const [biz, setBiz] = useState(job.biz);
+  const [pursuitId, setPursuitId] = useState<number | null>(job.pursuitId);
   const [stage, setStage] = useState(job.stage);
   const [due, setDue] = useState(job.due);
   const [pct, setPct] = useState(job.pct);
@@ -1228,12 +1288,12 @@ function JobEditModal({ job, onClose, onSaved, onDeleted }: { job: Job; onClose:
   const [err, setErr] = useState("");
 
   async function save() {
-    if (!name.trim() || !biz.trim()) { setErr("Name and business are required."); return; }
+    if (!name.trim()) { setErr("Name is required."); return; }
     setSaving(true); setErr("");
     try {
       const r = await fetch(`${API}/jobs/${job.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), biz: biz.trim(), stage: stage.trim(), due: due.trim(), pct }),
+        body: JSON.stringify({ name: name.trim(), pursuitId, stage: stage.trim(), due: due.trim(), pct }),
       });
       if (r.ok) { onSaved(); onClose(); }
       else { setErr("Couldn't save. Try again."); setSaving(false); }
@@ -1260,8 +1320,11 @@ function JobEditModal({ job, onClose, onSaved, onDeleted }: { job: Job; onClose:
           <input style={M.input} value={name} onChange={e => setName(e.target.value)} placeholder="Job name" />
         </div>
         <div style={E.fieldGroup}>
-          <div style={E.label}>Business</div>
-          <input style={M.input} value={biz} onChange={e => setBiz(e.target.value)} placeholder="Business name" />
+          <div style={E.label}>Pursuit</div>
+          <select style={S.tribeTagSelect} value={pursuitId ?? ""} onChange={e => setPursuitId(e.target.value ? Number(e.target.value) : null)}>
+            <option value="">Unsorted</option>
+            {pursuits.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
         </div>
         <div style={{ display: "flex", gap: 10 }}>
           <div style={{ ...E.fieldGroup, flex: 1 }}>
@@ -1281,6 +1344,72 @@ function JobEditModal({ job, onClose, onSaved, onDeleted }: { job: Job; onClose:
         {err && <div style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{err}</div>}
         <button style={M.next} disabled={saving} onClick={save}>{saving ? "Saving…" : "Save Changes"}</button>
         <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete Job"}</button>
+        <button style={M.cancel} onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Pursuit add/edit modal ──────────────────────────────────────────────────────
+function PursuitModal({ pursuit, onClose, onSaved, onDeleted }: {
+  pursuit?: Pursuit; onClose: () => void; onSaved: () => void; onDeleted?: () => void;
+}) {
+  const [name, setName] = useState(pursuit?.name ?? "");
+  const [category, setCategory] = useState<PursuitCategory>(pursuit?.category ?? "job");
+  const [notes, setNotes] = useState(pursuit?.notes ?? "");
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function save() {
+    if (!name.trim()) { setErr("Name is required."); return; }
+    setSaving(true); setErr("");
+    const body = { name: name.trim(), category, notes: notes.trim() };
+    try {
+      const r = pursuit
+        ? await fetch(`${API}/pursuits/${pursuit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+        : await fetch(`${API}/pursuits`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (r.ok) { onSaved(); onClose(); }
+      else { setErr("Couldn't save. Try again."); setSaving(false); }
+    } catch { setErr("Couldn't reach the server."); setSaving(false); }
+  }
+
+  async function del() {
+    if (!pursuit) return;
+    setDeleting(true);
+    try {
+      const r = await fetch(`${API}/pursuits/${pursuit.id}`, { method: "DELETE" });
+      if (r.ok) { onDeleted?.(); onClose(); }
+      else { setErr("Couldn't delete. Try again."); setDeleting(false); }
+    } catch { setErr("Couldn't reach the server."); setDeleting(false); }
+  }
+
+  return (
+    <div style={M.overlay}>
+      <div style={M.sheet}>
+        <div style={M.strip} />
+        <div style={M.head}><div style={M.title}>{pursuit ? "Edit Pursuit" : "Add Pursuit"}</div></div>
+
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Name</div>
+          <input style={M.input} value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Signs, church volunteering" autoFocus />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Category</div>
+          <div style={E.chipRow}>
+            {PURSUIT_CATEGORIES.map(c => (
+              <button key={c} style={{ ...E.chip, ...(category === c ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setCategory(c)}>{PURSUIT_CATEGORY_LABEL[c]}</button>
+            ))}
+          </div>
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Notes</div>
+          <input style={M.input} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Role, rhythm, what you track" />
+        </div>
+
+        {err && <div style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{err}</div>}
+        <button style={M.next} disabled={saving} onClick={save}>{saving ? "Saving…" : "Save"}</button>
+        {pursuit && <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete Pursuit"}</button>}
         <button style={M.cancel} onClick={onClose}>Cancel</button>
       </div>
     </div>

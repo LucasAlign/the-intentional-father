@@ -6,6 +6,7 @@
   "scripts": {
     "hello": "tsx ./src/hello.ts",
     "migrate-relationships": "tsx ./src/migrateRelationships.ts",
+    "migrate-pursuits": "tsx ./src/migratePursuits.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

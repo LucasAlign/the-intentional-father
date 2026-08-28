@@ -99,14 +99,31 @@ export const insertCommitSchema = createInsertSchema(commits).omit({ id: true, c
 export type InsertCommit = z.infer<typeof insertCommitSchema>;
 export type Commit = typeof commits.$inferSelect;
 
+export const pursuits = pgTable("pursuits", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  name: text("name").notNull(),
+  // Fixed set (job/business/volunteer/other) — see #14/#29's resolution.
+  category: text("category").notNull(),
+  notes: text("notes").notNull().default(""),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertPursuitSchema = createInsertSchema(pursuits).omit({ id: true, createdAt: true });
+export type InsertPursuit = z.infer<typeof insertPursuitSchema>;
+export type Pursuit = typeof pursuits.$inferSelect;
+
 export const jobs = pgTable("jobs", {
   id: serial("id").primaryKey(),
   userId: text("user_id").notNull(),
-  biz: text("biz").notNull(),
+  // Superseded by pursuitId (#29) — left in place, no longer read or
+  // written, rather than a destructive column drop.
+  biz: text("biz").notNull().default(""),
   name: text("name").notNull(),
   stage: text("stage").notNull().default(""),
   due: text("due").notNull().default(""),
   pct: integer("pct").notNull().default(0),
+  pursuitId: integer("pursuit_id").references(() => pursuits.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

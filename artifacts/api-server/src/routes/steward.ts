@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { db, withUserSession } from "@workspace/db";
-import { journalEntries, chatMessages, tasks, taskCompletions, commits, jobs, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship } from "@workspace/db";
+import { journalEntries, chatMessages, tasks, taskCompletions, commits, jobs, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit } from "@workspace/db";
 import { eq, desc, asc, gte, lte, and, isNull, inArray, sql } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
 import { normalizeProfileData, isToneVoice, DEFAULT_TONE_VOICE, type ProfileData, type ToneVoice } from "../lib/profile";
@@ -10,6 +10,7 @@ import { computeCurrentPeriodStats, computeStreak, isSlipping, type RecurrencePe
 import { buildTodayContext } from "../lib/stewardContext";
 import { isPulseCategory, isPulseState } from "../lib/pulseCheck";
 import { isRelationshipCategory, RELATIONSHIP_RANK_SQL } from "../lib/relationships";
+import { isPursuitCategory } from "../lib/pursuits";
 
 const MAX_PULSE_NOTE_LENGTH = 500;
 
@@ -43,7 +44,7 @@ const TONE_DELIVERY: Record<ToneVoice, string> = {
   take_it_easy: "Invite reflection rather than confronting immediately, but don't take long to get to the truth — this isn't a license to stall. Honesty still outranks empathy; empathy has its place but never becomes flattery or avoidance.",
 };
 
-function buildStewardSystemPrompt(profileData: ProfileData | null, relationshipRows: Relationship[], fallbackName: string): string {
+function buildStewardSystemPrompt(profileData: ProfileData | null, relationshipRows: Relationship[], pursuitRows: Pursuit[], fallbackName: string): string {
   const name = profileData?.name || fallbackName || "friend";
   const season = profileData?.season_of_life ? `\nTheir season of life: ${profileData.season_of_life}.` : "";
   const topPriority = profileData?.core_identity?.top_priority
@@ -52,14 +53,9 @@ function buildStewardSystemPrompt(profileData: ProfileData | null, relationshipR
   const values = profileData?.core_identity?.values?.length
     ? `\nWhat they value: ${profileData.core_identity.values.join(", ")}.`
     : "";
-  const businesses = profileData?.businesses?.length
-    ? `\nTheir work: ${profileData.businesses
-        .map((b) => {
-          const label = [b.name, b.role].filter(Boolean).join(" — ") || "a business they run";
-          const blockers = b.common_blockers?.length ? ` — common blockers: ${b.common_blockers.join(", ")}` : "";
-          const metrics = b.key_metrics?.length ? ` — tracks: ${b.key_metrics.join(", ")}` : "";
-          return `${label}${blockers}${metrics}`;
-        })
+  const businesses = pursuitRows.length
+    ? `\nTheir work: ${pursuitRows
+        .map((p) => `${p.name}${p.notes ? ` — ${p.notes}` : ""}`)
         .join("; ")}.`
     : "";
   const planning = profileData?.planning_profile
@@ -564,6 +560,81 @@ router.delete('/commits/:id', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/pursuits
+router.get('/pursuits', async (req: Request, res: Response) => {
+  try {
+    const rows = await db.select().from(pursuits).where(eq(pursuits.userId, req.user!.id)).orderBy(asc(pursuits.name));
+    res.json(rows);
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching pursuits');
+    res.status(500).json({ error: 'Failed to fetch pursuits' });
+  }
+});
+
+// POST /api/pursuits
+router.post('/pursuits', async (req: Request, res: Response) => {
+  try {
+    const { name, category, notes } = req.body;
+    if (!name?.trim()) { res.status(400).json({ error: 'name is required' }); return; }
+    if (!isPursuitCategory(category)) { res.status(400).json({ error: 'Invalid category' }); return; }
+    const [row] = await db.insert(pursuits).values({
+      userId: req.user!.id,
+      name: name.trim(),
+      category,
+      notes: typeof notes === 'string' ? notes : '',
+    }).returning();
+    res.json(row);
+  } catch (err) {
+    req.log?.error({ err }, 'Error creating pursuit');
+    res.status(500).json({ error: 'Failed to create pursuit' });
+  }
+});
+
+// PATCH /api/pursuits/:id
+router.patch('/pursuits/:id', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id as string, 10);
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    const { name, category, notes } = req.body;
+    if (category !== undefined && !isPursuitCategory(category)) { res.status(400).json({ error: 'Invalid category' }); return; }
+    const updates: Partial<typeof pursuits.$inferInsert> = {};
+    if (typeof name === 'string' && name.trim()) updates.name = name.trim();
+    if (category !== undefined) updates.category = category;
+    if (notes !== undefined) updates.notes = notes;
+    if (Object.keys(updates).length > 0) await db.update(pursuits).set(updates).where(and(eq(pursuits.id, id), eq(pursuits.userId, req.user!.id)));
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error updating pursuit');
+    res.status(500).json({ error: 'Failed to update pursuit' });
+  }
+});
+
+// DELETE /api/pursuits/:id
+router.delete('/pursuits/:id', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id as string, 10);
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    await db.delete(pursuits).where(and(eq(pursuits.id, id), eq(pursuits.userId, req.user!.id)));
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error deleting pursuit');
+    res.status(500).json({ error: 'Failed to delete pursuit' });
+  }
+});
+
+// `provided` distinguishes "not sent" (leave untouched, PATCH) from
+// "explicitly null" (clear it) — both collapse to a null `value`.
+type ResolvedPursuitId = { ok: true; provided: boolean; value: number | null } | { ok: false };
+async function resolvePursuitId(userId: string, pursuitId: unknown, res: Response): Promise<ResolvedPursuitId> {
+  if (pursuitId === undefined) return { ok: true, provided: false, value: null };
+  if (pursuitId === null) return { ok: true, provided: true, value: null };
+  const id = Number(pursuitId);
+  if (isNaN(id)) { res.status(400).json({ error: 'Invalid pursuitId' }); return { ok: false }; }
+  const [owned] = await db.select({ id: pursuits.id }).from(pursuits).where(and(eq(pursuits.id, id), eq(pursuits.userId, userId))).limit(1);
+  if (!owned) { res.status(400).json({ error: 'pursuitId not found' }); return { ok: false }; }
+  return { ok: true, provided: true, value: id };
+}
+
 // GET /api/jobs
 router.get('/jobs', async (req: Request, res: Response) => {
   try {
@@ -577,9 +648,11 @@ router.get('/jobs', async (req: Request, res: Response) => {
 // POST /api/jobs
 router.post('/jobs', async (req: Request, res: Response) => {
   try {
-    const { biz, name, stage, due, pct } = req.body;
-    if (!biz || !name) { res.status(400).json({ error: 'biz and name are required' }); return; }
-    const [row] = await db.insert(jobs).values({ userId: req.user!.id, biz, name, stage: stage || '', due: due || '', pct: pct ?? 0 }).returning();
+    const { name, stage, due, pct, pursuitId } = req.body;
+    if (!name) { res.status(400).json({ error: 'name is required' }); return; }
+    const resolved = await resolvePursuitId(req.user!.id, pursuitId, res);
+    if (!resolved.ok) return; // resolvePursuitId already responded
+    const [row] = await db.insert(jobs).values({ userId: req.user!.id, name, stage: stage || '', due: due || '', pct: pct ?? 0, pursuitId: resolved.value }).returning();
     res.json(row);
   } catch (err) {
     req.log?.error({ err }, 'Error creating job');
@@ -592,13 +665,17 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    const { biz, name, stage, due, pct } = req.body;
-    const updates: Partial<{ biz: string; name: string; stage: string; due: string; pct: number }> = {};
-    if (biz !== undefined) updates.biz = biz;
+    const { name, stage, due, pct, pursuitId } = req.body;
+    const updates: Partial<typeof jobs.$inferInsert> = {};
     if (name !== undefined) updates.name = name;
     if (stage !== undefined) updates.stage = stage;
     if (due !== undefined) updates.due = due;
     if (typeof pct === 'number') updates.pct = pct;
+    if (pursuitId !== undefined) {
+      const resolved = await resolvePursuitId(req.user!.id, pursuitId, res);
+      if (!resolved.ok) return; // resolvePursuitId already responded
+      updates.pursuitId = resolved.value;
+    }
     if (Object.keys(updates).length > 0) await db.update(jobs).set(updates).where(and(eq(jobs.id, id), eq(jobs.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
@@ -691,15 +768,16 @@ router.post('/chat', aiRateLimit, async (req: Request, res: Response) => {
     const userId = req.user!.id;
     const today = new Date().toISOString().split('T')[0];
 
-    const [context, todayChat, profileRow, relationshipRows] = await Promise.all([
+    const [context, todayChat, profileRow, relationshipRows, pursuitRows] = await Promise.all([
       buildTodayContext(userId, today),
       db.select().from(chatMessages).where(and(eq(chatMessages.userId, userId), eq(chatMessages.date, today))).orderBy(asc(chatMessages.createdAt)),
       db.select().from(profileTable).where(eq(profileTable.userId, userId)).limit(1),
       db.select().from(relationships).where(eq(relationships.userId, userId)).orderBy(RELATIONSHIP_RANK_SQL, relationships.createdAt),
+      db.select().from(pursuits).where(eq(pursuits.userId, userId)).orderBy(asc(pursuits.name)),
     ]);
 
     const profileData = normalizeProfileData(profileRow[0]?.data ?? null);
-    const STEWARD_SYSTEM_PROMPT = buildStewardSystemPrompt(profileData, relationshipRows, req.user!.firstName ?? "");
+    const STEWARD_SYSTEM_PROMPT = buildStewardSystemPrompt(profileData, relationshipRows, pursuitRows, req.user!.firstName ?? "");
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {

@@ -1,11 +1,12 @@
 import { Router, Request, Response } from "express";
 import { db } from "@workspace/db";
-import { profile as profileTable, interviewMessages, relationships as relationshipsTable } from "@workspace/db";
+import { profile as profileTable, interviewMessages, relationships as relationshipsTable, pursuits as pursuitsTable } from "@workspace/db";
 import { eq, asc } from "drizzle-orm";
 import { normalizeProfileData, isToneVoice, isRecord, TONE_VOICES } from "../lib/profile";
 import { aiRateLimit } from "../middlewares/aiRateLimit";
 import { SCRIPTURE_GROUNDING } from "../lib/verses";
 import { guessRelationshipCategory, isRelationshipCategory } from "../lib/relationships";
+import { isPursuitCategory } from "../lib/pursuits";
 
 const router = Router();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
@@ -31,7 +32,7 @@ Your mission: get to know them well enough to be genuinely useful across all of 
 Work through these 7 areas naturally, like a mentor conversation — not a form or checklist. You have up to 10 questions total, so use any extras to push deeper with a follow-up before moving on:
 1. Name, role, and season of life — ask this open-ended (single, dating, married, parenting young kids, empty nester, widowed, retired, or anything else). Don't assume marriage or kids.
 2. Their #1 priority — what comes first? What's non-negotiable?
-3. Businesses or main work — what do they do, any patterns or common blockers?
+3. Their pursuits — a job, a business, a volunteer role, whatever they're actively working — what they do, any patterns or common blockers, one or more if they mentioned it
 4. Key relationships — who matters most to them right now given their season of life (a spouse, kids, parents, close friends, a mentee — whatever actually fits), names if they share them, and the biggest friction point in those relationships right now
 5. Where do plans stall? What drains decisions? Where does execution break down?
 6. Guardrails — what should you never suggest?
@@ -61,13 +62,11 @@ Use this exact schema (use null for unknown fields). Order the "relationships" a
     "top_priority": "string",
     "values": ["array of strings"]
   },
-  "businesses": [
+  "pursuits": [
     {
       "name": "string",
-      "role": "string",
-      "rhythm": "string or null",
-      "common_blockers": ["array of strings"],
-      "key_metrics": ["array of strings"]
+      "category": "exactly one of: job, business, volunteer, other — pick the closest fit",
+      "notes": "string or null — role, rhythm, common blockers, what they track, whatever context matters"
     }
   ],
   "relationships": [
@@ -143,6 +142,24 @@ async function persistExtractedRelationships(userId: string, profileData: unknow
       notes: typeof raw.notes === "string" ? raw.notes : "",
       commitments: typeof raw.commitments === "string" ? raw.commitments : "",
       biggestChallenge: typeof raw.biggest_challenge === "string" ? raw.biggest_challenge : "",
+    });
+  }
+}
+
+// Pursuits live in their own table (#29), not in profile.data — this pulls
+// the AI-extracted "pursuits" array out of the raw profile JSON and inserts
+// one row per entry. Unlike relationships, there's no reliable way to guess
+// job/business/volunteer/other from free text, so anything the model didn't
+// tag with one of the fixed values falls back to "other".
+async function persistExtractedPursuits(userId: string, profileData: unknown): Promise<void> {
+  if (!isRecord(profileData) || !Array.isArray(profileData.pursuits)) return;
+  for (const raw of profileData.pursuits) {
+    if (!isRecord(raw) || typeof raw.name !== "string" || !raw.name.trim()) continue;
+    await db.insert(pursuitsTable).values({
+      userId,
+      name: raw.name.trim(),
+      category: isPursuitCategory(raw.category) ? raw.category : "other",
+      notes: typeof raw.notes === "string" ? raw.notes : "",
     });
   }
 }
@@ -336,9 +353,13 @@ router.post("/interview", aiRateLimit, async (req: Request, res: Response) => {
         }
 
         await persistExtractedRelationships(userId, profileData);
-        // Relationships live in their own table now — don't also keep a
-        // stale copy in the jsonb blob.
-        if (isRecord(profileData)) delete profileData.relationships;
+        await persistExtractedPursuits(userId, profileData);
+        // Relationships and pursuits live in their own tables now — don't
+        // also keep a stale copy in the jsonb blob.
+        if (isRecord(profileData)) {
+          delete profileData.relationships;
+          delete profileData.pursuits;
+        }
 
         await db
           .insert(profileTable)
@@ -411,13 +432,11 @@ router.post("/test/complete-interview", async (req: Request, res: Response) => {
         top_priority: "marriage and family first",
         values: ["faithfulness", "planning", "execution"],
       },
-      businesses: [
+      pursuits: [
         {
           name: "Signs",
-          role: "owner/operator",
-          rhythm: "quote-driven, 2-3 week cycles",
-          common_blockers: ["supplier lead time", "client revision loops"],
-          key_metrics: ["quote conversion", "delivery on time"],
+          category: "business",
+          notes: "owner/operator, quote-driven 2-3 week cycles — common blockers: supplier lead time, client revision loops — tracks: quote conversion, delivery on time",
         },
       ],
       relationships: [
@@ -452,14 +471,15 @@ router.post("/test/complete-interview", async (req: Request, res: Response) => {
     };
 
     await persistExtractedRelationships(userId, testProfile);
-    const { relationships: _relationships, ...profileWithoutRelationships } = testProfile;
+    await persistExtractedPursuits(userId, testProfile);
+    const { relationships: _relationships, pursuits: _pursuits, ...profileWithoutExtractedTables } = testProfile;
 
     await db
       .insert(profileTable)
-      .values({ userId, data: profileWithoutRelationships, onboarded: true, updatedAt: new Date() })
+      .values({ userId, data: profileWithoutExtractedTables, onboarded: true, updatedAt: new Date() })
       .onConflictDoUpdate({
         target: profileTable.userId,
-        set: { data: profileWithoutRelationships, onboarded: true, updatedAt: new Date() },
+        set: { data: profileWithoutExtractedTables, onboarded: true, updatedAt: new Date() },
       });
 
     res.json({ success: true, profile: testProfile });

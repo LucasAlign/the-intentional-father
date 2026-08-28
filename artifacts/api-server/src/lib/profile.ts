@@ -4,14 +4,6 @@ export interface CoreIdentity {
   values?: string[];
 }
 
-export interface BusinessProfile {
-  name?: string | null;
-  role?: string | null;
-  rhythm?: string | null;
-  common_blockers?: string[];
-  key_metrics?: string[];
-}
-
 export interface PlanningProfile {
   decision_drain?: string | null;
   common_failure_point?: string | null;
@@ -31,7 +23,6 @@ export interface ProfileData {
   name?: string | null;
   season_of_life?: string | null;
   core_identity?: CoreIdentity | null;
-  businesses?: BusinessProfile[];
   planning_profile?: PlanningProfile | null;
   guardrails?: { do_not_suggest?: string[]; always_remind_of?: string | null };
   voice: ToneVoice;
@@ -54,17 +45,6 @@ function normalizeCoreIdentity(raw: unknown): CoreIdentity | null {
   };
 }
 
-function normalizeBusiness(raw: unknown): BusinessProfile | null {
-  if (!isRecord(raw)) return null;
-  return {
-    name: typeof raw.name === "string" ? raw.name : null,
-    role: typeof raw.role === "string" ? raw.role : null,
-    rhythm: typeof raw.rhythm === "string" ? raw.rhythm : null,
-    common_blockers: stringArray(raw.common_blockers),
-    key_metrics: stringArray(raw.key_metrics),
-  };
-}
-
 function normalizePlanningProfile(raw: unknown): PlanningProfile | null {
   if (!isRecord(raw)) return null;
   return {
@@ -78,8 +58,8 @@ function normalizePlanningProfile(raw: unknown): PlanningProfile | null {
 /**
  * Coerces raw jsonb `profile.data` (LLM-extracted, never schema-validated) into
  * a shape every consumer can trust — malformed fields become null/[] instead
- * of throwing downstream. Relationships live in their own table (see #28) and
- * are never read from or written to this blob.
+ * of throwing downstream. Relationships and pursuits live in their own tables
+ * (see #28, #29) and are never read from or written to this blob.
  */
 export function normalizeProfileData(raw: unknown): ProfileData | null {
   if (!isRecord(raw)) return null;
@@ -89,15 +69,10 @@ export function normalizeProfileData(raw: unknown): ProfileData | null {
     ? rawGuardrails.do_not_suggest.filter((v): v is string => typeof v === "string")
     : [];
 
-  const rawBusinesses = Array.isArray(raw.businesses)
-    ? raw.businesses.map(normalizeBusiness).filter((b): b is BusinessProfile => b !== null)
-    : [];
-
   return {
     name: typeof raw.name === "string" ? raw.name : null,
     season_of_life: typeof raw.season_of_life === "string" ? raw.season_of_life : null,
     core_identity: normalizeCoreIdentity(raw.core_identity),
-    businesses: rawBusinesses,
     planning_profile: normalizePlanningProfile(raw.planning_profile),
     guardrails: {
       do_not_suggest: doNotSuggest,
