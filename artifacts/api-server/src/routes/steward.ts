@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { db, withUserSession } from "@workspace/db";
-import { journalEntries, chatMessages, tasks, taskCompletions, commits, jobs, comingUp, profile as profileTable, pulseChecks } from "@workspace/db";
+import { journalEntries, chatMessages, tasks, taskCompletions, commits, jobs, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship } from "@workspace/db";
 import { eq, desc, asc, gte, lte, and, isNull, inArray, sql } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
 import { normalizeProfileData, isToneVoice, DEFAULT_TONE_VOICE, type ProfileData, type ToneVoice } from "../lib/profile";
@@ -9,6 +9,7 @@ import { SCRIPTURE_GROUNDING, getVerseOfTheDay } from "../lib/verses";
 import { computeCurrentPeriodStats, computeStreak, isSlipping, type RecurrencePeriod } from "../lib/priorityPeriods";
 import { buildTodayContext } from "../lib/stewardContext";
 import { isPulseCategory, isPulseState } from "../lib/pulseCheck";
+import { isRelationshipCategory, RELATIONSHIP_RANK_SQL } from "../lib/relationships";
 
 const MAX_PULSE_NOTE_LENGTH = 500;
 
@@ -42,7 +43,7 @@ const TONE_DELIVERY: Record<ToneVoice, string> = {
   take_it_easy: "Invite reflection rather than confronting immediately, but don't take long to get to the truth — this isn't a license to stall. Honesty still outranks empathy; empathy has its place but never becomes flattery or avoidance.",
 };
 
-function buildStewardSystemPrompt(profileData: ProfileData | null, fallbackName: string): string {
+function buildStewardSystemPrompt(profileData: ProfileData | null, relationshipRows: Relationship[], fallbackName: string): string {
   const name = profileData?.name || fallbackName || "friend";
   const season = profileData?.season_of_life ? `\nTheir season of life: ${profileData.season_of_life}.` : "";
   const topPriority = profileData?.core_identity?.top_priority
@@ -80,12 +81,12 @@ function buildStewardSystemPrompt(profileData: ProfileData | null, fallbackName:
         .join("; ")
     : "";
   const planningBlock = planning ? `\nHow they plan: ${planning}.` : "";
-  const relationships = profileData?.relationships?.length
-    ? `\nKey relationships: ${profileData.relationships
+  const relationshipsBlock = relationshipRows.length
+    ? `\nKey relationships: ${relationshipRows
         .map((r) => {
           const label = r.name || r.notes || r.type || "someone close to them";
           const commitment = r.commitments ? ` — committed to: ${r.commitments}` : "";
-          const friction = r.biggest_challenge ? ` — friction: ${r.biggest_challenge}` : "";
+          const friction = r.biggestChallenge ? ` — friction: ${r.biggestChallenge}` : "";
           return `${label}${commitment}${friction}`;
         })
         .join("; ")}.`
@@ -101,7 +102,7 @@ function buildStewardSystemPrompt(profileData: ProfileData | null, fallbackName:
 
   return `You are Steward, a personal accountability partner and brother to ${name}. Your voice is direct, gospel-centered, in the style of Pastor Joby Martin.
 
-${name}'s core challenge: they're a strong executor but get to the starting line without a full picture (budget, materials, time, contingencies). Reality hits and tasks stall at ~80%. Your job is to help them plan ahead of the work, with them.${season}${topPriority}${values}${businesses}${planningBlock}${relationships}
+${name}'s core challenge: they're a strong executor but get to the starting line without a full picture (budget, materials, time, contingencies). Reality hits and tasks stall at ~80%. Your job is to help them plan ahead of the work, with them.${season}${topPriority}${values}${businesses}${planningBlock}${relationshipsBlock}
 
 Guidelines:
 - No flattery. No softening hard truths.
@@ -417,6 +418,82 @@ router.post('/pulse-checks', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/relationships
+router.get('/relationships', async (req: Request, res: Response) => {
+  try {
+    const rows = await db.select().from(relationships).where(eq(relationships.userId, req.user!.id)).orderBy(RELATIONSHIP_RANK_SQL, relationships.createdAt);
+    res.json(rows);
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching relationships');
+    res.status(500).json({ error: 'Failed to fetch relationships' });
+  }
+});
+
+// POST /api/relationships
+router.post('/relationships', async (req: Request, res: Response) => {
+  try {
+    const { name, category, type, notes, commitments, biggestChallenge } = req.body;
+    if (!isRelationshipCategory(category)) { res.status(400).json({ error: 'Invalid category' }); return; }
+    const [row] = await db.insert(relationships).values({
+      userId: req.user!.id,
+      name: typeof name === 'string' ? name.trim() || null : null,
+      category,
+      type: typeof type === 'string' ? type : '',
+      notes: typeof notes === 'string' ? notes : '',
+      commitments: typeof commitments === 'string' ? commitments : '',
+      biggestChallenge: typeof biggestChallenge === 'string' ? biggestChallenge : '',
+    }).returning();
+    res.json(row);
+  } catch (err) {
+    req.log?.error({ err }, 'Error creating relationship');
+    res.status(500).json({ error: 'Failed to create relationship' });
+  }
+});
+
+// PATCH /api/relationships/:id
+router.patch('/relationships/:id', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id as string, 10);
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    const { name, category, type, notes, commitments, biggestChallenge, isPrimary } = req.body;
+    if (category !== undefined && !isRelationshipCategory(category)) { res.status(400).json({ error: 'Invalid category' }); return; }
+    const updates: Partial<typeof relationships.$inferInsert> = {};
+    if (name !== undefined) updates.name = typeof name === 'string' ? name.trim() || null : null;
+    if (category !== undefined) updates.category = category;
+    if (type !== undefined) updates.type = type;
+    if (notes !== undefined) updates.notes = notes;
+    if (commitments !== undefined) updates.commitments = commitments;
+    if (biggestChallenge !== undefined) updates.biggestChallenge = biggestChallenge;
+    if (typeof isPrimary === 'boolean') updates.isPrimary = isPrimary;
+
+    // Only one relationship can be primary at a time — clearing every other
+    // row first and this update both run inside the same per-request RLS
+    // transaction (see lib/db's beginUserSession), so this is atomic without
+    // any extra transaction handling here.
+    if (isPrimary === true) {
+      await db.update(relationships).set({ isPrimary: false }).where(and(eq(relationships.userId, req.user!.id), eq(relationships.isPrimary, true)));
+    }
+    if (Object.keys(updates).length > 0) await db.update(relationships).set(updates).where(and(eq(relationships.id, id), eq(relationships.userId, req.user!.id)));
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error updating relationship');
+    res.status(500).json({ error: 'Failed to update relationship' });
+  }
+});
+
+// DELETE /api/relationships/:id
+router.delete('/relationships/:id', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id as string, 10);
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    await db.delete(relationships).where(and(eq(relationships.id, id), eq(relationships.userId, req.user!.id)));
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error deleting relationship');
+    res.status(500).json({ error: 'Failed to delete relationship' });
+  }
+});
+
 // GET /api/commits
 router.get('/commits', async (req: Request, res: Response) => {
   try {
@@ -430,10 +507,18 @@ router.get('/commits', async (req: Request, res: Response) => {
 // POST /api/commits
 router.post('/commits', async (req: Request, res: Response) => {
   try {
-    const { text } = req.body;
+    const { text, relationshipId } = req.body;
     if (!text?.trim()) { res.status(400).json({ error: 'Commit text is required' }); return; }
+    let taggedRelationshipId: number | null = null;
+    if (relationshipId !== undefined && relationshipId !== null) {
+      const relId = Number(relationshipId);
+      if (isNaN(relId)) { res.status(400).json({ error: 'Invalid relationshipId' }); return; }
+      const [owned] = await db.select({ id: relationships.id }).from(relationships).where(and(eq(relationships.id, relId), eq(relationships.userId, req.user!.id))).limit(1);
+      if (!owned) { res.status(400).json({ error: 'relationshipId not found' }); return; }
+      taggedRelationshipId = relId;
+    }
     const madeDate = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    const [row] = await db.insert(commits).values({ userId: req.user!.id, text: text.trim(), madeDate, done: false }).returning();
+    const [row] = await db.insert(commits).values({ userId: req.user!.id, text: text.trim(), madeDate, done: false, relationshipId: taggedRelationshipId }).returning();
     res.json(row);
   } catch (err) {
     req.log?.error({ err }, 'Error creating commit');
@@ -446,8 +531,21 @@ router.patch('/commits/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    const { done } = req.body;
-    if (typeof done === 'boolean') await db.update(commits).set({ done }).where(and(eq(commits.id, id), eq(commits.userId, req.user!.id)));
+    const { done, relationshipId } = req.body;
+    const updates: Partial<typeof commits.$inferInsert> = {};
+    if (typeof done === 'boolean') updates.done = done;
+    if (relationshipId !== undefined) {
+      if (relationshipId === null) {
+        updates.relationshipId = null;
+      } else {
+        const relId = Number(relationshipId);
+        if (isNaN(relId)) { res.status(400).json({ error: 'Invalid relationshipId' }); return; }
+        const [owned] = await db.select({ id: relationships.id }).from(relationships).where(and(eq(relationships.id, relId), eq(relationships.userId, req.user!.id))).limit(1);
+        if (!owned) { res.status(400).json({ error: 'relationshipId not found' }); return; }
+        updates.relationshipId = relId;
+      }
+    }
+    if (Object.keys(updates).length > 0) await db.update(commits).set(updates).where(and(eq(commits.id, id), eq(commits.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update commit' });
@@ -593,14 +691,15 @@ router.post('/chat', aiRateLimit, async (req: Request, res: Response) => {
     const userId = req.user!.id;
     const today = new Date().toISOString().split('T')[0];
 
-    const [context, todayChat, profileRow] = await Promise.all([
+    const [context, todayChat, profileRow, relationshipRows] = await Promise.all([
       buildTodayContext(userId, today),
       db.select().from(chatMessages).where(and(eq(chatMessages.userId, userId), eq(chatMessages.date, today))).orderBy(asc(chatMessages.createdAt)),
       db.select().from(profileTable).where(eq(profileTable.userId, userId)).limit(1),
+      db.select().from(relationships).where(eq(relationships.userId, userId)).orderBy(RELATIONSHIP_RANK_SQL, relationships.createdAt),
     ]);
 
     const profileData = normalizeProfileData(profileRow[0]?.data ?? null);
-    const STEWARD_SYSTEM_PROMPT = buildStewardSystemPrompt(profileData, req.user!.firstName ?? "");
+    const STEWARD_SYSTEM_PROMPT = buildStewardSystemPrompt(profileData, relationshipRows, req.user!.firstName ?? "");
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {

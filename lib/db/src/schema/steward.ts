@@ -62,12 +62,36 @@ export const insertChatMessageSchema = createInsertSchema(chatMessages).omit({ i
 export type InsertChatMessage = z.infer<typeof insertChatMessageSchema>;
 export type ChatMessage = typeof chatMessages.$inferSelect;
 
+export const relationships = pgTable("relationships", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  name: text("name"),
+  // Fixed set (spouse/child/family/friend) so sort order is exact, not guessed
+  // from free text — see #13/#28's resolution.
+  category: text("category").notNull(),
+  // Free-text description for color (e.g. "wife", "college roommate") — not
+  // used for sorting.
+  type: text("type").notNull().default(""),
+  notes: text("notes").notNull().default(""),
+  commitments: text("commitments").notNull().default(""),
+  biggestChallenge: text("biggest_challenge").notNull().default(""),
+  // Featured on Today's Intention. Exactly one true per user, enforced at
+  // the application layer (setting a new primary clears the previous one).
+  isPrimary: boolean("is_primary").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertRelationshipSchema = createInsertSchema(relationships).omit({ id: true, createdAt: true });
+export type InsertRelationship = z.infer<typeof insertRelationshipSchema>;
+export type Relationship = typeof relationships.$inferSelect;
+
 export const commits = pgTable("commits", {
   id: serial("id").primaryKey(),
   userId: text("user_id").notNull(),
   text: text("text").notNull(),
   madeDate: text("made_date").notNull(),
   done: boolean("done").notNull().default(false),
+  relationshipId: integer("relationship_id").references(() => relationships.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

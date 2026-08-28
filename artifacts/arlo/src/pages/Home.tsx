@@ -55,14 +55,20 @@ interface TaskHistory {
   completedToday: boolean;
   slipping: boolean;
 }
-interface Commit { id: number; text: string; madeDate: string; done: boolean; }
+interface Commit { id: number; text: string; madeDate: string; done: boolean; relationshipId: number | null; }
 interface Job { id: number; biz: string; name: string; stage: string; due: string; pct: number; }
 interface Event { id: number; date: string; time: string; title: string; sub: string; tag: string; kind: string; }
 interface Message { role: "user" | "assistant"; content: string; }
 interface Journal { reflect: string; commit_text: string; }
-interface Relationship { name: string | null; type: string; notes?: string | null; commitments?: string | null; biggest_challenge?: string | null; }
+type RelationshipCategory = "spouse" | "child" | "family" | "friend";
+interface Relationship {
+  id: number; name: string | null; category: RelationshipCategory; type: string;
+  notes: string; commitments: string; biggestChallenge: string; isPrimary: boolean;
+}
+const RELATIONSHIP_CATEGORIES: RelationshipCategory[] = ["spouse", "child", "family", "friend"];
+const RELATIONSHIP_CATEGORY_LABEL: Record<RelationshipCategory, string> = { spouse: "Spouse", child: "Child", family: "Family", friend: "Friend" };
 type ToneVoice = "straight_talk" | "middle_of_the_road" | "take_it_easy";
-interface ProfileData { name?: string | null; season_of_life?: string | null; relationships?: Relationship[]; voice?: ToneVoice | null; }
+interface ProfileData { name?: string | null; season_of_life?: string | null; voice?: ToneVoice | null; }
 type PulseCategory = "physical" | "mental" | "spiritual";
 type PulseState = "up" | "mid" | "down";
 interface PulseCheckEntry { category: PulseCategory; state: PulseState; note: string; }
@@ -140,7 +146,7 @@ function Icon({ name, size = 15, color = C.brassSoft, stroke = 1.6 }: { name: Ic
 
 const NAV: { id: TabId; icon: IconName | "stewardIcon"; label: string }[] = [
   { id: "today", icon: "sun", label: "Today" },
-  { id: "her", icon: "heart", label: "Relationships" },
+  { id: "her", icon: "heart", label: "Tribe" },
   { id: "work", icon: "work", label: "Work" },
   { id: "steward", icon: "stewardIcon", label: "Steward" },
   { id: "week", icon: "cal", label: "Week" },
@@ -196,28 +202,25 @@ const JOURNAL_PROMPTS_GENERAL = [
   "Where am I tempted to withdraw, and what would love do instead?",
 ];
 
-function isSpouseType(type: string | null | undefined): boolean {
-  return Boolean(type && /spouse|wife|husband/i.test(type));
-}
-
-function seasonCategory(profile: ProfileData | null): "married" | "empty_nester" | "general" {
+function seasonCategory(profile: ProfileData | null, relationships: Relationship[]): "married" | "empty_nester" | "general" {
   const season = (profile?.season_of_life || "").toLowerCase();
   if (season.includes("empty nest")) return "empty_nester";
-  if (season.includes("married") || profile?.relationships?.some(r => isSpouseType(r.type))) return "married";
+  if (season.includes("married") || relationships.some(r => r.category === "spouse")) return "married";
   return "general";
 }
 
-function journalPromptsFor(profile: ProfileData | null): string[] {
-  const category = seasonCategory(profile);
+function journalPromptsFor(profile: ProfileData | null, relationships: Relationship[]): string[] {
+  const category = seasonCategory(profile, relationships);
   if (category === "married") return JOURNAL_PROMPTS_MARRIED;
   if (category === "empty_nester") return JOURNAL_PROMPTS_EMPTY_NESTER;
   return JOURNAL_PROMPTS_GENERAL;
 }
 
-function primaryRelationship(profile: ProfileData | null): Relationship | null {
-  // Relationships are ordered by the person's stated importance during onboarding —
-  // respect that ordering rather than assuming a spouse is always primary.
-  return profile?.relationships?.[0] ?? null;
+function primaryRelationship(relationships: Relationship[]): Relationship | null {
+  // The list arrives pre-sorted (spouse > child > family > friend, then
+  // creation order) — an explicit pin wins if set, otherwise the sorted top
+  // item is the default "who's featured" answer.
+  return relationships.find(r => r.isPrimary) ?? relationships[0] ?? null;
 }
 
 function dayOfYear(date = new Date()) {
@@ -291,6 +294,7 @@ export default function Home() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [journal, setJournal] = useState<Journal>({ reflect: "", commit_text: "" });
   const [commits, setCommits] = useState<Commit[]>([]);
+  const [relationships, setRelationships] = useState<Relationship[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [today, setToday] = useState<Event[]>([]);
   const [week, setWeek] = useState<Event[]>([]);
@@ -322,6 +326,9 @@ export default function Home() {
   }, []);
   const refreshCommits = useCallback(() => {
     getList<Commit>(`${API}/commits`).then(setCommits);
+  }, []);
+  const refreshRelationships = useCallback(() => {
+    getList<Relationship>(`${API}/relationships`).then(setRelationships);
   }, []);
   const refreshJobs = useCallback(() => {
     getList<Job>(`${API}/jobs`).then(setJobs);
@@ -364,8 +371,8 @@ export default function Home() {
     getList<Message>(`${API}/chat-history`).then((m) => setChat(prev => prev.length ? prev : m));
     getJson(`${API}/admin/is-admin`, { isAdmin: false }).then((d) => setIsAdmin(isRecord(d) && d.isAdmin === true));
     getJson(`${API}/profile`, null).then((d) => { if (isRecord(d) && isRecord(d.data)) setProfile(d.data as unknown as ProfileData); });
-    refreshTasks(); refreshCommits(); refreshJobs(); refreshCalendarStatus(); refreshPulseChecks();
-  }, [isAuthenticated, setLocation, refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus, refreshPulseChecks]);
+    refreshTasks(); refreshCommits(); refreshJobs(); refreshCalendarStatus(); refreshPulseChecks(); refreshRelationships();
+  }, [isAuthenticated, setLocation, refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus, refreshPulseChecks, refreshRelationships]);
 
   async function saveJournal(next: Journal) {
     setJournal(next);
@@ -401,8 +408,7 @@ export default function Home() {
 
   if (!isAuthenticated) return <AuthGate loading={isLoading} pendingApproval={pendingApproval} onLogin={login} onStartEmailLogin={startEmailLogin} onVerifyEmailLogin={verifyEmailLogin} />;
 
-  const primaryRel = primaryRelationship(profile);
-  const relTabLabel = primaryRel?.name || "Relationships";
+  const primaryRel = primaryRelationship(relationships);
 
   return (
     <div style={R.root}>
@@ -426,8 +432,8 @@ export default function Home() {
       </div>
 
       <div style={R.screen}>
-        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} />}
-        {tab === "her" && <Relationships commits={commits} refresh={refreshCommits} primaryRel={primaryRel} label={relTabLabel} />}
+        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} />}
+        {tab === "her" && <Relationships relationships={relationships} refreshRelationships={refreshRelationships} commits={commits} refreshCommits={refreshCommits} />}
         {tab === "work" && <Work jobs={jobs} onJob={() => setJobModal(true)} onEdit={setEditJob} />}
         {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} />}
         {tab === "week" && <WeekView events={week} jobs={jobs} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await fetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
@@ -441,7 +447,7 @@ export default function Home() {
               {n.icon === "stewardIcon"
                 ? <div style={{ ...R.stewardIcon, ...(tab === n.id ? R.stewardIconOn : {}) }}>S</div>
                 : <Icon name={n.icon as IconName} size={20} color={tab === n.id ? C.brass : C.parchmentLow} stroke={tab === n.id ? 1.9 : 1.6} />}
-              <span style={{ ...R.navLabel, ...(tab === n.id ? R.navLabelOn : {}) }}>{n.id === "her" ? relTabLabel : n.label}</span>
+              <span style={{ ...R.navLabel, ...(tab === n.id ? R.navLabelOn : {}) }}>{n.label}</span>
             </button>
           ))}
         </nav>
@@ -471,9 +477,9 @@ function ProfileMenu({ name, email, onClose, onLogout }: { name?: string | null;
 }
 
 // ── Today ───────────────────────────────────────────────────────────────────
-function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks, onOpenPriority, onViewCompleted, pulseChecks, onSavePulseCheck }: {
+function Today({ verse, tasks, journal, events, name, profile, relationships, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks, onOpenPriority, onViewCompleted, pulseChecks, onSavePulseCheck }: {
   verse: string; tasks: Task[]; journal: Journal; events: Event[]; name?: string | null;
-  profile: ProfileData | null; primaryRel: Relationship | null;
+  profile: ProfileData | null; relationships: Relationship[]; primaryRel: Relationship | null;
   onSend: (m?: string) => void; ci: string; setCi: (v: string) => void; sending: boolean;
   onSaveJournal: (j: Journal) => void; refreshTasks: () => void;
   onOpenPriority: (t: Task) => void; onViewCompleted: () => void;
@@ -496,8 +502,8 @@ function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSen
   const openTasks = tasks.filter(t => !deletingIds.includes(t.id));
   const visibleTasks = prioritiesExpanded ? openTasks : openTasks.slice(0, PRIORITIES_VISIBLE_CAP);
   const hiddenTaskCount = openTasks.length - visibleTasks.length;
-  const journalPrompt = rotatingItem(journalPromptsFor(profile));
-  const isSpouseRel = primaryRel && isSpouseType(primaryRel.type);
+  const journalPrompt = rotatingItem(journalPromptsFor(profile, relationships));
+  const isSpouseRel = primaryRel?.category === "spouse";
   const intentionLabel = isSpouseRel ? "MARRIAGE INTENTION" : primaryRel ? `${(primaryRel.type || "relationship").toUpperCase()} INTENTION` : "RELATIONSHIP INTENTION";
   const intentionPlaceholder = isSpouseRel
     ? "What's your intention for your marriage today?"
@@ -821,42 +827,85 @@ function TodayMsgBar({ ci, setCi, sending, onSend }: { ci: string; setCi: (v: st
 }
 
 // ── Relationships ─────────────────────────────────────────────────────────────
-function Relationships({ commits, refresh, primaryRel, label }: { commits: Commit[]; refresh: () => void; primaryRel: Relationship | null; label: string }) {
+function relationshipLabel(r: Relationship): string {
+  return r.name || RELATIONSHIP_CATEGORY_LABEL[r.category];
+}
+
+function Relationships({ relationships, refreshRelationships, commits, refreshCommits }: {
+  relationships: Relationship[]; refreshRelationships: () => void;
+  commits: Commit[]; refreshCommits: () => void;
+}) {
   const [val, setVal] = useState("");
+  const [tagId, setTagId] = useState("");
+  const [addOpen, setAddOpen] = useState(false);
+  const [editing, setEditing] = useState<Relationship | null>(null);
+  const primaryRel = primaryRelationship(relationships);
+  const byId = new Map(relationships.map(r => [r.id, r]));
   const intentionText = primaryRel?.name
     ? `Ask ${primaryRel.name} about their week before you talk about yours.`
     : "Log commitments to the people who matter most — spouse, kids, parents, close friends.";
-  const subtitle = primaryRel
-    ? "Commitments you've made. Don't let them disappear."
-    : "Log the commitments you make to the people closest to you.";
   const open = commits.filter(c => !c.done), done = commits.filter(c => c.done);
 
   async function add() {
     const t = val.trim();
     if (!t) return;
     setVal("");
-    try { const r = await fetch(`${API}/commits`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: t }) }); if (r.ok) refresh(); } catch { /* */ }
+    try {
+      const r = await fetch(`${API}/commits`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: t, relationshipId: tagId ? Number(tagId) : null }),
+      });
+      if (r.ok) refreshCommits();
+    } catch { /* */ }
   }
   async function toggle(c: Commit) {
-    try { const r = await fetch(`${API}/commits/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: !c.done }) }); if (r.ok) refresh(); } catch { /* */ }
+    try { const r = await fetch(`${API}/commits/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: !c.done }) }); if (r.ok) refreshCommits(); } catch { /* */ }
+  }
+  async function togglePrimary(r: Relationship) {
+    try { const res = await fetch(`${API}/relationships/${r.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isPrimary: !r.isPrimary }) }); if (res.ok) refreshRelationships(); } catch { /* */ }
   }
 
   return (
     <div style={S.scroll}>
-      <div style={S.pageTitle}>{label}</div>
-      <div style={S.pageSub}>{subtitle}</div>
+      <div style={S.pageTitle}>Tribe</div>
+      <div style={S.pageSub}>The people you're prioritizing.</div>
       <div style={S.card}><div style={S.eyebrow}><Icon name="heart" /><span style={S.eyeText}>TODAY'S INTENTION</span></div><div style={S.intent}>{intentionText}</div></div>
+
+      <div style={S.card}>
+        <div style={S.eyebrow}><span style={S.eyeText}>PEOPLE</span></div>
+        {relationships.length === 0 ? (
+          <div style={S.empty}>No one added yet.</div>
+        ) : (
+          relationships.map(r => (
+            <div key={r.id} style={S.tribeRow}>
+              <button style={{ ...S.pulseBtn, ...(r.isPrimary ? { borderColor: C.brass, color: C.brass, boxShadow: `0 0 8px ${C.brassGlow}` } : {}) }} onClick={() => togglePrimary(r)} aria-label={r.isPrimary ? "Unset as featured" : "Feature on Today's Intention"}>★</button>
+              <button style={S.tribeNameBtn} onClick={() => setEditing(r)}>
+                <div style={S.prioTitle}>{relationshipLabel(r)}</div>
+                <div style={S.prioSub}>{RELATIONSHIP_CATEGORY_LABEL[r.category]}{r.type && r.type !== r.category ? ` — ${r.type}` : ""}</div>
+              </button>
+            </div>
+          ))
+        )}
+        <button style={{ ...S.intakeBtn, marginTop: 14 }} onClick={() => setAddOpen(true)}>＋  Add person</button>
+      </div>
+
       <div style={S.logRow}>
         <input style={S.logInput} value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => e.key === "Enter" && add()} placeholder="Log a commitment you made..." />
         <button style={S.logBtn} onClick={add}>Log</button>
       </div>
+      {relationships.length > 0 && (
+        <select style={S.tribeTagSelect} value={tagId} onChange={e => setTagId(e.target.value)}>
+          <option value="">General (not tagged to anyone)</option>
+          {relationships.map(r => <option key={r.id} value={r.id}>{relationshipLabel(r)}</option>)}
+        </select>
+      )}
       {open.length > 0 && (
         <div style={S.card}>
           <div style={S.eyebrow}><span style={S.eyeText}>OPEN</span></div>
           {open.map(c => (
             <div key={c.id} style={S.commitRow}>
               <button style={S.dot} onClick={() => toggle(c)} />
-              <div><div style={S.prioTitle}>{c.text}</div><div style={S.prioSub}>Said {c.madeDate}</div></div>
+              <div><div style={S.prioTitle}>{c.text}</div><div style={S.prioSub}>Said {c.madeDate}{c.relationshipId && byId.has(c.relationshipId) ? ` — for ${relationshipLabel(byId.get(c.relationshipId)!)}` : ""}</div></div>
             </div>
           ))}
         </div>
@@ -872,8 +921,90 @@ function Relationships({ commits, refresh, primaryRel, label }: { commits: Commi
           ))}
         </div>
       )}
+      {addOpen && <RelationshipModal onClose={() => setAddOpen(false)} onSaved={refreshRelationships} />}
+      {editing && <RelationshipModal relationship={editing} onClose={() => setEditing(null)} onSaved={refreshRelationships} onDeleted={() => { refreshRelationships(); refreshCommits(); }} />}
       {commits.length === 0 && <div style={{ ...S.card }}><div style={S.empty}>No commitments logged yet.</div></div>}
       <div style={{ height: 32 }} />
+    </div>
+  );
+}
+
+// ── Relationship add/edit modal ────────────────────────────────────────────────
+function RelationshipModal({ relationship, onClose, onSaved, onDeleted }: {
+  relationship?: Relationship; onClose: () => void; onSaved: () => void; onDeleted?: () => void;
+}) {
+  const [name, setName] = useState(relationship?.name ?? "");
+  const [category, setCategory] = useState<RelationshipCategory>(relationship?.category ?? "family");
+  const [type, setType] = useState(relationship?.type ?? "");
+  const [notes, setNotes] = useState(relationship?.notes ?? "");
+  const [commitments, setCommitments] = useState(relationship?.commitments ?? "");
+  const [biggestChallenge, setBiggestChallenge] = useState(relationship?.biggestChallenge ?? "");
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function save() {
+    setSaving(true); setErr("");
+    const body = { name: name.trim() || null, category, type: type.trim(), notes: notes.trim(), commitments: commitments.trim(), biggestChallenge: biggestChallenge.trim() };
+    try {
+      const r = relationship
+        ? await fetch(`${API}/relationships/${relationship.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+        : await fetch(`${API}/relationships`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (r.ok) { onSaved(); onClose(); }
+      else { setErr("Couldn't save. Try again."); setSaving(false); }
+    } catch { setErr("Couldn't reach the server."); setSaving(false); }
+  }
+
+  async function del() {
+    if (!relationship) return;
+    setDeleting(true);
+    try {
+      const r = await fetch(`${API}/relationships/${relationship.id}`, { method: "DELETE" });
+      if (r.ok) { onDeleted?.(); onClose(); }
+      else { setErr("Couldn't delete. Try again."); setDeleting(false); }
+    } catch { setErr("Couldn't reach the server."); setDeleting(false); }
+  }
+
+  return (
+    <div style={M.overlay}>
+      <div style={M.sheet}>
+        <div style={M.strip} />
+        <div style={M.head}><div style={M.title}>{relationship ? "Edit Person" : "Add Person"}</div></div>
+
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Name</div>
+          <input style={M.input} value={name} onChange={e => setName(e.target.value)} placeholder="Name (optional)" />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Category</div>
+          <div style={E.chipRow}>
+            {RELATIONSHIP_CATEGORIES.map(c => (
+              <button key={c} style={{ ...E.chip, ...(category === c ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setCategory(c)}>{RELATIONSHIP_CATEGORY_LABEL[c]}</button>
+            ))}
+          </div>
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Description</div>
+          <input style={M.input} value={type} onChange={e => setType(e.target.value)} placeholder="e.g. wife, oldest son, college roommate" />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Notes</div>
+          <input style={M.input} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Context worth remembering" />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Commitments</div>
+          <input style={M.input} value={commitments} onChange={e => setCommitments(e.target.value)} placeholder="What you've committed to" />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Biggest challenge</div>
+          <input style={M.input} value={biggestChallenge} onChange={e => setBiggestChallenge(e.target.value)} placeholder="Where it's hardest right now" />
+        </div>
+
+        {err && <div style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{err}</div>}
+        <button style={M.next} disabled={saving} onClick={save}>{saving ? "Saving…" : "Save"}</button>
+        {relationship && <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete Person"}</button>}
+        <button style={M.cancel} onClick={onClose}>Cancel</button>
+      </div>
     </div>
   );
 }
@@ -1625,6 +1756,9 @@ const S: Record<string, CSSProperties> = {
   logInput: { flex: 1, background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: "12px 14px", outline: "none", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
   logBtn: { background: `linear-gradient(135deg,${C.walnutMid},${C.walnut})`, border: "none", borderRadius: 12, color: C.parchment, fontSize: 13, fontWeight: 700, padding: "12px 18px", cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,220,160,0.15)" },
   commitRow: { display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 14 },
+  tribeRow: { display: "flex", gap: 12, alignItems: "center", marginBottom: 10 },
+  tribeNameBtn: { flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer", fontFamily: F, padding: 0 },
+  tribeTagSelect: { width: "100%", background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchmentMid, fontSize: 13, fontFamily: F, padding: "10px 12px", outline: "none", marginBottom: 14 },
   dot: { width: 22, height: 22, borderRadius: "50%", flexShrink: 0, marginTop: 1, background: "rgba(0,0,0,0.2)", border: `1.5px solid ${C.parchmentLow}`, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#7AB46A", boxShadow: "inset 0 1px 3px rgba(0,0,0,0.4)" },
   dotDone: { background: "rgba(120,180,106,0.25)", borderColor: "#7AB46A" },
   jobRow: { marginBottom: 14, paddingBottom: 14, borderBottom: "1px solid rgba(210,190,130,0.12)" },

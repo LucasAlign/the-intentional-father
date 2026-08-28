@@ -1,10 +1,11 @@
 import { Router, Request, Response } from "express";
 import { db } from "@workspace/db";
-import { profile as profileTable, interviewMessages } from "@workspace/db";
+import { profile as profileTable, interviewMessages, relationships as relationshipsTable } from "@workspace/db";
 import { eq, asc } from "drizzle-orm";
 import { normalizeProfileData, isToneVoice, isRecord, TONE_VOICES } from "../lib/profile";
 import { aiRateLimit } from "../middlewares/aiRateLimit";
 import { SCRIPTURE_GROUNDING } from "../lib/verses";
+import { guessRelationshipCategory, isRelationshipCategory } from "../lib/relationships";
 
 const router = Router();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
@@ -72,7 +73,8 @@ Use this exact schema (use null for unknown fields). Order the "relationships" a
   "relationships": [
     {
       "name": "string or null",
-      "type": "string — e.g. spouse, child, parent, sibling, close friend, mentee",
+      "category": "exactly one of: spouse, child, family, friend — pick the closest fit (parents/siblings/extended family all go under family; mentees/colleagues go under friend)",
+      "type": "string — free-text description, e.g. spouse, child, parent, sibling, close friend, mentee",
       "notes": "string or null — role/context, e.g. 'wife', 'oldest son'",
       "commitments": "string or null",
       "biggest_challenge": "string or null"
@@ -120,6 +122,29 @@ async function callOpenAI(
   const text = getOpenAIMessage(data);
   if (!text) throw new Error("Empty response from OpenAI");
   return text;
+}
+
+// Relationships live in their own table (#28), not in profile.data — this
+// pulls the AI-extracted "relationships" array out of the raw profile JSON
+// and inserts one row per entry, best-effort classifying `category` if the
+// model didn't return one of the fixed values.
+async function persistExtractedRelationships(userId: string, profileData: unknown): Promise<void> {
+  if (!isRecord(profileData) || !Array.isArray(profileData.relationships)) return;
+  for (const raw of profileData.relationships) {
+    if (!isRecord(raw)) continue;
+    const category = isRelationshipCategory(raw.category)
+      ? raw.category
+      : guessRelationshipCategory(typeof raw.type === "string" ? raw.type : null);
+    await db.insert(relationshipsTable).values({
+      userId,
+      name: typeof raw.name === "string" ? raw.name : null,
+      category,
+      type: typeof raw.type === "string" ? raw.type : "",
+      notes: typeof raw.notes === "string" ? raw.notes : "",
+      commitments: typeof raw.commitments === "string" ? raw.commitments : "",
+      biggestChallenge: typeof raw.biggest_challenge === "string" ? raw.biggest_challenge : "",
+    });
+  }
 }
 
 // GET /api/profile
@@ -310,6 +335,11 @@ router.post("/interview", aiRateLimit, async (req: Request, res: Response) => {
           // best-effort extraction
         }
 
+        await persistExtractedRelationships(userId, profileData);
+        // Relationships live in their own table now — don't also keep a
+        // stale copy in the jsonb blob.
+        if (isRecord(profileData)) delete profileData.relationships;
+
         await db
           .insert(profileTable)
           .values({ userId, data: profileData, onboarded: true, updatedAt: new Date() })
@@ -393,6 +423,7 @@ router.post("/test/complete-interview", async (req: Request, res: Response) => {
       relationships: [
         {
           name: "Sarah",
+          category: "spouse",
           type: "spouse",
           notes: "wife",
           commitments: "weekly date, family dinner",
@@ -400,6 +431,7 @@ router.post("/test/complete-interview", async (req: Request, res: Response) => {
         },
         {
           name: null,
+          category: "child",
           type: "child",
           notes: "3 kids",
           commitments: null,
@@ -419,12 +451,15 @@ router.post("/test/complete-interview", async (req: Request, res: Response) => {
       voice: "straight_talk",
     };
 
+    await persistExtractedRelationships(userId, testProfile);
+    const { relationships: _relationships, ...profileWithoutRelationships } = testProfile;
+
     await db
       .insert(profileTable)
-      .values({ userId, data: testProfile, onboarded: true, updatedAt: new Date() })
+      .values({ userId, data: profileWithoutRelationships, onboarded: true, updatedAt: new Date() })
       .onConflictDoUpdate({
         target: profileTable.userId,
-        set: { data: testProfile, onboarded: true, updatedAt: new Date() },
+        set: { data: profileWithoutRelationships, onboarded: true, updatedAt: new Date() },
       });
 
     res.json({ success: true, profile: testProfile });
