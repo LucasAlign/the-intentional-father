@@ -55,7 +55,7 @@ All app data tables are scoped by `user_id` — this is a multi-user app, not si
 
 **Where things live:**
 - `artifacts/arlo/src/pages/Home.tsx` — the entire app UI: a 5-tab mobile layout (Today / Her / Work / Steward / Week), styled with inline `CSSProperties` maps (`R` root/nav, `S` screens, `M` modal) to preserve exact mockup fidelity — woodgrain + brass/parchment theme. `artifacts/arlo/src/index.css` holds the palette/font `:root` vars.
-- `artifacts/api-server/src/routes/steward.ts` — verse/tasks/chat/journal/commits/jobs/coming-up routes
+- `artifacts/api-server/src/routes/steward.ts` — verse/tasks/chat/journal/commits/jobs/coming-up/pulse-checks routes. `lib/stewardContext.ts` builds the "what's going on with this person today" text the `/chat` system prompt reads (journal, open tasks, today's Pulse Check); `/chat` is its only caller today.
 - `artifacts/api-server/src/routes/auth.ts` — Google/Microsoft OIDC, email-OTP login, demo login, mobile auth exchange
 - `artifacts/api-server/src/routes/googleCalendar.ts` — Google Calendar OAuth connect/events (feeds the "Coming Up" tab)
 - `artifacts/api-server/src/routes/interview.ts` — AI-driven onboarding interview, backed by `profile`/`interview_messages`

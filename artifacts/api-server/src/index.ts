@@ -27,6 +27,7 @@ if (Number.isNaN(port) || port <= 0) {
 const RLS_TABLES = [
   "journal_entries", "tasks", "task_completions", "chat_messages",
   "commits", "jobs", "coming_up", "google_calendar_connections", "profile",
+  "pulse_checks",
 ];
 
 // Guarded per-table: this bootstrap's own CREATE TABLE statements below

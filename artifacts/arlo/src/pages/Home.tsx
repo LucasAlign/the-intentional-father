@@ -63,6 +63,14 @@ interface Journal { reflect: string; commit_text: string; }
 interface Relationship { name: string | null; type: string; notes?: string | null; commitments?: string | null; biggest_challenge?: string | null; }
 type ToneVoice = "straight_talk" | "middle_of_the_road" | "take_it_easy";
 interface ProfileData { name?: string | null; season_of_life?: string | null; relationships?: Relationship[]; voice?: ToneVoice | null; }
+type PulseCategory = "physical" | "mental" | "spiritual";
+type PulseState = "up" | "mid" | "down";
+interface PulseCheckEntry { category: PulseCategory; state: PulseState; note: string; }
+const PULSE_CATEGORIES: { id: PulseCategory; label: string }[] = [
+  { id: "physical", label: "Physical" },
+  { id: "mental", label: "Mental" },
+  { id: "spiritual", label: "Spiritual" },
+];
 
 const TONE_LABEL: Record<ToneVoice, string> = { straight_talk: "Straight Talk", middle_of_the_road: "Middle of the Road", take_it_easy: "Take it Easy" };
 function isToneVoice(v: unknown): v is ToneVoice { return v === "straight_talk" || v === "middle_of_the_road" || v === "take_it_easy"; }
@@ -287,6 +295,7 @@ export default function Home() {
   const [today, setToday] = useState<Event[]>([]);
   const [week, setWeek] = useState<Event[]>([]);
   const [chat, setChat] = useState<Message[]>([]);
+  const [pulseChecks, setPulseChecks] = useState<PulseCheckEntry[]>([]);
 
   const [ci, setCi] = useState("");
   const [sending, setSending] = useState(false);
@@ -322,6 +331,19 @@ export default function Home() {
       setCalendarAccounts(isRecord(d) && Array.isArray(d.accounts) ? d.accounts as string[] : isRecord(d) && d.connected ? ["Google Calendar"] : []);
     });
   }, []);
+  const refreshPulseChecks = useCallback(() => {
+    getList<PulseCheckEntry>(`${API}/pulse-checks?date=${ymd(new Date())}`).then(setPulseChecks);
+  }, []);
+
+  async function savePulseCheck(category: PulseCategory, state: PulseState, note: string) {
+    setPulseChecks(prev => [...prev.filter(p => p.category !== category), { category, state, note }]);
+    try {
+      await fetch(`${API}/pulse-checks`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: ymd(new Date()), category, state, note }),
+      });
+    } catch { /* optimistic update already applied; a stale read on next load self-corrects */ }
+  }
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -342,8 +364,8 @@ export default function Home() {
     getList<Message>(`${API}/chat-history`).then((m) => setChat(prev => prev.length ? prev : m));
     getJson(`${API}/admin/is-admin`, { isAdmin: false }).then((d) => setIsAdmin(isRecord(d) && d.isAdmin === true));
     getJson(`${API}/profile`, null).then((d) => { if (isRecord(d) && isRecord(d.data)) setProfile(d.data as unknown as ProfileData); });
-    refreshTasks(); refreshCommits(); refreshJobs(); refreshCalendarStatus();
-  }, [isAuthenticated, setLocation, refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus]);
+    refreshTasks(); refreshCommits(); refreshJobs(); refreshCalendarStatus(); refreshPulseChecks();
+  }, [isAuthenticated, setLocation, refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus, refreshPulseChecks]);
 
   async function saveJournal(next: Journal) {
     setJournal(next);
@@ -404,7 +426,7 @@ export default function Home() {
       </div>
 
       <div style={R.screen}>
-        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} />}
+        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} />}
         {tab === "her" && <Relationships commits={commits} refresh={refreshCommits} primaryRel={primaryRel} label={relTabLabel} />}
         {tab === "work" && <Work jobs={jobs} onJob={() => setJobModal(true)} onEdit={setEditJob} />}
         {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} />}
@@ -449,12 +471,13 @@ function ProfileMenu({ name, email, onClose, onLogout }: { name?: string | null;
 }
 
 // ── Today ───────────────────────────────────────────────────────────────────
-function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks, onOpenPriority, onViewCompleted }: {
+function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks, onOpenPriority, onViewCompleted, pulseChecks, onSavePulseCheck }: {
   verse: string; tasks: Task[]; journal: Journal; events: Event[]; name?: string | null;
   profile: ProfileData | null; primaryRel: Relationship | null;
   onSend: (m?: string) => void; ci: string; setCi: (v: string) => void; sending: boolean;
   onSaveJournal: (j: Journal) => void; refreshTasks: () => void;
   onOpenPriority: (t: Task) => void; onViewCompleted: () => void;
+  pulseChecks: PulseCheckEntry[]; onSavePulseCheck: (category: PulseCategory, state: PulseState, note: string) => void;
 }) {
   const [intent, setIntent] = useState(journal.commit_text);
   const [reflect, setReflect] = useState(journal.reflect);
@@ -548,6 +571,8 @@ function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSen
         />
       </div>
 
+      <PulseCheckCard pulseChecks={pulseChecks} onSave={onSavePulseCheck} />
+
       <div style={S.card}>
         <div style={S.prioHeadRow}>
           <div style={S.eyebrow}><Icon name="target" /><span style={S.eyeText}>PRIORITIES</span></div>
@@ -621,6 +646,65 @@ function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSen
 
       <div style={S.bottomTag}>FAITH. FOCUS. FOLLOW THROUGH.</div>
       <div style={{ height: 8 }} />
+    </div>
+  );
+}
+
+const PULSE_STATE_GLYPH: Record<PulseState, string> = { down: "−", mid: "•", up: "+" };
+const PULSE_STATE_COLOR: Record<PulseState, string> = { down: "#C87060", mid: C.brassSoft, up: "#8FAE6E" };
+
+function PulseCheckCard({ pulseChecks, onSave }: {
+  pulseChecks: PulseCheckEntry[];
+  onSave: (category: PulseCategory, state: PulseState, note: string) => void;
+}) {
+  const [drafts, setDrafts] = useState<Partial<Record<PulseCategory, string>>>({});
+  const byCategory = new Map(pulseChecks.map(p => [p.category, p]));
+
+  function tapState(category: PulseCategory, state: PulseState) {
+    const existing = byCategory.get(category);
+    onSave(category, state, existing?.note ?? "");
+  }
+  function saveNote(category: PulseCategory, entry: PulseCheckEntry) {
+    const note = drafts[category] ?? entry.note;
+    if (note === entry.note) return;
+    onSave(category, entry.state, note);
+  }
+
+  return (
+    <div style={S.card}>
+      <div style={S.eyebrow}><Icon name="sun" /><span style={S.eyeText}>PHYSICAL, MENTAL, SPIRITUAL</span></div>
+      <div style={S.pulseSub}>Start your day doing what matters most.</div>
+      {PULSE_CATEGORIES.map(({ id, label }) => {
+        const entry = byCategory.get(id);
+        return (
+          <div key={id} style={S.pulseRow}>
+            <div style={S.pulseRowTop}>
+              <div style={S.pulseLabel}>{label}</div>
+              <div style={S.pulseBtns}>
+                {(["down", "mid", "up"] as PulseState[]).map(s => (
+                  <button
+                    key={s}
+                    style={{ ...S.pulseBtn, ...(entry?.state === s ? { borderColor: PULSE_STATE_COLOR[s], color: PULSE_STATE_COLOR[s], boxShadow: `0 0 8px ${PULSE_STATE_COLOR[s]}55` } : {}) }}
+                    onClick={() => tapState(id, s)}
+                    aria-label={`${label}: ${s}`}
+                  >
+                    {PULSE_STATE_GLYPH[s]}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {entry && (
+              <input
+                style={S.pulseNoteInput}
+                value={drafts[id] ?? entry.note}
+                placeholder="Add a note (optional)…"
+                onChange={e => setDrafts(prev => ({ ...prev, [id]: e.target.value }))}
+                onBlur={() => saveNote(id, entry)}
+              />
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1491,6 +1575,13 @@ const S: Record<string, CSSProperties> = {
   intent: { fontSize: 15, lineHeight: 1.7, color: C.parchment, textAlign: "center" },
   intentInput: { width: "100%", background: "none", border: "none", outline: "none", resize: "none", fontFamily: F, fontSize: 15, lineHeight: 1.7, color: C.parchment, textAlign: "center" },
   empty: { fontSize: 13, color: C.parchmentDim, textAlign: "center", padding: "6px 0" },
+  pulseSub: { fontSize: 12, color: C.parchmentDim, marginTop: -6, marginBottom: 14 },
+  pulseRow: { marginBottom: 10 },
+  pulseRowTop: { display: "flex", justifyContent: "space-between", alignItems: "center" },
+  pulseLabel: { fontSize: 14, color: C.parchment },
+  pulseBtns: { display: "flex", gap: 8 },
+  pulseBtn: { width: 30, height: 30, borderRadius: "50%", border: "1px solid rgba(210,190,130,0.22)", background: "rgba(30,26,16,0.5)", color: C.parchmentDim, fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: F, display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1 },
+  pulseNoteInput: { width: "100%", background: "none", border: "none", borderBottom: "1px solid rgba(210,190,130,0.16)", outline: "none", fontFamily: F, fontSize: 12, color: C.parchmentMid, padding: "4px 0", marginTop: 6 },
   prioLine: { position: "absolute", left: 19, top: 18, bottom: 20, width: 2, background: `linear-gradient(180deg,${C.walnutLite},${C.walnut})`, boxShadow: "0 0 4px rgba(0,0,0,0.5)" },
   prioRow: { display: "flex", gap: 14, alignItems: "flex-start", position: "relative" },
   prioNum: { width: 40, height: 40, borderRadius: "50%", flexShrink: 0, background: `radial-gradient(circle at 35% 28%,${C.walnutMid},${C.walnut} 70%,#3E2814)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, color: C.parchment, boxShadow: `0 3px 10px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,220,160,0.25),inset 0 -2px 4px rgba(0,0,0,0.4),0 0 0 5px rgba(20,18,11,0.85)`, zIndex: 1, textShadow: "0 1px 2px rgba(0,0,0,0.5)", border: "none", cursor: "pointer" },

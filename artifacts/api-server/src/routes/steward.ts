@@ -1,12 +1,16 @@
 import { Router, Request, Response } from "express";
 import { db, withUserSession } from "@workspace/db";
-import { journalEntries, chatMessages, tasks, taskCompletions, commits, jobs, comingUp, profile as profileTable } from "@workspace/db";
+import { journalEntries, chatMessages, tasks, taskCompletions, commits, jobs, comingUp, profile as profileTable, pulseChecks } from "@workspace/db";
 import { eq, desc, asc, gte, lte, and, isNull, inArray, sql } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
 import { normalizeProfileData, isToneVoice, DEFAULT_TONE_VOICE, type ProfileData, type ToneVoice } from "../lib/profile";
 import { aiRateLimit } from "../middlewares/aiRateLimit";
 import { SCRIPTURE_GROUNDING, getVerseOfTheDay } from "../lib/verses";
 import { computeCurrentPeriodStats, computeStreak, isSlipping, type RecurrencePeriod } from "../lib/priorityPeriods";
+import { buildTodayContext } from "../lib/stewardContext";
+import { isPulseCategory, isPulseState } from "../lib/pulseCheck";
+
+const MAX_PULSE_NOTE_LENGTH = 500;
 
 const router = Router();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
@@ -375,6 +379,44 @@ router.post('/journal', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/pulse-checks?date=YYYY-MM-DD
+router.get('/pulse-checks', async (req: Request, res: Response) => {
+  try {
+    const date = typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date)
+      ? req.query.date
+      : new Date().toISOString().split('T')[0];
+    const rows = await db.select().from(pulseChecks).where(and(eq(pulseChecks.userId, req.user!.id), eq(pulseChecks.date, date)));
+    res.json(rows);
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching pulse checks');
+    res.status(500).json({ error: 'Failed to fetch pulse checks' });
+  }
+});
+
+// POST /api/pulse-checks
+router.post('/pulse-checks', async (req: Request, res: Response) => {
+  try {
+    const { date, category, state, note } = req.body;
+    if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      res.status(400).json({ error: 'date (YYYY-MM-DD) is required' });
+      return;
+    }
+    if (!isPulseCategory(category)) { res.status(400).json({ error: 'Invalid category' }); return; }
+    if (!isPulseState(state)) { res.status(400).json({ error: 'Invalid state' }); return; }
+    const cleanNote = typeof note === 'string' ? note.slice(0, MAX_PULSE_NOTE_LENGTH) : '';
+    await db.insert(pulseChecks)
+      .values({ userId: req.user!.id, date, category, state, note: cleanNote })
+      .onConflictDoUpdate({
+        target: [pulseChecks.userId, pulseChecks.date, pulseChecks.category],
+        set: { state, note: cleanNote },
+      });
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error saving pulse check');
+    res.status(500).json({ error: 'Failed to save pulse check' });
+  }
+});
+
 // GET /api/commits
 router.get('/commits', async (req: Request, res: Response) => {
   try {
@@ -551,52 +593,11 @@ router.post('/chat', aiRateLimit, async (req: Request, res: Response) => {
     const userId = req.user!.id;
     const today = new Date().toISOString().split('T')[0];
 
-    const [recentJournal, openTasks, todayChat, profileRow] = await Promise.all([
-      db.select().from(journalEntries).where(eq(journalEntries.userId, userId)).orderBy(desc(journalEntries.date)).limit(3),
-      db.select().from(tasks).where(and(eq(tasks.userId, userId), eq(tasks.done, false))).orderBy(desc(tasks.createdAt)).limit(5),
+    const [context, todayChat, profileRow] = await Promise.all([
+      buildTodayContext(userId, today),
       db.select().from(chatMessages).where(and(eq(chatMessages.userId, userId), eq(chatMessages.date, today))).orderBy(asc(chatMessages.createdAt)),
       db.select().from(profileTable).where(eq(profileTable.userId, userId)).limit(1),
     ]);
-
-    let context = '';
-    if (recentJournal.length > 0) {
-      context += '## Recent journal entries:\n';
-      recentJournal.forEach((entry) => {
-        if (entry.reflect) context += `- (${entry.date}) Reflect: ${entry.reflect}\n`;
-        if (entry.commitText) context += `- (${entry.date}) Commit: ${entry.commitText}\n`;
-      });
-      context += '\n';
-    }
-
-    if (openTasks.length > 0) {
-      const recurringOpenIds = openTasks.filter((t) => t.recurrencePeriod).map((t) => t.id);
-      const completionsByTask = new Map<number, string[]>();
-      if (recurringOpenIds.length > 0) {
-        const comps = await db.select({ taskId: taskCompletions.taskId, completedDate: taskCompletions.completedDate })
-          .from(taskCompletions).where(inArray(taskCompletions.taskId, recurringOpenIds));
-        for (const c of comps) {
-          if (!completionsByTask.has(c.taskId)) completionsByTask.set(c.taskId, []);
-          completionsByTask.get(c.taskId)!.push(c.completedDate);
-        }
-      }
-      context += '## Open tasks:\n';
-      openTasks.forEach((task) => {
-        let status = '';
-        if (task.recurrencePeriod) {
-          const createdKey = task.createdAt.toISOString().split('T')[0];
-          const completions = completionsByTask.get(task.id) ?? [];
-          if (isSlipping(task.recurrencePeriod as RecurrencePeriod, task.recurrenceTarget ?? 1, completions, today, createdKey)) {
-            status = '[SLIPPING — streak broke]';
-          }
-        } else {
-          const daysOpen = Math.floor((Date.now() - task.createdAt.getTime()) / 86400000);
-          status = task.partial ? '[STUCK — they flagged this]' : daysOpen >= 3 ? `[OPEN ${daysOpen} DAYS, not yet flagged stuck]` : '';
-        }
-        const note = task.notes ? ` — note: "${task.notes.slice(0, 150)}"` : '';
-        context += `- ${task.text} (${task.category})${status ? ' ' + status : ''}${note}\n`;
-      });
-      context += '\n';
-    }
 
     const profileData = normalizeProfileData(profileRow[0]?.data ?? null);
     const STEWARD_SYSTEM_PROMPT = buildStewardSystemPrompt(profileData, req.user!.firstName ?? "");

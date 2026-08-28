@@ -142,3 +142,19 @@ export const interviewMessages = pgTable("interview_messages", {
   content: text("content").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+
+export const pulseChecks = pgTable("pulse_checks", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  date: text("date").notNull(),
+  category: text("category").notNull(),
+  state: text("state").notNull(),
+  note: text("note").notNull().default(""),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  unique("pulse_checks_user_date_category_unique").on(table.userId, table.date, table.category),
+]);
+
+export const insertPulseCheckSchema = createInsertSchema(pulseChecks).omit({ id: true, createdAt: true });
+export type InsertPulseCheck = z.infer<typeof insertPulseCheckSchema>;
+export type PulseCheck = typeof pulseChecks.$inferSelect;
