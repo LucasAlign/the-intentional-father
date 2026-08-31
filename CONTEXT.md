@@ -9,7 +9,7 @@ The product's name, and the name of its AI accountability chat partner as shown 
 _Avoid_: Arlo (legacy internal name only — see below)
 
 **Arlo**:
-The product's original/legacy name. Still used throughout the codebase (repo folder `artifacts/arlo`, package names, component names like `ArloChat`, docs) but no longer shown to users anywhere — fully replaced by "Steward" in the UI. Treated as an internal-only holdover to be renamed away, not a distinct concept from Steward.
+The product's original/legacy name. #6 renamed the internal identifiers that were safe to touch — component names (`ArloChat` → `StewardChat`), route/schema file names (`routes/arlo.ts` → `routes/steward.ts`, `schema/arlo.ts` → `schema/steward.ts`), variables, and docs. Two things were deliberately left as `arlo`: the repo folder (`artifacts/arlo`) and the package name (`@workspace/arlo`) — Replit's own "Project" workflow (invisible to and unverifiable from an agent session, since it lives in Replit's project settings, not this repo) almost certainly starts the dev server with `pnpm --filter @workspace/arlo run dev`; renaming either would silently break that workflow with no way to confirm or fix it from here. A human renaming both together, in Replit itself, is the safe way to finish this. No longer shown to users anywhere either way — fully replaced by "Steward" in the UI.
 _Avoid_: using "Arlo" in anything user-facing; don't treat it as a separate persona from Steward.
 
 **Shepherd** (future, not built yet):

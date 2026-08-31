@@ -4,21 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Arlo — personal OS for the ADD entrepreneur: a daily dashboard with a scripture verse, marriage intention, top-3 task priorities, daily reflection journal, and an AI accountability chat partner.
+Steward — personal OS for the ADD entrepreneur: a daily dashboard with a scripture verse, marriage intention, top-3 task priorities, daily reflection journal, and an AI accountability chat partner. "Arlo" was the original internal name; the repo folder (`artifacts/arlo`) and package name (`@workspace/arlo`) keep it deliberately — see the Replit Environment Rules note below for why. See `CONTEXT.md` for the full Arlo/Steward terminology note.
 
 ## Run & Operate
 
 The dev servers below are already kept running by the Replit "Project" workflow — don't run them yourself; see **Replit Environment Rules**. Listed here for reference (what's running, on which port) and for non-Replit environments.
 
 - `pnpm --filter @workspace/api-server run dev` — run the API server (port 8080)
-- `pnpm --filter @workspace/arlo run dev` — run the Arlo frontend (port 22384)
+- `pnpm --filter @workspace/arlo run dev` — run the Steward frontend (port 22384)
 - `pnpm run typecheck` — full typecheck across all packages (builds `lib/*` project references first, then typechecks `artifacts/*` and `scripts`)
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/db run push` — push Drizzle schema changes to Postgres (dev only; `push-force` if it complains about data loss)
+- `pnpm --filter @workspace/scripts run migrate-relationships` — one-time backfill moving relationships out of `profile.data` (pre-#28) into the `relationships` table; safe to re-run, skips users already migrated
+- `pnpm --filter @workspace/scripts run migrate-pursuits` — one-time backfill turning each user's distinct `jobs.biz` values (pre-#29) into real `pursuits` rows and re-tagging their jobs; safe to re-run, skips jobs already tagged
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate the Zod schemas and react-query client from `lib/api-spec/openapi.yaml` (runs `typecheck:libs` afterward)
-- Required env: `DATABASE_URL` (Postgres), `OPENAI_API_KEY` (Arlo AI chat)
+- Required env: `DATABASE_URL` (Postgres), `OPENAI_API_KEY` (Steward AI chat); optional `OPENAI_MODEL` (defaults to `gpt-5.4-mini`)
 - Auth env: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`; optional `GOOGLE_ISSUER_URL` (defaults to `https://accounts.google.com`). Microsoft is a second OIDC provider: `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET`; optional `MICROSOFT_ISSUER_URL` (defaults to `https://login.microsoftonline.com/common/v2.0`)
 - Email env: `RESEND_API_KEY` (approval and login-code emails via Resend); optional `RESEND_FROM_EMAIL` (defaults to `admin@lucasalign.com`). If unset: approval emails are skipped with a warning in every environment; login-code emails are skipped with a warning (code logged to console) in development, but `sendLoginCode` throws in production so `/login/email/start` fails loudly instead of returning a fake `{sent: true}`
+- `PUBLIC_URL` (e.g. `https://1arlo.replit.app`): the canonical app origin. Takes priority over request headers (`x-forwarded-proto`/`x-forwarded-host`) everywhere an OAuth `redirect_uri` or an absolute link in an email is built (`lib/origin.ts`, `lib/email.ts`) — unset in a deployment, those fall back to proxy-forwarded headers, which can diverge from what's registered with the OAuth provider and cause `redirect_uri_mismatch`. Set it explicitly in any deployment that sits behind a proxy.
+- `ADMIN_EMAILS` (comma-separated, case-insensitive): grants admin access (beta-invite approval, `routes/admin.ts`) and bypasses the beta-invite gate. Defaults to `witeyford@gmail.com` if unset. Read once at server startup (`lib/auth.ts`) — changing it in a running deployment's Secrets requires an actual redeploy/restart, not just a save, to take effect. Note the trailing **S** — a secret named `ADMIN_EMAIL` (singular) is silently ignored and the default applies instead.
+- `LOG_LEVEL` (optional, defaults to `info`): pino log level (`lib/logger.ts`).
 - No test suite exists yet — correctness is verified via `typecheck` plus manual exercise of the running app.
 
 ## Stack
@@ -38,7 +43,7 @@ The dev servers below are already kept running by the Replit "Project" workflow 
 
 Whenever the API surface changes, update `openapi.yaml` first, then run the `codegen` script — don't hand-edit files under either package's `generated/` directory.
 
-**Request flow.** `artifacts/api-server/src/app.ts` wires: pino request logging → CORS → cookie/JSON parsing → `authMiddleware` (loads the user from the session cookie onto `req.user` for every request) → `/api` router. `routes/index.ts` mounts `health` and `auth` publicly, and gates `googleCalendar`, `arlo`, `interview`, and `admin` routers behind `requireAuth` (401 if no session).
+**Request flow.** `artifacts/api-server/src/app.ts` wires: pino request logging → CORS → cookie/JSON parsing → `authMiddleware` (loads the user from the session cookie onto `req.user` for every request) → `/api` router. `routes/index.ts` mounts `health` and `auth` publicly, and gates `googleCalendar`, `steward`, `interview`, and `admin` routers behind `requireAuth` (401 if no session).
 
 **Auth.** Four login paths, all converging on the same server-side session (session table + cookie, see `lib/auth.ts`) and the same `beta_invites` approval gate (a login only succeeds if the user's email has `status = 'active'`):
   - Google and Microsoft OIDC via `openid-client`, PKCE flow (`makeLoginHandler`/`makeCallbackHandler` in `routes/auth.ts`, keyed by `OidcProvider`). Google keeps the bare `/login`/`/callback` paths (its redirect URI is already registered); Microsoft uses `/login/microsoft`/`/callback/microsoft`. A successful Google login also stores a Google Calendar connection (`storeGoogleCalendarConnection`) when the calendar scope was granted.
@@ -48,19 +53,19 @@ Whenever the API surface changes, update `openapi.yaml` first, then run the `cod
 
 All app data tables are scoped by `user_id` — this is a multi-user app, not single-user (despite older docs saying otherwise).
 
-**Schema bootstrap, not migrations.** `artifacts/api-server/src/index.ts` runs idempotent `CREATE TABLE IF NOT EXISTS` / `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements on boot to ensure auth/session tables exist. Day-to-day schema changes for app tables go through Drizzle (`lib/db/src/schema/arlo.ts`, `auth.ts`) + `pnpm --filter @workspace/db run push`.
+**Schema bootstrap, not migrations.** `artifacts/api-server/src/index.ts` runs idempotent `CREATE TABLE IF NOT EXISTS` / `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements on boot to ensure auth/session tables exist. Day-to-day schema changes for app tables go through Drizzle (`lib/db/src/schema/steward.ts`, `auth.ts`) + `pnpm --filter @workspace/db run push`.
 
 **Where things live:**
-- `artifacts/arlo/src/pages/Home.tsx` — the entire app UI: a 5-tab mobile layout (Today / Her / Work / Arlo / Week), styled with inline `CSSProperties` maps (`R` root/nav, `S` screens, `M` modal) to preserve exact mockup fidelity — woodgrain + brass/parchment theme. `artifacts/arlo/src/index.css` holds the palette/font `:root` vars.
-- `artifacts/api-server/src/routes/arlo.ts` — verse/tasks/chat/journal/commits/jobs/coming-up routes
+- `artifacts/arlo/src/pages/Home.tsx` — the entire app UI: a 5-tab mobile layout (Today / Tribe / Work / Steward / Week — the nav tab id is still `"her"` internally, only the label changed, see #28), styled with inline `CSSProperties` maps (`R` root/nav, `S` screens, `M` modal) to preserve exact mockup fidelity — woodgrain + brass/parchment theme. `artifacts/arlo/src/index.css` holds the palette/font `:root` vars.
+- `artifacts/api-server/src/routes/steward.ts` — verse/tasks/chat/journal/commits/jobs/coming-up/pulse-checks/relationships/pursuits routes. `lib/stewardContext.ts` builds the "what's going on with this person today" text the `/chat` system prompt reads (journal, open tasks, today's Pulse Check); `/chat` is its only caller today. `lib/relationships.ts` holds the fixed spouse/child/family/friend category type, its sort-rank SQL, and a best-effort free-text classifier used at write time (onboarding extraction, the migration script) — relationships live in their own `relationships` table, not in `profile.data`. `lib/pursuits.ts` holds the fixed job/business/volunteer/other category type the same way — pursuits live in their own `pursuits` table, and `jobs.pursuitId` tags each job to one; `jobs.biz` (pre-#29) stays in the schema but is no longer read or written.
 - `artifacts/api-server/src/routes/auth.ts` — Google/Microsoft OIDC, email-OTP login, demo login, mobile auth exchange
 - `artifacts/api-server/src/routes/googleCalendar.ts` — Google Calendar OAuth connect/events (feeds the "Coming Up" tab)
 - `artifacts/api-server/src/routes/interview.ts` — AI-driven onboarding interview, backed by `profile`/`interview_messages`
 - `artifacts/api-server/src/routes/admin.ts` — beta-invite listing/approval (admin-only); `lib/email.ts` sends the approval email via Resend when a `pending` invite is set to `active`
 - `artifacts/api-server/src/middlewares/authMiddleware.ts` / `requireAuth.ts` — session-load vs. 401-gate, applied at different layers (see Request flow above)
 - `lib/replit-auth-web/` — browser `useAuth()` hook (login/logout/user state)
-- `lib/db/src/schema/arlo.ts` — app data tables; `schema/auth.ts` — session/user/beta-invite tables
-- `artifacts/mockup-sandbox/` — scratch Vite app for iterating on UI mockups before they graduate into `arlo`
+- `lib/db/src/schema/steward.ts` — app data tables; `schema/auth.ts` — session/user/beta-invite tables
+- `artifacts/mockup-sandbox/` — scratch Vite app for iterating on UI mockups before they graduate into `arlo`. Its `arlo-redesign` mockup still says "Arlo" throughout (frozen historical snapshot, not live) — deliberately untouched, see #6's resolution.
 
 ## Gotchas
 
@@ -76,6 +81,7 @@ This project runs in Replit. The API server (`artifacts/api-server`, port 8080) 
 - **Edit files only.** Make code changes to files but don't try to run or serve the app. Replit handles hot-reloading for frontend changes automatically.
 - **Don't use Docker or virtual environments.** Replit uses Nix.
 - **Don't modify the root `package.json`, `artifacts/arlo/vite.config.ts`, or `lib/db/drizzle.config.ts`** unless intentional — these are managed by the Replit environment.
+- **Don't rename the `artifacts/arlo` folder or the `@workspace/arlo` package name** without coordinating with a human first. Replit's own "Project" workflow almost certainly invokes `pnpm --filter @workspace/arlo run dev` by that exact package name (per the command listed at the top of this section) — that workflow config lives in Replit's project settings, not in this repo, so an agent can't see or update it. Renaming either would silently break the dev server on the next Replit restart with no way to verify or fix it from here. This is why #6 (the Arlo→Steward rename) deliberately renamed identifiers, components, and internal file names but left the folder and package name alone.
 
 ## Agent skills
 

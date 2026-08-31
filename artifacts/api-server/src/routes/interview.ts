@@ -1,10 +1,12 @@
 import { Router, Request, Response } from "express";
 import { db } from "@workspace/db";
-import { profile as profileTable, interviewMessages } from "@workspace/db";
+import { profile as profileTable, interviewMessages, relationships as relationshipsTable, pursuits as pursuitsTable } from "@workspace/db";
 import { eq, asc } from "drizzle-orm";
-import { normalizeProfileData } from "../lib/profile";
+import { normalizeProfileData, isToneVoice, isRecord, TONE_VOICES } from "../lib/profile";
 import { aiRateLimit } from "../middlewares/aiRateLimit";
 import { SCRIPTURE_GROUNDING } from "../lib/verses";
+import { guessRelationshipCategory, isRelationshipCategory } from "../lib/relationships";
+import { isPursuitCategory } from "../lib/pursuits";
 
 const router = Router();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
@@ -27,13 +29,14 @@ function getOpenAIMessage(data: OpenAIResponsesApiResponse): string | undefined 
 const INTERVIEW_SYSTEM_PROMPT = `You are Steward — a direct, gospel-centered planning partner meeting someone for the first time.
 Your mission: get to know them well enough to be genuinely useful across all of life — work, marriage, family, faith.
 
-Work through these 6 areas naturally, like a mentor conversation — not a form or checklist. You have up to 10 questions total, so use any extras to push deeper with a follow-up before moving on:
+Work through these 7 areas naturally, like a mentor conversation — not a form or checklist. You have up to 10 questions total, so use any extras to push deeper with a follow-up before moving on:
 1. Name, role, and season of life — ask this open-ended (single, dating, married, parenting young kids, empty nester, widowed, retired, or anything else). Don't assume marriage or kids.
 2. Their #1 priority — what comes first? What's non-negotiable?
-3. Businesses or main work — what do they do, any patterns or common blockers?
+3. Their pursuits — a job, a business, a volunteer role, whatever they're actively working — what they do, any patterns or common blockers, one or more if they mentioned it
 4. Key relationships — who matters most to them right now given their season of life (a spouse, kids, parents, close friends, a mentee — whatever actually fits), names if they share them, and the biggest friction point in those relationships right now
 5. Where do plans stall? What drains decisions? Where does execution break down?
-6. Guardrails — what should you never suggest? How direct do they want you to be?
+6. Guardrails — what should you never suggest?
+7. How direct do they want you to be — ask plainly whether they want it straight (no cushioning), a middle ground (acknowledge first, then the direct point), or eased into (invite reflection, still get to the truth quickly). Frame it in your own words, not as a multiple-choice list.
 
 Rules:
 - Start with a warm, direct greeting and ask their name.
@@ -59,19 +62,18 @@ Use this exact schema (use null for unknown fields). Order the "relationships" a
     "top_priority": "string",
     "values": ["array of strings"]
   },
-  "businesses": [
+  "pursuits": [
     {
       "name": "string",
-      "role": "string",
-      "rhythm": "string or null",
-      "common_blockers": ["array of strings"],
-      "key_metrics": ["array of strings"]
+      "category": "exactly one of: job, business, volunteer, other — pick the closest fit",
+      "notes": "string or null — role, rhythm, common blockers, what they track, whatever context matters"
     }
   ],
   "relationships": [
     {
       "name": "string or null",
-      "type": "string — e.g. spouse, child, parent, sibling, close friend, mentee",
+      "category": "exactly one of: spouse, child, family, friend — pick the closest fit (parents/siblings/extended family all go under family; mentees/colleagues go under friend)",
+      "type": "string — free-text description, e.g. spouse, child, parent, sibling, close friend, mentee",
       "notes": "string or null — role/context, e.g. 'wife', 'oldest son'",
       "commitments": "string or null",
       "biggest_challenge": "string or null"
@@ -87,7 +89,7 @@ Use this exact schema (use null for unknown fields). Order the "relationships" a
     "do_not_suggest": ["array of strings"],
     "always_remind_of": "string or null"
   },
-  "voice": "string describing preferred communication style or null"
+  "voice": "exactly one of: straight_talk, middle_of_the_road, take_it_easy — pick whichever best matches how directly they said they want Steward to talk to them; default to straight_talk if they didn't express a preference"
 }`;
 
 async function callOpenAI(
@@ -121,6 +123,47 @@ async function callOpenAI(
   return text;
 }
 
+// Relationships live in their own table (#28), not in profile.data — this
+// pulls the AI-extracted "relationships" array out of the raw profile JSON
+// and inserts one row per entry, best-effort classifying `category` if the
+// model didn't return one of the fixed values.
+async function persistExtractedRelationships(userId: string, profileData: unknown): Promise<void> {
+  if (!isRecord(profileData) || !Array.isArray(profileData.relationships)) return;
+  for (const raw of profileData.relationships) {
+    if (!isRecord(raw)) continue;
+    const category = isRelationshipCategory(raw.category)
+      ? raw.category
+      : guessRelationshipCategory(typeof raw.type === "string" ? raw.type : null);
+    await db.insert(relationshipsTable).values({
+      userId,
+      name: typeof raw.name === "string" ? raw.name : null,
+      category,
+      type: typeof raw.type === "string" ? raw.type : "",
+      notes: typeof raw.notes === "string" ? raw.notes : "",
+      commitments: typeof raw.commitments === "string" ? raw.commitments : "",
+      biggestChallenge: typeof raw.biggest_challenge === "string" ? raw.biggest_challenge : "",
+    });
+  }
+}
+
+// Pursuits live in their own table (#29), not in profile.data — this pulls
+// the AI-extracted "pursuits" array out of the raw profile JSON and inserts
+// one row per entry. Unlike relationships, there's no reliable way to guess
+// job/business/volunteer/other from free text, so anything the model didn't
+// tag with one of the fixed values falls back to "other".
+async function persistExtractedPursuits(userId: string, profileData: unknown): Promise<void> {
+  if (!isRecord(profileData) || !Array.isArray(profileData.pursuits)) return;
+  for (const raw of profileData.pursuits) {
+    if (!isRecord(raw) || typeof raw.name !== "string" || !raw.name.trim()) continue;
+    await db.insert(pursuitsTable).values({
+      userId,
+      name: raw.name.trim(),
+      category: isPursuitCategory(raw.category) ? raw.category : "other",
+      notes: typeof raw.notes === "string" ? raw.notes : "",
+    });
+  }
+}
+
 // GET /api/profile
 router.get("/profile", async (req: Request, res: Response) => {
   try {
@@ -133,6 +176,38 @@ router.get("/profile", async (req: Request, res: Response) => {
   } catch (err) {
     req.log?.error({ err }, "Error fetching profile");
     res.status(500).json({ error: "Failed to fetch profile" });
+  }
+});
+
+// PATCH /api/profile — updates a single field on the user's profile without
+// re-running the interview. Only `voice` today; the only writer of profile
+// data before this was interview completion (and the dev-only test seed).
+router.patch("/profile", async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const { voice } = req.body as { voice?: unknown };
+    if (!isToneVoice(voice)) {
+      res.status(400).json({ error: `voice must be one of: ${TONE_VOICES.join(", ")}` });
+      return;
+    }
+    const [existing] = await db
+      .select()
+      .from(profileTable)
+      .where(eq(profileTable.userId, userId))
+      .limit(1);
+    const existingData = isRecord(existing?.data) ? existing.data : {};
+    const data = { ...existingData, voice };
+    await db
+      .insert(profileTable)
+      .values({ userId, data, onboarded: existing?.onboarded ?? false, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: profileTable.userId,
+        set: { data, updatedAt: new Date() },
+      });
+    res.json({ voice });
+  } catch (err) {
+    req.log?.error({ err }, "Error updating profile");
+    res.status(500).json({ error: "Failed to update profile" });
   }
 });
 
@@ -277,6 +352,15 @@ router.post("/interview", aiRateLimit, async (req: Request, res: Response) => {
           // best-effort extraction
         }
 
+        await persistExtractedRelationships(userId, profileData);
+        await persistExtractedPursuits(userId, profileData);
+        // Relationships and pursuits live in their own tables now — don't
+        // also keep a stale copy in the jsonb blob.
+        if (isRecord(profileData)) {
+          delete profileData.relationships;
+          delete profileData.pursuits;
+        }
+
         await db
           .insert(profileTable)
           .values({ userId, data: profileData, onboarded: true, updatedAt: new Date() })
@@ -348,18 +432,17 @@ router.post("/test/complete-interview", async (req: Request, res: Response) => {
         top_priority: "marriage and family first",
         values: ["faithfulness", "planning", "execution"],
       },
-      businesses: [
+      pursuits: [
         {
           name: "Signs",
-          role: "owner/operator",
-          rhythm: "quote-driven, 2-3 week cycles",
-          common_blockers: ["supplier lead time", "client revision loops"],
-          key_metrics: ["quote conversion", "delivery on time"],
+          category: "business",
+          notes: "owner/operator, quote-driven 2-3 week cycles — common blockers: supplier lead time, client revision loops — tracks: quote conversion, delivery on time",
         },
       ],
       relationships: [
         {
           name: "Sarah",
+          category: "spouse",
           type: "spouse",
           notes: "wife",
           commitments: "weekly date, family dinner",
@@ -367,6 +450,7 @@ router.post("/test/complete-interview", async (req: Request, res: Response) => {
         },
         {
           name: null,
+          category: "child",
           type: "child",
           notes: "3 kids",
           commitments: null,
@@ -383,15 +467,19 @@ router.post("/test/complete-interview", async (req: Request, res: Response) => {
         do_not_suggest: ["working weekends", "sacrificing family"],
         always_remind_of: "wife's needs come first",
       },
-      voice: "direct, no fluff",
+      voice: "straight_talk",
     };
+
+    await persistExtractedRelationships(userId, testProfile);
+    await persistExtractedPursuits(userId, testProfile);
+    const { relationships: _relationships, pursuits: _pursuits, ...profileWithoutExtractedTables } = testProfile;
 
     await db
       .insert(profileTable)
-      .values({ userId, data: testProfile, onboarded: true, updatedAt: new Date() })
+      .values({ userId, data: profileWithoutExtractedTables, onboarded: true, updatedAt: new Date() })
       .onConflictDoUpdate({
         target: profileTable.userId,
-        set: { data: testProfile, onboarded: true, updatedAt: new Date() },
+        set: { data: profileWithoutExtractedTables, onboarded: true, updatedAt: new Date() },
       });
 
     res.json({ success: true, profile: testProfile });

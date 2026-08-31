@@ -25,12 +25,29 @@ export const tasks = pgTable("tasks", {
   notes: text("notes").notNull().default(""),
   partial: boolean("partial").notNull().default(false),
   done: boolean("done").notNull().default(false),
+  doneAt: timestamp("done_at"),
+  recurrencePeriod: text("recurrence_period"),
+  recurrenceTarget: integer("recurrence_target"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
 export const insertTaskSchema = createInsertSchema(tasks).omit({ id: true, createdAt: true });
 export type InsertTask = z.infer<typeof insertTaskSchema>;
 export type Task = typeof tasks.$inferSelect;
+
+export const taskCompletions = pgTable("task_completions", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  taskId: integer("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+  completedDate: text("completed_date").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  unique("task_completions_task_date_unique").on(table.taskId, table.completedDate),
+]);
+
+export const insertTaskCompletionSchema = createInsertSchema(taskCompletions).omit({ id: true, createdAt: true });
+export type InsertTaskCompletion = z.infer<typeof insertTaskCompletionSchema>;
+export type TaskCompletion = typeof taskCompletions.$inferSelect;
 
 export const chatMessages = pgTable("chat_messages", {
   id: serial("id").primaryKey(),
@@ -45,12 +62,36 @@ export const insertChatMessageSchema = createInsertSchema(chatMessages).omit({ i
 export type InsertChatMessage = z.infer<typeof insertChatMessageSchema>;
 export type ChatMessage = typeof chatMessages.$inferSelect;
 
+export const relationships = pgTable("relationships", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  name: text("name"),
+  // Fixed set (spouse/child/family/friend) so sort order is exact, not guessed
+  // from free text — see #13/#28's resolution.
+  category: text("category").notNull(),
+  // Free-text description for color (e.g. "wife", "college roommate") — not
+  // used for sorting.
+  type: text("type").notNull().default(""),
+  notes: text("notes").notNull().default(""),
+  commitments: text("commitments").notNull().default(""),
+  biggestChallenge: text("biggest_challenge").notNull().default(""),
+  // Featured on Today's Intention. Exactly one true per user, enforced at
+  // the application layer (setting a new primary clears the previous one).
+  isPrimary: boolean("is_primary").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertRelationshipSchema = createInsertSchema(relationships).omit({ id: true, createdAt: true });
+export type InsertRelationship = z.infer<typeof insertRelationshipSchema>;
+export type Relationship = typeof relationships.$inferSelect;
+
 export const commits = pgTable("commits", {
   id: serial("id").primaryKey(),
   userId: text("user_id").notNull(),
   text: text("text").notNull(),
   madeDate: text("made_date").notNull(),
   done: boolean("done").notNull().default(false),
+  relationshipId: integer("relationship_id").references(() => relationships.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -58,14 +99,31 @@ export const insertCommitSchema = createInsertSchema(commits).omit({ id: true, c
 export type InsertCommit = z.infer<typeof insertCommitSchema>;
 export type Commit = typeof commits.$inferSelect;
 
+export const pursuits = pgTable("pursuits", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  name: text("name").notNull(),
+  // Fixed set (job/business/volunteer/other) — see #14/#29's resolution.
+  category: text("category").notNull(),
+  notes: text("notes").notNull().default(""),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertPursuitSchema = createInsertSchema(pursuits).omit({ id: true, createdAt: true });
+export type InsertPursuit = z.infer<typeof insertPursuitSchema>;
+export type Pursuit = typeof pursuits.$inferSelect;
+
 export const jobs = pgTable("jobs", {
   id: serial("id").primaryKey(),
   userId: text("user_id").notNull(),
-  biz: text("biz").notNull(),
+  // Superseded by pursuitId (#29) — left in place, no longer read or
+  // written, rather than a destructive column drop.
+  biz: text("biz").notNull().default(""),
   name: text("name").notNull(),
   stage: text("stage").notNull().default(""),
   due: text("due").notNull().default(""),
   pct: integer("pct").notNull().default(0),
+  pursuitId: integer("pursuit_id").references(() => pursuits.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -125,3 +183,19 @@ export const interviewMessages = pgTable("interview_messages", {
   content: text("content").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+
+export const pulseChecks = pgTable("pulse_checks", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  date: text("date").notNull(),
+  category: text("category").notNull(),
+  state: text("state").notNull(),
+  note: text("note").notNull().default(""),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  unique("pulse_checks_user_date_category_unique").on(table.userId, table.date, table.category),
+]);
+
+export const insertPulseCheckSchema = createInsertSchema(pulseChecks).omit({ id: true, createdAt: true });
+export type InsertPulseCheck = z.infer<typeof insertPulseCheckSchema>;
+export type PulseCheck = typeof pulseChecks.$inferSelect;
