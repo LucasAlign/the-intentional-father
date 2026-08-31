@@ -81,14 +81,12 @@ function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
-// Allow a single ADMIN_EMAIL secret as well as the legacy comma-separated
-// ADMIN_EMAILS setting. The default keeps the app owner out of the beta gate
-// when neither setting is configured.
+// Comma-separated allowlist of emails permitted to approve beta sign-ups.
+// Defaults to the app owner so the admin page works without extra setup.
+// Shared with routes/admin.ts so admin emails also bypass the beta-invite gate below.
 export const ADMIN_EMAILS = new Set(
-  [
-    ...(process.env.ADMIN_EMAIL ? [process.env.ADMIN_EMAIL] : []),
-    ...(process.env.ADMIN_EMAILS ?? "witeyford@gmail.com").split(","),
-  ]
+  (process.env.ADMIN_EMAILS ?? "witeyford@gmail.com")
+    .split(",")
     .map((e) => e.trim().toLowerCase())
     .filter(Boolean),
 );
