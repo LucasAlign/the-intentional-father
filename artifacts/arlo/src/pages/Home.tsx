@@ -1033,7 +1033,7 @@ function TodayMsgBar({ ci, setCi, sending, onSend }: { ci: string; setCi: (v: st
 
 // ── Relationships ─────────────────────────────────────────────────────────────
 function relationshipLabel(r: Relationship): string {
-  return r.name || RELATIONSHIP_CATEGORY_LABEL[r.category];
+  return r.name || r.type || RELATIONSHIP_CATEGORY_LABEL[r.category];
 }
 
 function Relationships({ relationships, refreshRelationships, commits, refreshCommits }: {
