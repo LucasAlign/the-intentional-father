@@ -815,8 +815,25 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   );
 }
 
-const PULSE_STATE_GLYPH: Record<PulseState, string> = { down: "−", mid: "•", up: "+" };
 const PULSE_STATE_COLOR: Record<PulseState, string> = { down: "#C87060", mid: C.brassSoft, up: "#8FAE6E" };
+// Empty/half/full fuel gauge — #44's chosen icon direction. Both the outline
+// and the fill level use currentColor so the icon automatically picks up the
+// button's own active/inactive color, same as the plain-text glyph it replaces.
+const PULSE_GAUGE_FILL: Record<PulseState, { y: number; h: number }> = {
+  down: { y: 19, h: 5 },
+  mid: { y: 13, h: 11 },
+  up: { y: 8, h: 16 },
+};
+function PulseGaugeIcon({ state }: { state: PulseState }) {
+  const { y, h } = PULSE_GAUGE_FILL[state];
+  return (
+    <svg viewBox="0 0 20 28" width="22" height="22" style={{ display: "block" }}>
+      <rect x="6" y="1" width="8" height="4" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      <rect x="1" y="5" width="18" height="22" rx="4" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <rect x="4" y={y} width="12" height={h} rx="1.5" fill="currentColor" />
+    </svg>
+  );
+}
 
 function PulseCheckCard({ pulseChecks, onSave }: {
   pulseChecks: PulseCheckEntry[];
@@ -843,8 +860,8 @@ function PulseCheckCard({ pulseChecks, onSave }: {
 
   return (
     <div style={S.card}>
-      <div style={S.eyebrow}><Icon name="sun" /><span style={S.eyeText}>PHYSICAL, MENTAL, SPIRITUAL</span></div>
-      <div style={S.pulseSub}>Start your day doing what matters most.</div>
+      <div style={S.eyebrow}><Icon name="sun" /><span style={S.eyeText}>PULSE CHECK</span></div>
+      <div style={S.pulseSub}>How are you holding up?</div>
       {PULSE_CATEGORIES.map(({ id, label }) => {
         const entry = byCategory.get(id);
         const displayState = pendingState[id] ?? entry?.state;
@@ -856,11 +873,11 @@ function PulseCheckCard({ pulseChecks, onSave }: {
                 {(["down", "mid", "up"] as PulseState[]).map(s => (
                   <button
                     key={s}
-                    style={{ ...S.pulseBtn, ...(displayState === s ? { borderColor: PULSE_STATE_COLOR[s], color: PULSE_STATE_COLOR[s], boxShadow: `0 0 8px ${PULSE_STATE_COLOR[s]}55` } : {}) }}
+                    style={{ ...S.pulseBtn, width: 46, height: 46, ...(displayState === s ? { borderColor: PULSE_STATE_COLOR[s], color: PULSE_STATE_COLOR[s], boxShadow: `0 0 8px ${PULSE_STATE_COLOR[s]}55` } : {}) }}
                     onClick={() => tapState(id, s)}
                     aria-label={`${label}: ${s}`}
                   >
-                    {PULSE_STATE_GLYPH[s]}
+                    <PulseGaugeIcon state={s} />
                   </button>
                 ))}
               </div>
