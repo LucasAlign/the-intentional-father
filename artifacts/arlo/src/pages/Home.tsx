@@ -348,6 +348,7 @@ function rotatingItem(items: string[]) {
 }
 
 const PRIORITIES_VISIBLE_CAP = 3;
+const KEPT_VISIBLE_CAP = 5;
 
 function cadenceLabel(t: Task): string {
   if (!t.recurrencePeriod) return "";
@@ -1044,6 +1045,7 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
   const [tagId, setTagId] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<Relationship | null>(null);
+  const [keptHistoryOpen, setKeptHistoryOpen] = useState(false);
   const addSave = useSaveStatus();
   const commitTapError = useKeyedTapError<number>();
   const primaryTapError = useKeyedTapError<number>();
@@ -1140,8 +1142,11 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
       )}
       {done.length > 0 && (
         <div style={{ ...S.card, opacity: 0.5 }}>
-          <div style={S.eyebrow}><span style={S.eyeText}>KEPT</span></div>
-          {done.map(c => (
+          <div style={S.prioHeadRow}>
+            <div style={S.eyebrow}><span style={S.eyeText}>KEPT</span></div>
+            {done.length > KEPT_VISIBLE_CAP && <button style={S.prioLogLink} onClick={() => setKeptHistoryOpen(true)}>History ›</button>}
+          </div>
+          {done.slice(0, KEPT_VISIBLE_CAP).map(c => (
             <div key={c.id}>
               <div style={S.commitRow}>
                 <button style={{ ...S.dot, ...S.dotDone }} onClick={() => toggle(c)}>✓</button>
@@ -1154,8 +1159,34 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
       )}
       {addOpen && <RelationshipModal onClose={() => setAddOpen(false)} onSaved={refreshRelationships} />}
       {editing && <RelationshipModal relationship={editing} onClose={() => setEditing(null)} onSaved={refreshRelationships} onDeleted={() => { refreshRelationships(); refreshCommits(); }} />}
+      {keptHistoryOpen && <KeptHistoryModal commits={done} byId={byId} onClose={() => setKeptHistoryOpen(false)} />}
       {commits.length === 0 && <div style={{ ...S.card }}><div style={S.empty}>No commitments logged yet.</div></div>}
       <div style={{ height: 32 }} />
+    </div>
+  );
+}
+
+// ── Kept commitments history modal ──────────────────────────────────────────
+function KeptHistoryModal({ commits, byId, onClose }: { commits: Commit[]; byId: Map<number, Relationship>; onClose: () => void }) {
+  return (
+    <div style={M.overlay}>
+      <div style={M.sheet}>
+        <div style={M.strip} />
+        <div style={M.head}><div style={M.title}>Kept Commitments</div></div>
+        <div>
+          {commits.map(c => (
+            <div key={c.id} style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 14 }}>
+              <span style={{ color: "#A8C888", fontSize: 14, lineHeight: 1.4 }}>✓</span>
+              <div>
+                <div style={{ ...S.prioTitle, textDecoration: "line-through" }}>{c.text}</div>
+                <div style={S.prioSub}>Said {c.madeDate}{c.relationshipId && byId.has(c.relationshipId) ? ` — for ${relationshipLabel(byId.get(c.relationshipId)!)}` : ""}</div>
+              </div>
+            </div>
+          ))}
+          {commits.length === 0 && <div style={S.empty}>Nothing kept yet.</div>}
+        </div>
+        <button style={M.cancel} onClick={onClose}>Close</button>
+      </div>
     </div>
   );
 }
