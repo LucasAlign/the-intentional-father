@@ -18,8 +18,54 @@ if (Number.isNaN(port) || port <= 0) {
   );
 }
 
+// Every table with a user_id column gets an RLS policy scoped to
+// app.current_user_id. Table-owner queries bypass RLS by default in
+// Postgres unless FORCE is set — this app connects as the owning role for
+// its normal per-user queries too (lib/db's beginUserSession), so FORCE is
+// required for these policies to actually apply to them, not just to
+// hypothetical other roles.
+const RLS_TABLES = [
+  "journal_entries", "tasks", "task_completions", "chat_messages",
+  "commits", "jobs", "coming_up", "google_calendar_connections", "profile",
+  "pulse_checks", "relationships", "pursuits",
+];
+
+// Guarded per-table: this bootstrap's own CREATE TABLE statements below
+// predate the multi-user migration and don't all define user_id (Drizzle
+// push added it separately on the tables that already exist in production) —
+// a blind ALTER/CREATE POLICY would crash server boot outright on any
+// environment where a table doesn't exist yet or lacks the column. Skip and
+// warn instead of failing boot; a skipped table is unprotected by RLS but
+// the app still starts, and the gap is loud (logged), not silent.
+function rlsStatements(): string {
+  return RLS_TABLES.map((table) => `
+    DO $$ BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = '${table}' AND column_name = 'user_id'
+      ) THEN
+        EXECUTE 'ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY';
+        EXECUTE 'ALTER TABLE ${table} FORCE ROW LEVEL SECURITY';
+        EXECUTE 'DROP POLICY IF EXISTS ${table}_isolation ON ${table}';
+        EXECUTE 'CREATE POLICY ${table}_isolation ON ${table}
+          USING (current_setting(''app.bypass_rls'', true) = ''true'' OR user_id = current_setting(''app.current_user_id'', true))
+          WITH CHECK (current_setting(''app.bypass_rls'', true) = ''true'' OR user_id = current_setting(''app.current_user_id'', true))';
+      ELSE
+        RAISE WARNING 'Skipping RLS on % — no user_id column found', '${table}';
+      END IF;
+    END $$;
+  `).join("\n");
+}
+
 async function ensureAuthTables(): Promise<void> {
-  await pool.query([
+  // A dedicated client, not the shared pool.query() — app.bypass_rls is set
+  // session-scoped (not LOCAL) so it survives across every statement in this
+  // batch, and it must be reset before this connection goes back to the
+  // pool so a later, unrelated request can't inherit it.
+  const client = await pool.connect();
+  try {
+    await client.query("SELECT set_config('app.bypass_rls', 'true', false)");
+    await client.query([
     "CREATE EXTENSION IF NOT EXISTS pgcrypto",
     "CREATE TABLE IF NOT EXISTS sessions (sid varchar PRIMARY KEY, sess jsonb NOT NULL, expire timestamp NOT NULL)",
     "CREATE INDEX IF NOT EXISTS \"IDX_session_expire\" ON sessions (expire)",
@@ -42,7 +88,11 @@ async function ensureAuthTables(): Promise<void> {
     "UPDATE google_calendar_connections SET google_email = user_id WHERE google_email IS NULL",
     "ALTER TABLE google_calendar_connections ALTER COLUMN google_email SET NOT NULL",
     "CREATE UNIQUE INDEX IF NOT EXISTS gcal_user_email_unique ON google_calendar_connections (user_id, google_email)",
-  ].join(";\n") + ";");
+    ].join(";\n") + ";\n" + rlsStatements());
+  } finally {
+    await client.query("RESET app.bypass_rls").catch(() => undefined);
+    client.release();
+  }
 }
 
 try {

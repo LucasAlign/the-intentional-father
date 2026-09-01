@@ -37,6 +37,9 @@ export async function sendApprovalEmail(email: string): Promise<void> {
 export async function sendLoginCode(email: string, code: string): Promise<void> {
   const resend = getResendClient();
   if (!resend) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("RESEND_API_KEY not configured; cannot send sign-in code");
+    }
     console.warn(`RESEND_API_KEY not configured; sign-in code for ${email} is ${code}`);
     return;
   }

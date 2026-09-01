@@ -40,14 +40,50 @@ function useSpeech(onResult: (text: string) => void) {
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-interface Task { id: number; text: string; category: string; partial: boolean; done: boolean; }
-interface Commit { id: number; text: string; madeDate: string; done: boolean; }
-interface Job { id: number; biz: string; name: string; stage: string; due: string; pct: number; }
+interface Task {
+  id: number; text: string; category: string; partial: boolean; done: boolean; notes: string;
+  recurrencePeriod: "daily" | "weekly" | "monthly" | null;
+  recurrenceTarget: number | null;
+  completedToday: boolean;
+  slipping: boolean;
+}
+interface TaskHistory {
+  task: Task;
+  completions: string[];
+  streak: number;
+  currentPeriod: { key: string; completedCount: number; target: number; pct: number } | null;
+  completedToday: boolean;
+  slipping: boolean;
+}
+interface Commit { id: number; text: string; madeDate: string; done: boolean; relationshipId: number | null; }
+interface Job { id: number; biz: string; name: string; stage: string; due: string; pct: number; pursuitId: number | null; }
+type PursuitCategory = "job" | "business" | "volunteer" | "other";
+interface Pursuit { id: number; name: string; category: PursuitCategory; notes: string; }
+const PURSUIT_CATEGORIES: PursuitCategory[] = ["job", "business", "volunteer", "other"];
+const PURSUIT_CATEGORY_LABEL: Record<PursuitCategory, string> = { job: "Job", business: "Business", volunteer: "Volunteer", other: "Other" };
 interface Event { id: number; date: string; time: string; title: string; sub: string; tag: string; kind: string; }
 interface Message { role: "user" | "assistant"; content: string; }
 interface Journal { reflect: string; commit_text: string; }
-interface Relationship { name: string | null; type: string; notes?: string | null; commitments?: string | null; biggest_challenge?: string | null; }
-interface ProfileData { name?: string | null; season_of_life?: string | null; relationships?: Relationship[]; }
+type RelationshipCategory = "spouse" | "child" | "family" | "friend";
+interface Relationship {
+  id: number; name: string | null; category: RelationshipCategory; type: string;
+  notes: string; commitments: string; biggestChallenge: string; isPrimary: boolean;
+}
+const RELATIONSHIP_CATEGORIES: RelationshipCategory[] = ["spouse", "child", "family", "friend"];
+const RELATIONSHIP_CATEGORY_LABEL: Record<RelationshipCategory, string> = { spouse: "Spouse", child: "Child", family: "Family", friend: "Friend" };
+type ToneVoice = "straight_talk" | "middle_of_the_road" | "take_it_easy";
+interface ProfileData { name?: string | null; season_of_life?: string | null; voice?: ToneVoice | null; }
+type PulseCategory = "physical" | "mental" | "spiritual";
+type PulseState = "up" | "mid" | "down";
+interface PulseCheckEntry { category: PulseCategory; state: PulseState; note: string; }
+const PULSE_CATEGORIES: { id: PulseCategory; label: string }[] = [
+  { id: "physical", label: "Physical" },
+  { id: "mental", label: "Mental" },
+  { id: "spiritual", label: "Spiritual" },
+];
+
+const TONE_LABEL: Record<ToneVoice, string> = { straight_talk: "Straight Talk", middle_of_the_road: "Middle of the Road", take_it_easy: "Take it Easy" };
+function isToneVoice(v: unknown): v is ToneVoice { return v === "straight_talk" || v === "middle_of_the_road" || v === "take_it_easy"; }
 
 const API = "/api";
 const WOOD = `${import.meta.env.BASE_URL}woodgrain.png`;
@@ -112,18 +148,18 @@ function Icon({ name, size = 15, color = C.brassSoft, stroke = 1.6 }: { name: Ic
   return <svg {...p}>{m[name]}</svg>;
 }
 
-const NAV: { id: TabId; icon: IconName | "arloA"; label: string }[] = [
+const NAV: { id: TabId; icon: IconName | "stewardIcon"; label: string }[] = [
   { id: "today", icon: "sun", label: "Today" },
-  { id: "her", icon: "heart", label: "Relationships" },
+  { id: "her", icon: "heart", label: "Tribe" },
   { id: "work", icon: "work", label: "Work" },
-  { id: "arlo", icon: "arloA", label: "Steward" },
+  { id: "steward", icon: "stewardIcon", label: "Steward" },
   { id: "week", icon: "cal", label: "Week" },
 ];
-type TabId = "today" | "her" | "work" | "arlo" | "week";
+type TabId = "today" | "her" | "work" | "steward" | "week";
 
 const BIZ_PALETTE = ["#8AB46A", "#6AAEC8", "#C89840", "#B080C0", "#C87060", "#60A8B4", "#A890C0"];
-function bizC(b: string, bizList: string[]) {
-  const i = bizList.indexOf(b);
+function pursuitColor(pursuitId: number | null, ids: number[]) {
+  const i = pursuitId === null ? -1 : ids.indexOf(pursuitId);
   return BIZ_PALETTE[i >= 0 ? i % BIZ_PALETTE.length : 0];
 }
 
@@ -170,36 +206,26 @@ const JOURNAL_PROMPTS_GENERAL = [
   "Where am I tempted to withdraw, and what would love do instead?",
 ];
 
-function isSpouseType(type: string | null | undefined): boolean {
-  return Boolean(type && /spouse|wife|husband/i.test(type));
-}
-
-function seasonCategory(profile: ProfileData | null): "married" | "empty_nester" | "general" {
+function seasonCategory(profile: ProfileData | null, relationships: Relationship[]): "married" | "empty_nester" | "general" {
   const season = (profile?.season_of_life || "").toLowerCase();
   if (season.includes("empty nest")) return "empty_nester";
-  if (season.includes("married") || profile?.relationships?.some(r => isSpouseType(r.type))) return "married";
+  if (season.includes("married") || relationships.some(r => r.category === "spouse")) return "married";
   return "general";
 }
 
-function journalPromptsFor(profile: ProfileData | null): string[] {
-  const category = seasonCategory(profile);
+function journalPromptsFor(profile: ProfileData | null, relationships: Relationship[]): string[] {
+  const category = seasonCategory(profile, relationships);
   if (category === "married") return JOURNAL_PROMPTS_MARRIED;
   if (category === "empty_nester") return JOURNAL_PROMPTS_EMPTY_NESTER;
   return JOURNAL_PROMPTS_GENERAL;
 }
 
-function primaryRelationship(profile: ProfileData | null): Relationship | null {
-  // Relationships are ordered by the person's stated importance during onboarding —
-  // respect that ordering rather than assuming a spouse is always primary.
-  return profile?.relationships?.[0] ?? null;
+function primaryRelationship(relationships: Relationship[]): Relationship | null {
+  // The list arrives pre-sorted (spouse > child > family > friend, then
+  // creation order) — an explicit pin wins if set, otherwise the sorted top
+  // item is the default "who's featured" answer.
+  return relationships.find(r => r.isPrimary) ?? relationships[0] ?? null;
 }
-
-const EXERCISE_PROMPTS = [
-  "Walk outside, move your body, or stretch before the day starts.",
-  "Get 20 minutes of movement in before the work takes over.",
-  "Do something simple: walk, pushups, mobility, or a steady sweat.",
-  "Move early so your body is not the last thing you remember.",
-];
 
 function dayOfYear(date = new Date()) {
   return Math.floor((date.getTime() - new Date(date.getFullYear(), 0, 0).getTime()) / 86400000);
@@ -207,6 +233,16 @@ function dayOfYear(date = new Date()) {
 
 function rotatingItem(items: string[]) {
   return items[dayOfYear() % items.length];
+}
+
+const PRIORITIES_VISIBLE_CAP = 3;
+
+function cadenceLabel(t: Task): string {
+  if (!t.recurrencePeriod) return "";
+  if (t.recurrencePeriod === "daily") return "Daily";
+  const n = t.recurrenceTarget ?? 1;
+  const unit = t.recurrencePeriod === "weekly" ? "week" : "month";
+  return n <= 1 ? `Once a ${unit}` : `${n}x/${unit}`;
 }
 
 function parseJobDueDate(due: string): string | null {
@@ -238,7 +274,7 @@ function parseJobDueDate(due: string): string | null {
   return null;
 }
 
-function jobCalendarEvent(job: Job): Event | null {
+function jobCalendarEvent(job: Job, pursuitName: string): Event | null {
   const date = parseJobDueDate(job.due);
   if (!date) return null;
   return {
@@ -247,7 +283,7 @@ function jobCalendarEvent(job: Job): Event | null {
     time: "Due",
     title: job.name,
     sub: job.stage,
-    tag: job.biz,
+    tag: pursuitName,
     kind: "work",
   };
 }
@@ -262,34 +298,73 @@ export default function Home() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [journal, setJournal] = useState<Journal>({ reflect: "", commit_text: "" });
   const [commits, setCommits] = useState<Commit[]>([]);
+  const [relationships, setRelationships] = useState<Relationship[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [pursuits, setPursuits] = useState<Pursuit[]>([]);
   const [today, setToday] = useState<Event[]>([]);
   const [week, setWeek] = useState<Event[]>([]);
   const [chat, setChat] = useState<Message[]>([]);
+  const [pulseChecks, setPulseChecks] = useState<PulseCheckEntry[]>([]);
 
   const [ci, setCi] = useState("");
   const [sending, setSending] = useState(false);
   const [jobModal, setJobModal] = useState(false);
   const [editJob, setEditJob] = useState<Job | null>(null);
+  const [pursuitModal, setPursuitModal] = useState(false);
+  const [editPursuit, setEditPursuit] = useState<Pursuit | null>(null);
   const [calendarAccounts, setCalendarAccounts] = useState<string[]>([]);
   const [isAdmin, setIsAdmin] = useState(false);
   const [profileMenu, setProfileMenu] = useState(false);
   const [profile, setProfile] = useState<ProfileData | null>(null);
+  const [priorityDetail, setPriorityDetail] = useState<Task | null>(null);
+  const [completedLogOpen, setCompletedLogOpen] = useState(false);
+  const [journalHistoryOpen, setJournalHistoryOpen] = useState(false);
+  const [suggestedTone, setSuggestedTone] = useState<ToneVoice | null>(null);
+
+  async function setTone(voice: ToneVoice) {
+    setProfile(p => ({ ...(p ?? {}), voice }));
+    setSuggestedTone(null);
+    try {
+      await fetch(`${API}/profile`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voice }) });
+    } catch { /* optimistic update already applied; a stale read on next load self-corrects */ }
+  }
 
   const refreshTasks = useCallback(() => {
-    getList<Task>(`${API}/tasks`).then(setTasks);
+    getList<Task>(`${API}/tasks?today=${ymd(new Date())}`).then(setTasks);
   }, []);
   const refreshCommits = useCallback(() => {
     getList<Commit>(`${API}/commits`).then(setCommits);
   }, []);
+  const refreshRelationships = useCallback(() => {
+    getList<Relationship>(`${API}/relationships`).then(setRelationships);
+  }, []);
   const refreshJobs = useCallback(() => {
     getList<Job>(`${API}/jobs`).then(setJobs);
+  }, []);
+  const refreshPursuits = useCallback(() => {
+    getList<Pursuit>(`${API}/pursuits`).then(setPursuits);
   }, []);
   const refreshCalendarStatus = useCallback(() => {
     getJson(`${API}/google-calendar/status`, { accounts: [] }).then((d) => {
       setCalendarAccounts(isRecord(d) && Array.isArray(d.accounts) ? d.accounts as string[] : isRecord(d) && d.connected ? ["Google Calendar"] : []);
     });
   }, []);
+  const refreshPulseChecks = useCallback(() => {
+    getList<PulseCheckEntry>(`${API}/pulse-checks?date=${ymd(new Date())}`).then(setPulseChecks);
+  }, []);
+  const refreshJournal = useCallback(() => {
+    getJson(`${API}/journal`, null).then((d) => { if (isRecord(d)) setJournal({ reflect: String(d.reflect || ""), commit_text: String(d.commitText ?? d.commit_text ?? "") }); });
+  }, []);
+
+  async function savePulseCheck(category: PulseCategory, state: PulseState, note: string) {
+    setPulseChecks(prev => [...prev.filter(p => p.category !== category), { category, state, note }]);
+    try {
+      await fetch(`${API}/pulse-checks`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: ymd(new Date()), category, state, note }),
+      });
+    } catch { /* optimistic update already applied; a stale read on next load self-corrects */ }
+  }
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -304,14 +379,14 @@ export default function Home() {
     const days = weekDays();
     const start = days[0].key, end = days[6].key;
     fetch(`${API}/verse`).then(r => r.ok ? r.text() : "").then(v => v && setVerse(v)).catch(() => {});
-    getJson(`${API}/journal`, null).then((d) => { if (isRecord(d)) setJournal({ reflect: String(d.reflect || ""), commit_text: String(d.commitText ?? d.commit_text ?? "") }); });
+    refreshJournal();
     getList<Event>(`${API}/coming-up`).then(setToday);
     getList<Event>(`${API}/coming-up?start=${start}&end=${end}`).then(setWeek);
     getList<Message>(`${API}/chat-history`).then((m) => setChat(prev => prev.length ? prev : m));
     getJson(`${API}/admin/is-admin`, { isAdmin: false }).then((d) => setIsAdmin(isRecord(d) && d.isAdmin === true));
     getJson(`${API}/profile`, null).then((d) => { if (isRecord(d) && isRecord(d.data)) setProfile(d.data as unknown as ProfileData); });
-    refreshTasks(); refreshCommits(); refreshJobs(); refreshCalendarStatus();
-  }, [isAuthenticated, setLocation, refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus]);
+    refreshTasks(); refreshCommits(); refreshJobs(); refreshCalendarStatus(); refreshPulseChecks(); refreshRelationships(); refreshPursuits();
+  }, [isAuthenticated, setLocation, refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus, refreshPulseChecks, refreshRelationships, refreshPursuits, refreshJournal]);
 
   async function saveJournal(next: Journal) {
     setJournal(next);
@@ -324,14 +399,16 @@ export default function Home() {
     const text = (msg ?? ci).trim();
     if (!text || sending) return;
     setCi("");
-    if (tab !== "arlo") setTab("arlo");
+    if (tab !== "steward") setTab("steward");
     setChat(p => [...p, { role: "user", content: text }]);
     setSending(true);
+    setSuggestedTone(null);
     try {
       const r = await fetch(`${API}/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: text }) });
       if (r.ok) {
         const d = await r.json();
         setChat(p => [...p, { role: "assistant", content: d.message }]);
+        setSuggestedTone(isToneVoice(d.suggestTone) ? d.suggestTone : null);
       } else {
         const errorText = await r.text();
         setChat(p => [...p, { role: "assistant", content: "Steward is connected, but the chat request failed (" + r.status + "): " + (errorText || "No error details returned.") }]);
@@ -345,8 +422,7 @@ export default function Home() {
 
   if (!isAuthenticated) return <AuthGate loading={isLoading} pendingApproval={pendingApproval} onLogin={login} onStartEmailLogin={startEmailLogin} onVerifyEmailLogin={verifyEmailLogin} />;
 
-  const primaryRel = primaryRelationship(profile);
-  const relTabLabel = primaryRel?.name || "Relationships";
+  const primaryRel = primaryRelationship(relationships);
 
   return (
     <div style={R.root}>
@@ -370,11 +446,11 @@ export default function Home() {
       </div>
 
       <div style={R.screen}>
-        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} />}
-        {tab === "her" && <Relationships commits={commits} refresh={refreshCommits} primaryRel={primaryRel} label={relTabLabel} />}
-        {tab === "work" && <Work jobs={jobs} onJob={() => setJobModal(true)} onEdit={setEditJob} />}
-        {tab === "arlo" && <ArloChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} />}
-        {tab === "week" && <WeekView events={week} jobs={jobs} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await fetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
+        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} onOpenJournalHistory={() => setJournalHistoryOpen(true)} />}
+        {tab === "her" && <Relationships relationships={relationships} refreshRelationships={refreshRelationships} commits={commits} refreshCommits={refreshCommits} />}
+        {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} />}
+        {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} />}
+        {tab === "week" && <WeekView events={week} jobs={jobs} pursuits={pursuits} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await fetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
       </div>
 
       <div style={R.navWrap}>
@@ -382,18 +458,23 @@ export default function Home() {
         <nav style={R.nav}>
           {NAV.map(n => (
             <button key={n.id} style={R.navBtn} onClick={() => setTab(n.id)}>
-              {n.icon === "arloA"
-                ? <div style={{ ...R.arloA, ...(tab === n.id ? R.arloAOn : {}) }}>S</div>
+              {n.icon === "stewardIcon"
+                ? <div style={{ ...R.stewardIcon, ...(tab === n.id ? R.stewardIconOn : {}) }}>S</div>
                 : <Icon name={n.icon as IconName} size={20} color={tab === n.id ? C.brass : C.parchmentLow} stroke={tab === n.id ? 1.9 : 1.6} />}
-              <span style={{ ...R.navLabel, ...(tab === n.id ? R.navLabelOn : {}) }}>{n.id === "her" ? relTabLabel : n.label}</span>
+              <span style={{ ...R.navLabel, ...(tab === n.id ? R.navLabelOn : {}) }}>{n.label}</span>
             </button>
           ))}
         </nav>
       </div>
 
-      {jobModal && <JobModal onClose={() => setJobModal(false)} onCreated={refreshJobs} bizSuggestions={[...new Set(jobs.map(j => j.biz))]} />}
-      {editJob && <JobEditModal job={editJob} onClose={() => setEditJob(null)} onSaved={refreshJobs} onDeleted={refreshJobs} />}
+      {jobModal && <JobModal pursuits={pursuits} onClose={() => setJobModal(false)} onCreated={refreshJobs} />}
+      {editJob && <JobEditModal job={editJob} pursuits={pursuits} onClose={() => setEditJob(null)} onSaved={refreshJobs} onDeleted={refreshJobs} />}
+      {pursuitModal && <PursuitModal onClose={() => setPursuitModal(false)} onSaved={refreshPursuits} />}
+      {editPursuit && <PursuitModal pursuit={editPursuit} onClose={() => setEditPursuit(null)} onSaved={refreshPursuits} onDeleted={() => { refreshPursuits(); refreshJobs(); }} />}
       {profileMenu && <ProfileMenu name={user?.firstName} email={user?.email} onClose={() => setProfileMenu(false)} onLogout={logout} />}
+      {priorityDetail && <PriorityDetailModal task={priorityDetail} onClose={() => setPriorityDetail(null)} onChanged={refreshTasks} />}
+      {completedLogOpen && <CompletedLogModal onClose={() => setCompletedLogOpen(false)} />}
+      {journalHistoryOpen && <JournalHistoryModal onClose={() => setJournalHistoryOpen(false)} onSaved={refreshJournal} />}
     </div>
   );
 }
@@ -413,11 +494,14 @@ function ProfileMenu({ name, email, onClose, onLogout }: { name?: string | null;
 }
 
 // ── Today ───────────────────────────────────────────────────────────────────
-function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks }: {
+function Today({ verse, tasks, journal, events, name, profile, relationships, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks, onOpenPriority, onViewCompleted, pulseChecks, onSavePulseCheck, onOpenJournalHistory }: {
   verse: string; tasks: Task[]; journal: Journal; events: Event[]; name?: string | null;
-  profile: ProfileData | null; primaryRel: Relationship | null;
+  profile: ProfileData | null; relationships: Relationship[]; primaryRel: Relationship | null;
   onSend: (m?: string) => void; ci: string; setCi: (v: string) => void; sending: boolean;
   onSaveJournal: (j: Journal) => void; refreshTasks: () => void;
+  onOpenPriority: (t: Task) => void; onViewCompleted: () => void;
+  pulseChecks: PulseCheckEntry[]; onSavePulseCheck: (category: PulseCategory, state: PulseState, note: string) => void;
+  onOpenJournalHistory: () => void;
 }) {
   const [intent, setIntent] = useState(journal.commit_text);
   const [reflect, setReflect] = useState(journal.reflect);
@@ -425,7 +509,7 @@ function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSen
   const [adding, setAdding] = useState(false);
   const [newTask, setNewTask] = useState("");
   const [deletingIds, setDeletingIds] = useState<number[]>([]);
-  const [exerciseDone, setExerciseDone] = useState(false);
+  const [prioritiesExpanded, setPrioritiesExpanded] = useState(false);
   useEffect(() => { setIntent(journal.commit_text); setReflect(journal.reflect); }, [journal.commit_text, journal.reflect]);
 
   const hr = new Date().getHours();
@@ -434,9 +518,10 @@ function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSen
   const vRef = sep === -1 ? "" : verse.slice(0, sep);
   const vText = sep === -1 ? verse : verse.slice(sep + 3);
   const openTasks = tasks.filter(t => !deletingIds.includes(t.id));
-  const journalPrompt = rotatingItem(journalPromptsFor(profile));
-  const exercisePrompt = rotatingItem(EXERCISE_PROMPTS);
-  const isSpouseRel = primaryRel && isSpouseType(primaryRel.type);
+  const visibleTasks = prioritiesExpanded ? openTasks : openTasks.slice(0, PRIORITIES_VISIBLE_CAP);
+  const hiddenTaskCount = openTasks.length - visibleTasks.length;
+  const journalPrompt = rotatingItem(journalPromptsFor(profile, relationships));
+  const isSpouseRel = primaryRel?.category === "spouse";
   const intentionLabel = isSpouseRel ? "MARRIAGE INTENTION" : primaryRel ? `${(primaryRel.type || "relationship").toUpperCase()} INTENTION` : "RELATIONSHIP INTENTION";
   const intentionPlaceholder = isSpouseRel
     ? "What's your intention for your marriage today?"
@@ -472,6 +557,18 @@ function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSen
       setDeletingIds(prev => prev.filter(item => item !== id));
     }
   }
+  async function logToday(id: number): Promise<boolean> {
+    try {
+      const r = await fetch(`${API}/tasks/${id}/complete`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: ymd(new Date()) }),
+      });
+      if (r.ok) refreshTasks();
+      return r.ok;
+    } catch {
+      return false;
+    }
+  }
 
   return (
     <div style={S.scroll}>
@@ -498,25 +595,29 @@ function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSen
         />
       </div>
 
-      <div style={{ ...S.exerciseCard, ...(exerciseDone ? S.exerciseDone : {}) }}>
-        <div style={{ flex: 1 }}>
-          <div style={S.eyebrow}><Icon name="clock" /><span style={S.eyeText}>MORNING 20 MIN</span></div>
-          <div style={S.exerciseText}>{exerciseDone ? "Movement logged for today." : exercisePrompt}</div>
-        </div>
-        <button style={{ ...S.exerciseBtn, ...(exerciseDone ? S.exerciseBtnDone : {}) }} onClick={() => setExerciseDone(done => !done)}>{exerciseDone ? "Done" : "Log"}</button>
-      </div>
+      <PulseCheckCard pulseChecks={pulseChecks} onSave={onSavePulseCheck} />
 
       <div style={S.card}>
-        <div style={S.eyebrow}><Icon name="target" /><span style={S.eyeText}>PRIORITIES</span></div>
+        <div style={S.prioHeadRow}>
+          <div style={S.eyebrow}><Icon name="target" /><span style={S.eyeText}>PRIORITIES</span></div>
+          <button style={S.prioLogLink} onClick={onViewCompleted}>View completed ›</button>
+        </div>
         {openTasks.length === 0 ? (
           <div style={S.empty}>No open priorities. Add the one thing that matters most.</div>
         ) : (
-          <div style={{ position: "relative", marginTop: 4 }}>
-            <div style={S.prioLine} />
-            {openTasks.map((t, i) => (
-              <SwipePriority key={t.id} task={t} index={i} isLast={i === openTasks.length - 1} onComplete={complete} onDelete={deleteTask} />
-            ))}
-          </div>
+          <>
+            <div style={{ position: "relative", marginTop: 4 }}>
+              <div style={S.prioLine} />
+              {visibleTasks.map((t, i) => (
+                <SwipePriority key={t.id} task={t} index={i} isLast={i === visibleTasks.length - 1} onComplete={complete} onDelete={deleteTask} onLogToday={logToday} onOpenDetail={onOpenPriority} />
+              ))}
+            </div>
+            {openTasks.length > PRIORITIES_VISIBLE_CAP && (
+              <button style={S.prioExpandBtn} onClick={() => setPrioritiesExpanded(e => !e)}>
+                {prioritiesExpanded ? "Show less ▴" : `Show ${hiddenTaskCount} more ▾`}
+              </button>
+            )}
+          </>
         )}
         {adding ? (
           <div style={{ ...S.logRow, marginTop: 14, marginBottom: 0 }}>
@@ -548,7 +649,10 @@ function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSen
 
       <div style={S.journalCard}>
         <div style={{ flex: 1 }}>
-          <div style={S.eyebrow}><Icon name="pen" /><span style={S.eyeText}>DAILY JOURNAL PROMPT</span></div>
+          <div style={S.prioHeadRow}>
+            <div style={S.eyebrow}><Icon name="pen" /><span style={S.eyeText}>DAILY JOURNAL PROMPT</span></div>
+            <button style={S.prioLogLink} onClick={onOpenJournalHistory}>History ›</button>
+          </div>
           <div style={S.journalText}>{journalPrompt}</div>
           {writing && (
             <textarea
@@ -573,18 +677,91 @@ function Today({ verse, tasks, journal, events, name, profile, primaryRel, onSen
   );
 }
 
-function SwipePriority({ task, index, isLast, onComplete, onDelete }: { task: Task; index: number; isLast: boolean; onComplete: (id: number) => Promise<boolean>; onDelete: (id: number) => void }) {
+const PULSE_STATE_GLYPH: Record<PulseState, string> = { down: "−", mid: "•", up: "+" };
+const PULSE_STATE_COLOR: Record<PulseState, string> = { down: "#C87060", mid: C.brassSoft, up: "#8FAE6E" };
+
+function PulseCheckCard({ pulseChecks, onSave }: {
+  pulseChecks: PulseCheckEntry[];
+  onSave: (category: PulseCategory, state: PulseState, note: string) => void;
+}) {
+  const [drafts, setDrafts] = useState<Partial<Record<PulseCategory, string>>>({});
+  const byCategory = new Map(pulseChecks.map(p => [p.category, p]));
+
+  function tapState(category: PulseCategory, state: PulseState) {
+    const existing = byCategory.get(category);
+    onSave(category, state, existing?.note ?? "");
+  }
+  function saveNote(category: PulseCategory, entry: PulseCheckEntry) {
+    const note = drafts[category] ?? entry.note;
+    if (note === entry.note) return;
+    onSave(category, entry.state, note);
+  }
+
+  return (
+    <div style={S.card}>
+      <div style={S.eyebrow}><Icon name="sun" /><span style={S.eyeText}>PHYSICAL, MENTAL, SPIRITUAL</span></div>
+      <div style={S.pulseSub}>Start your day doing what matters most.</div>
+      {PULSE_CATEGORIES.map(({ id, label }) => {
+        const entry = byCategory.get(id);
+        return (
+          <div key={id} style={S.pulseRow}>
+            <div style={S.pulseRowTop}>
+              <div style={S.pulseLabel}>{label}</div>
+              <div style={S.pulseBtns}>
+                {(["down", "mid", "up"] as PulseState[]).map(s => (
+                  <button
+                    key={s}
+                    style={{ ...S.pulseBtn, ...(entry?.state === s ? { borderColor: PULSE_STATE_COLOR[s], color: PULSE_STATE_COLOR[s], boxShadow: `0 0 8px ${PULSE_STATE_COLOR[s]}55` } : {}) }}
+                    onClick={() => tapState(id, s)}
+                    aria-label={`${label}: ${s}`}
+                  >
+                    {PULSE_STATE_GLYPH[s]}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {entry && (
+              <input
+                style={S.pulseNoteInput}
+                value={drafts[id] ?? entry.note}
+                placeholder="Add a note (optional)…"
+                onChange={e => setDrafts(prev => ({ ...prev, [id]: e.target.value }))}
+                onBlur={() => saveNote(id, entry)}
+              />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, onOpenDetail }: {
+  task: Task; index: number; isLast: boolean;
+  onComplete: (id: number) => Promise<boolean>;
+  onDelete: (id: number) => void;
+  onLogToday: (id: number) => Promise<boolean>;
+  onOpenDetail: (task: Task) => void;
+}) {
   const [startX, setStartX] = useState<number | null>(null);
   const [offset, setOffset] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [crossedOff, setCrossedOff] = useState(false);
+  const [pulsed, setPulsed] = useState(false);
 
-  function crossOff() {
-    setCrossedOff(true);
-    setTimeout(async () => {
-      const ok = await onComplete(task.id);
-      if (!ok) setCrossedOff(false);
-    }, 260);
+  async function tapNumber() {
+    if (task.recurrencePeriod) {
+      if (task.completedToday) return;
+      setPulsed(true);
+      const ok = await onLogToday(task.id);
+      if (!ok) setPulsed(false);
+    } else {
+      setCrossedOff(true);
+      setTimeout(async () => {
+        const ok = await onComplete(task.id);
+        if (!ok) setCrossedOff(false);
+      }, 260);
+    }
   }
 
   function down(e: PointerEvent<HTMLDivElement>) {
@@ -603,21 +780,54 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete }: { task: Ta
     setDragging(false);
   }
 
+  const numDone = task.recurrencePeriod ? (task.completedToday || pulsed) : crossedOff;
+
+  // Every row carries a status color, not just flagged ones: yellow (still
+  // moving) is the default, red is stuck/slipping, green is "done" — either
+  // a recurring priority completed today, or a one-off flashing green in the
+  // moment it's crossed off, just before it leaves the list.
+  const statusColor: "yellow" | "red" | "green" = crossedOff
+    ? "green"
+    : task.partial || (Boolean(task.recurrencePeriod) && task.slipping)
+    ? "red"
+    : task.recurrencePeriod && task.completedToday
+    ? "green"
+    : "yellow";
+  const rowStyle = statusColor === "red" ? S.prioRowRed : statusColor === "green" ? S.prioRowGreen : S.prioRowYellow;
+  const subStyle = statusColor === "red" ? S.prioSubRed : statusColor === "green" ? S.prioSubGreen : S.prioSub;
+  const subText = task.partial
+    ? "Stuck — needs a nudge"
+    : task.recurrencePeriod && task.slipping
+    ? "Streak broke — needs a nudge"
+    : task.recurrencePeriod && task.completedToday
+    ? "Completed today ✓"
+    : task.recurrencePeriod
+    ? cadenceLabel(task)
+    : task.category;
+
   return (
     <div style={{ ...S.swipeWrap, marginBottom: isLast ? 0 : 20 }}>
       <div style={S.deleteCue}>Delete</div>
       <div
-        style={{ ...S.prioRow, ...S.swipeFront, transform: "translateX(" + offset + "px)", transition: dragging ? "none" : "transform 0.18s ease" }}
+        style={{ ...S.prioRow, ...S.swipeFront, ...rowStyle, transform: "translateX(" + offset + "px)", transition: dragging ? "none" : "transform 0.18s ease" }}
         onPointerDown={down}
         onPointerMove={move}
         onPointerUp={up}
         onPointerCancel={up}
       >
-        <button style={S.prioNum} title="Mark done" onClick={crossOff} disabled={crossedOff}>{index + 1}</button>
+        <button
+          style={{ ...S.prioNum, ...(numDone ? S.prioNumDone : {}) }}
+          title={task.recurrencePeriod ? "Complete for today" : "Mark done"}
+          onClick={tapNumber}
+          disabled={crossedOff || (task.recurrencePeriod ? task.completedToday || pulsed : false)}
+        >
+          {index + 1}
+        </button>
         <div style={{ flex: 1, paddingTop: 3, opacity: crossedOff ? 0.45 : 1, transition: "opacity 0.2s ease" }}>
           <div style={{ ...S.prioTitle, textDecoration: crossedOff ? "line-through" : "none", transition: "text-decoration-color 0.2s ease" }}>{task.text}</div>
-          {task.category && <div style={S.prioSub}>{task.category}</div>}
+          {subText && <div style={subStyle}>{subText}</div>}
         </div>
+        <button style={S.prioDetailBtn} title="View details" onClick={() => onOpenDetail(task)}>›</button>
       </div>
     </div>
   );
@@ -638,42 +848,85 @@ function TodayMsgBar({ ci, setCi, sending, onSend }: { ci: string; setCi: (v: st
 }
 
 // ── Relationships ─────────────────────────────────────────────────────────────
-function Relationships({ commits, refresh, primaryRel, label }: { commits: Commit[]; refresh: () => void; primaryRel: Relationship | null; label: string }) {
+function relationshipLabel(r: Relationship): string {
+  return r.name || RELATIONSHIP_CATEGORY_LABEL[r.category];
+}
+
+function Relationships({ relationships, refreshRelationships, commits, refreshCommits }: {
+  relationships: Relationship[]; refreshRelationships: () => void;
+  commits: Commit[]; refreshCommits: () => void;
+}) {
   const [val, setVal] = useState("");
+  const [tagId, setTagId] = useState("");
+  const [addOpen, setAddOpen] = useState(false);
+  const [editing, setEditing] = useState<Relationship | null>(null);
+  const primaryRel = primaryRelationship(relationships);
+  const byId = new Map(relationships.map(r => [r.id, r]));
   const intentionText = primaryRel?.name
     ? `Ask ${primaryRel.name} about their week before you talk about yours.`
     : "Log commitments to the people who matter most — spouse, kids, parents, close friends.";
-  const subtitle = primaryRel
-    ? "Commitments you've made. Don't let them disappear."
-    : "Log the commitments you make to the people closest to you.";
   const open = commits.filter(c => !c.done), done = commits.filter(c => c.done);
 
   async function add() {
     const t = val.trim();
     if (!t) return;
     setVal("");
-    try { const r = await fetch(`${API}/commits`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: t }) }); if (r.ok) refresh(); } catch { /* */ }
+    try {
+      const r = await fetch(`${API}/commits`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: t, relationshipId: tagId ? Number(tagId) : null }),
+      });
+      if (r.ok) refreshCommits();
+    } catch { /* */ }
   }
   async function toggle(c: Commit) {
-    try { const r = await fetch(`${API}/commits/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: !c.done }) }); if (r.ok) refresh(); } catch { /* */ }
+    try { const r = await fetch(`${API}/commits/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: !c.done }) }); if (r.ok) refreshCommits(); } catch { /* */ }
+  }
+  async function togglePrimary(r: Relationship) {
+    try { const res = await fetch(`${API}/relationships/${r.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isPrimary: !r.isPrimary }) }); if (res.ok) refreshRelationships(); } catch { /* */ }
   }
 
   return (
     <div style={S.scroll}>
-      <div style={S.pageTitle}>{label}</div>
-      <div style={S.pageSub}>{subtitle}</div>
+      <div style={S.pageTitle}>Tribe</div>
+      <div style={S.pageSub}>The people you're prioritizing.</div>
       <div style={S.card}><div style={S.eyebrow}><Icon name="heart" /><span style={S.eyeText}>TODAY'S INTENTION</span></div><div style={S.intent}>{intentionText}</div></div>
+
+      <div style={S.card}>
+        <div style={S.eyebrow}><span style={S.eyeText}>PEOPLE</span></div>
+        {relationships.length === 0 ? (
+          <div style={S.empty}>No one added yet.</div>
+        ) : (
+          relationships.map(r => (
+            <div key={r.id} style={S.tribeRow}>
+              <button style={{ ...S.pulseBtn, ...(r.isPrimary ? { borderColor: C.brass, color: C.brass, boxShadow: `0 0 8px ${C.brassGlow}` } : {}) }} onClick={() => togglePrimary(r)} aria-label={r.isPrimary ? "Unset as featured" : "Feature on Today's Intention"}>★</button>
+              <button style={S.tribeNameBtn} onClick={() => setEditing(r)}>
+                <div style={S.prioTitle}>{relationshipLabel(r)}</div>
+                <div style={S.prioSub}>{RELATIONSHIP_CATEGORY_LABEL[r.category]}{r.type && r.type !== r.category ? ` — ${r.type}` : ""}</div>
+              </button>
+            </div>
+          ))
+        )}
+        <button style={{ ...S.intakeBtn, marginTop: 14 }} onClick={() => setAddOpen(true)}>＋  Add person</button>
+      </div>
+
       <div style={S.logRow}>
         <input style={S.logInput} value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => e.key === "Enter" && add()} placeholder="Log a commitment you made..." />
         <button style={S.logBtn} onClick={add}>Log</button>
       </div>
+      {relationships.length > 0 && (
+        <select style={S.tribeTagSelect} value={tagId} onChange={e => setTagId(e.target.value)}>
+          <option value="">General (not tagged to anyone)</option>
+          {relationships.map(r => <option key={r.id} value={r.id}>{relationshipLabel(r)}</option>)}
+        </select>
+      )}
       {open.length > 0 && (
         <div style={S.card}>
           <div style={S.eyebrow}><span style={S.eyeText}>OPEN</span></div>
           {open.map(c => (
             <div key={c.id} style={S.commitRow}>
               <button style={S.dot} onClick={() => toggle(c)} />
-              <div><div style={S.prioTitle}>{c.text}</div><div style={S.prioSub}>Said {c.madeDate}</div></div>
+              <div><div style={S.prioTitle}>{c.text}</div><div style={S.prioSub}>Said {c.madeDate}{c.relationshipId && byId.has(c.relationshipId) ? ` — for ${relationshipLabel(byId.get(c.relationshipId)!)}` : ""}</div></div>
             </div>
           ))}
         </div>
@@ -689,74 +942,213 @@ function Relationships({ commits, refresh, primaryRel, label }: { commits: Commi
           ))}
         </div>
       )}
+      {addOpen && <RelationshipModal onClose={() => setAddOpen(false)} onSaved={refreshRelationships} />}
+      {editing && <RelationshipModal relationship={editing} onClose={() => setEditing(null)} onSaved={refreshRelationships} onDeleted={() => { refreshRelationships(); refreshCommits(); }} />}
       {commits.length === 0 && <div style={{ ...S.card }}><div style={S.empty}>No commitments logged yet.</div></div>}
       <div style={{ height: 32 }} />
     </div>
   );
 }
 
+// ── Relationship add/edit modal ────────────────────────────────────────────────
+function RelationshipModal({ relationship, onClose, onSaved, onDeleted }: {
+  relationship?: Relationship; onClose: () => void; onSaved: () => void; onDeleted?: () => void;
+}) {
+  const [name, setName] = useState(relationship?.name ?? "");
+  const [category, setCategory] = useState<RelationshipCategory>(relationship?.category ?? "family");
+  const [type, setType] = useState(relationship?.type ?? "");
+  const [notes, setNotes] = useState(relationship?.notes ?? "");
+  const [commitments, setCommitments] = useState(relationship?.commitments ?? "");
+  const [biggestChallenge, setBiggestChallenge] = useState(relationship?.biggestChallenge ?? "");
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function save() {
+    setSaving(true); setErr("");
+    const body = { name: name.trim() || null, category, type: type.trim(), notes: notes.trim(), commitments: commitments.trim(), biggestChallenge: biggestChallenge.trim() };
+    try {
+      const r = relationship
+        ? await fetch(`${API}/relationships/${relationship.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+        : await fetch(`${API}/relationships`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (r.ok) { onSaved(); onClose(); }
+      else { setErr("Couldn't save. Try again."); setSaving(false); }
+    } catch { setErr("Couldn't reach the server."); setSaving(false); }
+  }
+
+  async function del() {
+    if (!relationship) return;
+    setDeleting(true);
+    try {
+      const r = await fetch(`${API}/relationships/${relationship.id}`, { method: "DELETE" });
+      if (r.ok) { onDeleted?.(); onClose(); }
+      else { setErr("Couldn't delete. Try again."); setDeleting(false); }
+    } catch { setErr("Couldn't reach the server."); setDeleting(false); }
+  }
+
+  return (
+    <div style={M.overlay}>
+      <div style={M.sheet}>
+        <div style={M.strip} />
+        <div style={M.head}><div style={M.title}>{relationship ? "Edit Person" : "Add Person"}</div></div>
+
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Name</div>
+          <input style={M.input} value={name} onChange={e => setName(e.target.value)} placeholder="Name (optional)" />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Category</div>
+          <div style={E.chipRow}>
+            {RELATIONSHIP_CATEGORIES.map(c => (
+              <button key={c} style={{ ...E.chip, ...(category === c ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setCategory(c)}>{RELATIONSHIP_CATEGORY_LABEL[c]}</button>
+            ))}
+          </div>
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Description</div>
+          <input style={M.input} value={type} onChange={e => setType(e.target.value)} placeholder="e.g. wife, oldest son, college roommate" />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Notes</div>
+          <input style={M.input} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Context worth remembering" />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Commitments</div>
+          <input style={M.input} value={commitments} onChange={e => setCommitments(e.target.value)} placeholder="What you've committed to" />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Biggest challenge</div>
+          <input style={M.input} value={biggestChallenge} onChange={e => setBiggestChallenge(e.target.value)} placeholder="Where it's hardest right now" />
+        </div>
+
+        {err && <div style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{err}</div>}
+        <button style={M.next} disabled={saving} onClick={save}>{saving ? "Saving…" : "Save"}</button>
+        {relationship && <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete Person"}</button>}
+        <button style={M.cancel} onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
 // ── Work ───────────────────────────────────────────────────────────────────
-function Work({ jobs, onJob, onEdit }: { jobs: Job[]; onJob: () => void; onEdit: (j: Job) => void }) {
-  const sortedJobs = [...jobs].sort((a, b) => a.biz.localeCompare(b.biz) || a.due.localeCompare(b.due) || a.name.localeCompare(b.name));
-  const groups = [...new Set(sortedJobs.map(j => j.biz))];
-  let lastBiz = "";
+function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit }: {
+  jobs: Job[]; pursuits: Pursuit[]; onJob: () => void; onEdit: (j: Job) => void;
+  onAddPursuit: () => void; onEditPursuit: (p: Pursuit) => void;
+}) {
+  const pursuitIds = pursuits.map(p => p.id);
+  const jobsByPursuit = new Map<number | null, Job[]>();
+  for (const j of jobs) {
+    const key = j.pursuitId;
+    if (!jobsByPursuit.has(key)) jobsByPursuit.set(key, []);
+    jobsByPursuit.get(key)!.push(j);
+  }
+  for (const list of jobsByPursuit.values()) list.sort((a, b) => a.due.localeCompare(b.due) || a.name.localeCompare(b.name));
+  const unsorted = jobsByPursuit.get(null) ?? [];
+
+  function renderJobRow(j: Job, color: string) {
+    return (
+      <button key={j.id} style={S.workRow} onClick={() => onEdit(j)}>
+        <div style={S.workMain}>
+          <div style={S.workName}>{j.name}</div>
+          <div style={S.workMeta}>{[j.stage, j.due].filter(Boolean).join("  •  ") || "No stage or due date"}</div>
+        </div>
+        <div style={S.workPct}>{j.pct}%</div>
+        <div style={S.workTrack}><div style={{ ...S.workTrackFill, width: j.pct + "%", background: j.pct >= 80 ? C.brass : color }} /></div>
+      </button>
+    );
+  }
+
   return (
     <div style={S.scroll}>
       <div style={S.pageTitle}>Work</div>
-      <div style={S.pageSub}>Active jobs by category. Tap a row to edit.</div>
-      {sortedJobs.length === 0 ? (
-        <div style={S.card}><div style={S.empty}>No active jobs yet. Add one to start planning ahead.</div></div>
+      <div style={S.pageSub}>Active jobs by pursuit. Tap a row to edit.</div>
+      {pursuits.length === 0 && jobs.length === 0 ? (
+        <div style={S.card}><div style={S.empty}>No pursuits yet. Add one to start planning ahead.</div></div>
       ) : (
         <div style={S.workList}>
-          {sortedJobs.map(j => {
-            const showHeader = j.biz !== lastBiz;
-            lastBiz = j.biz;
+          {pursuits.map(p => {
+            const color = pursuitColor(p.id, pursuitIds);
+            const pursuitJobs = jobsByPursuit.get(p.id) ?? [];
             return (
-              <div key={j.id}>
-                {showHeader && <div style={{ ...S.workGroup, color: bizC(j.biz, groups) }}>{j.biz.toUpperCase()}</div>}
-                <button style={S.workRow} onClick={() => onEdit(j)}>
-                  <div style={S.workMain}>
-                    <div style={S.workName}>{j.name}</div>
-                    <div style={S.workMeta}>{[j.stage, j.due].filter(Boolean).join("  •  ") || "No stage or due date"}</div>
-                  </div>
-                  <div style={S.workPct}>{j.pct}%</div>
-                  <div style={S.workTrack}><div style={{ ...S.workTrackFill, width: j.pct + "%", background: j.pct >= 80 ? C.brass : bizC(j.biz, groups) }} /></div>
+              <div key={p.id}>
+                <button style={{ ...S.workGroup, color, background: "none", border: "none", cursor: "pointer", textAlign: "left", padding: 0 }} onClick={() => onEditPursuit(p)}>
+                  {p.name.toUpperCase()}
                 </button>
+                {pursuitJobs.length === 0
+                  ? <div style={{ ...S.empty, textAlign: "left", padding: "0 0 10px" }}>No jobs yet.</div>
+                  : pursuitJobs.map(j => renderJobRow(j, color))}
               </div>
             );
           })}
+          {unsorted.length > 0 && (
+            <div>
+              <div style={S.workGroup}>UNSORTED</div>
+              {unsorted.map(j => renderJobRow(j, C.parchmentLow))}
+            </div>
+          )}
         </div>
       )}
-      <button style={{ ...S.intakeBtn, marginTop: 12 }} onClick={onJob}>＋  Add new job</button>
+      <button style={{ ...S.intakeBtn, marginTop: 12 }} onClick={onAddPursuit}>＋  Add pursuit</button>
+      <button style={{ ...S.intakeBtn, marginTop: 8 }} onClick={onJob}>＋  Add new job</button>
       <div style={{ height: 32 }} />
     </div>
   );
 }
 
-// ── Arlo chat ───────────────────────────────────────────────────────────────
-function ArloChat({ messages, input, setInput, send, sending }: { messages: Message[]; input: string; setInput: (v: string) => void; send: () => void; sending: boolean }) {
+// ── Steward chat ────────────────────────────────────────────────────────────
+function tasksMentionedIn(content: string, tasks: Task[]): Task[] {
+  const lower = content.toLowerCase();
+  return tasks.filter(t => t.text.trim().length > 3 && lower.includes(t.text.trim().toLowerCase()));
+}
+
+function StewardChat({ messages, input, setInput, send, sending, tasks, onOpenPriority, tone, onSetTone, suggestedTone }: {
+  messages: Message[]; input: string; setInput: (v: string) => void; send: () => void; sending: boolean; tasks: Task[]; onOpenPriority: (t: Task) => void;
+  tone: ToneVoice; onSetTone: (t: ToneVoice) => void; suggestedTone: ToneVoice | null;
+}) {
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
   return (
     <div style={S.chatWrap}>
-      <div style={{ padding: "4px 18px 0" }}><div style={S.pageTitle}>Steward</div><div style={S.pageSub}>Your partner. Straight talk only.</div></div>
+      <div style={{ padding: "4px 18px 0" }}>
+        <div style={S.pageTitle}>Steward</div>
+        <div style={S.pageSub}>Your partner. Straight talk only.</div>
+        <div style={S.toneRow}>
+          {(["straight_talk", "middle_of_the_road", "take_it_easy"] as const).map(t => (
+            <button key={t} style={{ ...S.toneOpt, ...(tone === t ? S.toneOptOn : {}) }} onClick={() => onSetTone(t)}>{TONE_LABEL[t]}</button>
+          ))}
+        </div>
+      </div>
       <div style={S.chatMsgs}>
         {messages.length === 0 && <div style={{ ...S.empty, marginTop: 24 }}>No messages yet. Brain dump anything.</div>}
-        {messages.map((m, i) => (
-          <div key={i} style={{ ...S.bubble, ...(m.role === "user" ? S.bubbleU : S.bubbleA) }}>
-            {m.role === "assistant" && <div style={S.bubbleName}>STEWARD</div>}
-            <div style={{ ...S.bubbleText, ...(m.role === "user" ? S.bubbleTextU : {}) }}>{m.content}</div>
-          </div>
-        ))}
+        {messages.map((m, i) => {
+          const mentioned = m.role === "assistant" ? tasksMentionedIn(m.content, tasks) : [];
+          const isLastAssistant = m.role === "assistant" && i === messages.length - 1;
+          return (
+            <div key={i} style={{ ...S.bubble, ...(m.role === "user" ? S.bubbleU : S.bubbleA) }}>
+              {m.role === "assistant" && <div style={S.bubbleName}>STEWARD</div>}
+              <div style={{ ...S.bubbleText, ...(m.role === "user" ? S.bubbleTextU : {}) }}>{m.content}</div>
+              {mentioned.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
+                  {mentioned.map(t => (
+                    <button key={t.id} style={S.chatPrioChip} onClick={() => onOpenPriority(t)}>View priority ›</button>
+                  ))}
+                </div>
+              )}
+              {isLastAssistant && suggestedTone && (
+                <button style={{ ...S.chatPrioChip, marginTop: 8 }} onClick={() => onSetTone(suggestedTone)}>Switch to {TONE_LABEL[suggestedTone]} ›</button>
+              )}
+            </div>
+          );
+        })}
         {sending && <div style={{ ...S.bubble, ...S.bubbleA }}><div style={S.bubbleName}>STEWARD</div><div style={{ ...S.bubbleText, color: C.parchmentDim }}>…</div></div>}
         <div ref={endRef} />
       </div>
-      <ArloChatBar input={input} setInput={setInput} send={send} sending={sending} />
+      <StewardChatBar input={input} setInput={setInput} send={send} sending={sending} />
     </div>
   );
 }
 
-function ArloChatBar({ input, setInput, send, sending }: { input: string; setInput: (v: string) => void; send: () => void; sending: boolean }) {
+function StewardChatBar({ input, setInput, send, sending }: { input: string; setInput: (v: string) => void; send: () => void; sending: boolean }) {
   const { listening, toggle } = useSpeech(setInput);
   return (
     <div style={S.chatBar}>
@@ -770,10 +1162,13 @@ function ArloChatBar({ input, setInput, send, sending }: { input: string; setInp
 }
 
 // ── Week ───────────────────────────────────────────────────────────────────
-function WeekView({ events, jobs, calendarAccounts, onConnectCalendar, onDisconnectCalendar }: { events: Event[]; jobs: Job[]; calendarAccounts: string[]; onConnectCalendar: () => void; onDisconnectCalendar: (email: string) => void }) {
+function WeekView({ events, jobs, pursuits, calendarAccounts, onConnectCalendar, onDisconnectCalendar }: { events: Event[]; jobs: Job[]; pursuits: Pursuit[]; calendarAccounts: string[]; onConnectCalendar: () => void; onDisconnectCalendar: (email: string) => void }) {
   const days = weekDays();
   const todayKey = ymd(new Date());
-  const datedWork = jobs.map(jobCalendarEvent).filter((event): event is Event => Boolean(event));
+  const pursuitNameById = new Map(pursuits.map(p => [p.id, p.name]));
+  const datedWork = jobs
+    .map(j => jobCalendarEvent(j, (j.pursuitId !== null && pursuitNameById.get(j.pursuitId)) || ""))
+    .filter((event): event is Event => Boolean(event));
   const calendarEvents = [...events, ...datedWork].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
   return (
     <div style={S.scroll}>
@@ -813,15 +1208,16 @@ function WeekView({ events, jobs, calendarAccounts, onConnectCalendar, onDisconn
 }
 
 // ── Job intake modal ─────────────────────────────────────────────────────────
-function JobModal({ onClose, onCreated, bizSuggestions }: { onClose: () => void; onCreated: () => void; bizSuggestions: string[] }) {
+function JobModal({ pursuits, onClose, onCreated }: { pursuits: Pursuit[]; onClose: () => void; onCreated: () => void }) {
   const Qs = [
-    { q: "Which business?", type: "text" as const, ph: "Business name", key: "biz" },
-    { q: "What's the job?", type: "text" as const, ph: "e.g. First Baptist — monument sign", key: "name" },
-    { q: "When does it need to be done?", type: "text" as const, ph: "e.g. June 20, end of month", key: "due" },
-    { q: "Materials needed?", type: "text" as const, ph: "e.g. 4×8 aluminum, vinyl", key: "materials" },
-    { q: "Rough budget or quote?", type: "text" as const, ph: "e.g. $2,400 or not sure", key: "budget" },
-    { q: "Anything that could slow you down?", type: "text" as const, ph: "e.g. approval, weather", key: "risk" },
+    { q: "What's the job?", ph: "e.g. First Baptist — monument sign", key: "name" },
+    { q: "When does it need to be done?", ph: "e.g. June 20, end of month", key: "due" },
+    { q: "Materials needed?", ph: "e.g. 4×8 aluminum, vinyl", key: "materials" },
+    { q: "Rough budget or quote?", ph: "e.g. $2,400 or not sure", key: "budget" },
+    { q: "Anything that could slow you down?", ph: "e.g. approval, weather", key: "risk" },
   ];
+  const [pickingPursuit, setPickingPursuit] = useState(pursuits.length > 0);
+  const [pursuitId, setPursuitId] = useState<number | null>(null);
   const [step, setStep] = useState(0);
   const [val, setVal] = useState("");
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -829,12 +1225,17 @@ function JobModal({ onClose, onCreated, bizSuggestions }: { onClose: () => void;
   const [err, setErr] = useState("");
   const q = Qs[step];
 
+  function choosePursuit(id: number | null) {
+    setPursuitId(id);
+    setPickingPursuit(false);
+  }
+
   async function submit(final: Record<string, string>) {
     setSaving(true); setErr("");
     try {
       const r = await fetch(`${API}/jobs`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ biz: final.biz || "General", name: final.name || "Untitled job", due: final.due || "", stage: "New", pct: 0 }),
+        body: JSON.stringify({ name: final.name || "Untitled job", due: final.due || "", stage: "New", pct: 0, pursuitId }),
       });
       if (r.ok) { onCreated(); onClose(); }
       else { setErr("Couldn't save the job. Try again."); setSaving(false); }
@@ -847,6 +1248,25 @@ function JobModal({ onClose, onCreated, bizSuggestions }: { onClose: () => void;
     else submit(next);
   }
 
+  if (pickingPursuit) {
+    return (
+      <div style={M.overlay}>
+        <div style={M.sheet}>
+          <div style={M.strip} />
+          <div style={M.head}><div style={M.title}>New Job</div></div>
+          <div style={M.q}>Which pursuit is this for?</div>
+          <div style={E.chipRow}>
+            {pursuits.map(p => (
+              <button key={p.id} style={E.chip} onClick={() => choosePursuit(p.id)}>{p.name}</button>
+            ))}
+          </div>
+          <button style={M.cancel} onClick={() => choosePursuit(null)}>Skip — not tied to a pursuit</button>
+          <button style={M.cancel} onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={M.overlay}>
       <div style={M.sheet}>
@@ -856,13 +1276,6 @@ function JobModal({ onClose, onCreated, bizSuggestions }: { onClose: () => void;
         <div style={M.q}>{q.q}</div>
         <>
           <input style={M.input} value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => e.key === "Enter" && val.trim() && advance(val)} placeholder={q.ph} autoFocus />
-          {step === 0 && bizSuggestions.length > 0 && (
-            <div style={E.chipRow}>
-              {bizSuggestions.map(b => (
-                <button key={b} style={E.chip} onClick={() => advance(b)}>{b}</button>
-              ))}
-            </div>
-          )}
           <button style={M.next} disabled={saving} onClick={() => advance(val)}>{step < Qs.length - 1 ? "Next →" : saving ? "Saving…" : "Add Job ✓"}</button>
         </>
         {err && <div style={{ ...S.empty, color: "#D4A090", marginTop: 4 }}>{err}</div>}
@@ -873,9 +1286,9 @@ function JobModal({ onClose, onCreated, bizSuggestions }: { onClose: () => void;
 }
 
 // ── Job edit modal ────────────────────────────────────────────────────────────
-function JobEditModal({ job, onClose, onSaved, onDeleted }: { job: Job; onClose: () => void; onSaved: () => void; onDeleted: () => void }) {
+function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job; pursuits: Pursuit[]; onClose: () => void; onSaved: () => void; onDeleted: () => void }) {
   const [name, setName] = useState(job.name);
-  const [biz, setBiz] = useState(job.biz);
+  const [pursuitId, setPursuitId] = useState<number | null>(job.pursuitId);
   const [stage, setStage] = useState(job.stage);
   const [due, setDue] = useState(job.due);
   const [pct, setPct] = useState(job.pct);
@@ -884,12 +1297,12 @@ function JobEditModal({ job, onClose, onSaved, onDeleted }: { job: Job; onClose:
   const [err, setErr] = useState("");
 
   async function save() {
-    if (!name.trim() || !biz.trim()) { setErr("Name and business are required."); return; }
+    if (!name.trim()) { setErr("Name is required."); return; }
     setSaving(true); setErr("");
     try {
       const r = await fetch(`${API}/jobs/${job.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), biz: biz.trim(), stage: stage.trim(), due: due.trim(), pct }),
+        body: JSON.stringify({ name: name.trim(), pursuitId, stage: stage.trim(), due: due.trim(), pct }),
       });
       if (r.ok) { onSaved(); onClose(); }
       else { setErr("Couldn't save. Try again."); setSaving(false); }
@@ -916,8 +1329,11 @@ function JobEditModal({ job, onClose, onSaved, onDeleted }: { job: Job; onClose:
           <input style={M.input} value={name} onChange={e => setName(e.target.value)} placeholder="Job name" />
         </div>
         <div style={E.fieldGroup}>
-          <div style={E.label}>Business</div>
-          <input style={M.input} value={biz} onChange={e => setBiz(e.target.value)} placeholder="Business name" />
+          <div style={E.label}>Pursuit</div>
+          <select style={S.tribeTagSelect} value={pursuitId ?? ""} onChange={e => setPursuitId(e.target.value ? Number(e.target.value) : null)}>
+            <option value="">Unsorted</option>
+            {pursuits.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
         </div>
         <div style={{ display: "flex", gap: 10 }}>
           <div style={{ ...E.fieldGroup, flex: 1 }}>
@@ -938,6 +1354,325 @@ function JobEditModal({ job, onClose, onSaved, onDeleted }: { job: Job; onClose:
         <button style={M.next} disabled={saving} onClick={save}>{saving ? "Saving…" : "Save Changes"}</button>
         <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete Job"}</button>
         <button style={M.cancel} onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Pursuit add/edit modal ──────────────────────────────────────────────────────
+function PursuitModal({ pursuit, onClose, onSaved, onDeleted }: {
+  pursuit?: Pursuit; onClose: () => void; onSaved: () => void; onDeleted?: () => void;
+}) {
+  const [name, setName] = useState(pursuit?.name ?? "");
+  const [category, setCategory] = useState<PursuitCategory>(pursuit?.category ?? "job");
+  const [notes, setNotes] = useState(pursuit?.notes ?? "");
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function save() {
+    if (!name.trim()) { setErr("Name is required."); return; }
+    setSaving(true); setErr("");
+    const body = { name: name.trim(), category, notes: notes.trim() };
+    try {
+      const r = pursuit
+        ? await fetch(`${API}/pursuits/${pursuit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+        : await fetch(`${API}/pursuits`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (r.ok) { onSaved(); onClose(); }
+      else { setErr("Couldn't save. Try again."); setSaving(false); }
+    } catch { setErr("Couldn't reach the server."); setSaving(false); }
+  }
+
+  async function del() {
+    if (!pursuit) return;
+    setDeleting(true);
+    try {
+      const r = await fetch(`${API}/pursuits/${pursuit.id}`, { method: "DELETE" });
+      if (r.ok) { onDeleted?.(); onClose(); }
+      else { setErr("Couldn't delete. Try again."); setDeleting(false); }
+    } catch { setErr("Couldn't reach the server."); setDeleting(false); }
+  }
+
+  return (
+    <div style={M.overlay}>
+      <div style={M.sheet}>
+        <div style={M.strip} />
+        <div style={M.head}><div style={M.title}>{pursuit ? "Edit Pursuit" : "Add Pursuit"}</div></div>
+
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Name</div>
+          <input style={M.input} value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Signs, church volunteering" autoFocus />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Category</div>
+          <div style={E.chipRow}>
+            {PURSUIT_CATEGORIES.map(c => (
+              <button key={c} style={{ ...E.chip, ...(category === c ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setCategory(c)}>{PURSUIT_CATEGORY_LABEL[c]}</button>
+            ))}
+          </div>
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Notes</div>
+          <input style={M.input} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Role, rhythm, what you track" />
+        </div>
+
+        {err && <div style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{err}</div>}
+        <button style={M.next} disabled={saving} onClick={save}>{saving ? "Saving…" : "Save"}</button>
+        {pursuit && <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete Pursuit"}</button>}
+        <button style={M.cancel} onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Priority detail modal ─────────────────────────────────────────────────────
+function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose: () => void; onChanged: () => void }) {
+  const [history, setHistory] = useState<TaskHistory | null>(null);
+  const [period, setPeriod] = useState<"daily" | "weekly" | "monthly">(task.recurrencePeriod ?? "weekly");
+  const [target, setTarget] = useState(task.recurrenceTarget ?? 1);
+  const [status, setStatusState] = useState<"open" | "stuck">(task.partial ? "stuck" : "open");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  const load = useCallback(() => {
+    fetch(`${API}/tasks/${task.id}/history?today=${ymd(new Date())}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(setHistory);
+  }, [task.id]);
+  useEffect(() => { load(); }, [load]);
+
+  async function saveRecurrence() {
+    setSaving(true); setErr("");
+    try {
+      const r = await fetch(`${API}/tasks/${task.id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recurrencePeriod: period, recurrenceTarget: period === "daily" ? 1 : target }),
+      });
+      if (r.ok) { onChanged(); load(); } else setErr("Couldn't save. Try again.");
+    } catch { setErr("Couldn't reach the server."); }
+    setSaving(false);
+  }
+  async function removeRecurrence() {
+    setSaving(true);
+    try {
+      const r = await fetch(`${API}/tasks/${task.id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recurrencePeriod: null, recurrenceTarget: null }),
+      });
+      if (r.ok) { onChanged(); onClose(); }
+    } catch { /* ignore */ }
+    setSaving(false);
+  }
+  async function logToday() {
+    const r = await fetch(`${API}/tasks/${task.id}/complete`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date: ymd(new Date()) }),
+    });
+    if (r.ok) { onChanged(); load(); }
+  }
+  async function del() {
+    const r = await fetch(`${API}/tasks/${task.id}`, { method: "DELETE" });
+    if (r.ok) { onChanged(); onClose(); }
+  }
+  async function setStatusValue(next: "open" | "stuck" | "done") {
+    if (next === "done") {
+      const r = await fetch(`${API}/tasks/${task.id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ done: true, partial: false }),
+      });
+      if (r.ok) { onChanged(); onClose(); }
+      return;
+    }
+    setStatusState(next);
+    await fetch(`${API}/tasks/${task.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ partial: next === "stuck" }),
+    });
+    onChanged();
+  }
+  async function saveNotes(value: string) {
+    await fetch(`${API}/tasks/${task.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notes: value }),
+    });
+  }
+
+  const periodNoun = task.recurrencePeriod === "daily" ? "day" : task.recurrencePeriod === "monthly" ? "month" : "week";
+
+  const notesSection = (
+    <div style={E.fieldGroup}>
+      <div style={E.label}>NOTES</div>
+      <textarea defaultValue={task.notes} onBlur={e => saveNotes(e.target.value)} placeholder="Add detail on what's blocking this, or anything worth remembering." style={M.notesArea} />
+    </div>
+  );
+
+  return (
+    <div style={M.overlay}>
+      <div style={M.sheet}>
+        <div style={M.strip} />
+        <div style={M.head}><div style={M.title}>{task.text}</div></div>
+
+        {task.recurrencePeriod ? (
+          <>
+            <div style={{ ...S.prioSub, marginBottom: 10 }}>
+              Streak: {history ? history.streak : "…"} {task.recurrencePeriod === "daily" ? "days" : task.recurrencePeriod === "weekly" ? "weeks" : "months"}
+            </div>
+            {history?.slipping && <div style={{ ...S.prioSubRed, marginBottom: 10 }}>Streak broke — Steward may check in on this.</div>}
+            <div style={M.track}><div style={{ ...M.fill, width: `${history?.currentPeriod?.pct ?? 0}%` }} /></div>
+            <div style={{ ...S.prioSub, marginBottom: 16 }}>
+              {history?.currentPeriod?.completedCount ?? 0} / {history?.currentPeriod?.target ?? task.recurrenceTarget} this {periodNoun}
+            </div>
+            <button style={M.next} disabled={saving || history?.completedToday} onClick={logToday}>
+              {history?.completedToday ? "Completed today ✓" : "Complete for today"}
+            </button>
+            {notesSection}
+            <div style={E.fieldGroup}>
+              <div style={E.label}>HISTORY</div>
+              {(history?.completions ?? []).length === 0 && <div style={S.prioSub}>Nothing logged yet.</div>}
+              {(history?.completions ?? []).slice(0, 30).map(d => <div key={d} style={S.prioSub}>{d}</div>)}
+            </div>
+            <button style={{ ...M.cancel, color: C.brassSoft }} disabled={saving} onClick={removeRecurrence}>Remove recurring</button>
+          </>
+        ) : (
+          <>
+            <div style={E.fieldGroup}>
+              <div style={E.label}>STATUS</div>
+              {([
+                ["open", "Still moving"],
+                ["stuck", "Stuck — need a nudge"],
+                ["done", "Done"],
+              ] as const).map(([s, label]) => (
+                <button key={s} style={{ ...M.statusOpt, ...((s === "done" ? false : s === status) ? M.statusOptOn : {}) }} onClick={() => setStatusValue(s)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            {notesSection}
+            <div style={E.fieldGroup}>
+              <div style={E.label}>MAKE THIS RECURRING</div>
+              <div style={E.chipRow}>
+                {(["daily", "weekly", "monthly"] as const).map(p => (
+                  <button key={p} style={{ ...E.chip, ...(period === p ? { background: C.brass, color: C.ink } : {}) }} onClick={() => setPeriod(p)}>
+                    {p.charAt(0).toUpperCase() + p.slice(1)}
+                  </button>
+                ))}
+              </div>
+              {period !== "daily" && (
+                <input type="number" min={1} style={M.input} value={target} onChange={e => setTarget(Math.max(1, Number(e.target.value)))} placeholder="Times per period" />
+              )}
+            </div>
+            <button style={M.next} disabled={saving} onClick={saveRecurrence}>{saving ? "Saving…" : "Save"}</button>
+            {history && history.completions.length > 0 && (
+              <div style={E.fieldGroup}>
+                <div style={E.label}>PAST HISTORY (from before recurrence was removed)</div>
+                {history.completions.slice(0, 30).map(d => <div key={d} style={S.prioSub}>{d}</div>)}
+              </div>
+            )}
+          </>
+        )}
+        {err && <div style={{ ...S.empty, color: "#D4A090" }}>{err}</div>}
+        <button style={{ ...M.cancel, color: "#C87060" }} onClick={del}>Delete priority</button>
+        <button style={M.cancel} onClick={onClose}>Close</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Completed priorities log modal ────────────────────────────────────────────
+function CompletedLogModal({ onClose }: { onClose: () => void }) {
+  const [data, setData] = useState<{ items: Task[]; doneCount: number; totalCount: number; pct: number } | null>(null);
+  useEffect(() => {
+    fetch(`${API}/tasks/completed`).then(r => r.ok ? r.json() : null).then(setData);
+  }, []);
+  return (
+    <div style={M.overlay}>
+      <div style={M.sheet}>
+        <div style={M.strip} />
+        <div style={M.head}><div style={M.title}>Completed Priorities</div></div>
+        <div style={M.track}><div style={{ ...M.fill, width: `${data?.pct ?? 0}%` }} /></div>
+        <div style={{ ...S.prioSub, marginBottom: 14 }}>{data?.doneCount ?? 0} of {data?.totalCount ?? 0} priorities completed ({data?.pct ?? 0}%)</div>
+        <div>
+          {(data?.items ?? []).map(t => (
+            <div key={t.id} style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 14 }}>
+              <span style={{ color: "#A8C888", fontSize: 14, lineHeight: 1.4 }}>✓</span>
+              <div>
+                <div style={{ ...S.prioTitle, textDecoration: "line-through" }}>{t.text}</div>
+                {t.category && <div style={S.prioSub}>{t.category}</div>}
+              </div>
+            </div>
+          ))}
+          {data && data.items.length === 0 && <div style={S.empty}>Nothing completed yet.</div>}
+        </div>
+        <button style={M.cancel} onClick={onClose}>Close</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Journal history modal ─────────────────────────────────────────────────────
+interface JournalHistoryEntry { date: string; reflect: string; commitText: string; }
+
+function JournalHistoryModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [entries, setEntries] = useState<JournalHistoryEntry[] | null>(null);
+  const [editingDate, setEditingDate] = useState<string | null>(null);
+  const [intentDraft, setIntentDraft] = useState("");
+  const [reflectDraft, setReflectDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(() => {
+    getList<JournalHistoryEntry>(`${API}/journal/history`).then(setEntries);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  function startEdit(entry: JournalHistoryEntry) {
+    setEditingDate(entry.date);
+    setIntentDraft(entry.commitText);
+    setReflectDraft(entry.reflect);
+  }
+
+  async function save(date: string) {
+    setSaving(true);
+    try {
+      const r = await fetch(`${API}/journal`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date, commit_text: intentDraft, reflect: reflectDraft }),
+      });
+      if (r.ok) { setEditingDate(null); load(); onSaved(); }
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <div style={M.overlay}>
+      <div style={M.sheet}>
+        <div style={M.strip} />
+        <div style={M.head}><div style={M.title}>Journal History</div></div>
+        <div>
+          {(entries ?? []).map(entry => (
+            <div key={entry.date} style={S.card}>
+              <div style={S.prioSub}>{entry.date}</div>
+              {editingDate === entry.date ? (
+                <>
+                  <div style={{ ...E.fieldGroup, marginTop: 8 }}>
+                    <div style={E.label}>Intention</div>
+                    <input style={M.input} value={intentDraft} onChange={e => setIntentDraft(e.target.value)} placeholder="—" />
+                  </div>
+                  <div style={E.fieldGroup}>
+                    <div style={E.label}>Reflection</div>
+                    <textarea style={{ ...M.input, resize: "none" }} rows={3} value={reflectDraft} onChange={e => setReflectDraft(e.target.value)} placeholder="—" />
+                  </div>
+                  <button style={M.next} disabled={saving} onClick={() => save(entry.date)}>{saving ? "Saving…" : "Save"}</button>
+                  <button style={M.cancel} onClick={() => setEditingDate(null)}>Cancel</button>
+                </>
+              ) : (
+                <button style={{ background: "none", border: "none", padding: 0, width: "100%", textAlign: "left", cursor: "pointer", fontFamily: F, marginTop: 6 }} onClick={() => startEdit(entry)}>
+                  <div style={S.prioTitle}>{entry.commitText || "—"}</div>
+                  <div style={S.prioSub}>{entry.reflect || "—"}</div>
+                </button>
+              )}
+            </div>
+          ))}
+          {entries && entries.length === 0 && <div style={S.empty}>No journal entries yet.</div>}
+        </div>
+        <button style={M.cancel} onClick={onClose}>Close</button>
       </div>
     </div>
   );
@@ -1155,8 +1890,8 @@ const R: Record<string, CSSProperties> = {
   navLine: { height: 1, background: `linear-gradient(90deg,transparent,${C.brassDeep},${C.brass},${C.brassDeep},transparent)`, boxShadow: `0 0 10px ${C.brassGlow}` },
   nav: { display: "flex", padding: "10px 0 20px" },
   navBtn: { flex: 1, background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 5 },
-  arloA: { width: 20, height: 20, borderRadius: "50%", border: `1.6px solid ${C.parchmentLow}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: C.parchmentLow, fontFamily: F },
-  arloAOn: { borderColor: C.brass, color: C.brass, boxShadow: `0 0 10px ${C.brassGlow}` },
+  stewardIcon: { width: 20, height: 20, borderRadius: "50%", border: `1.6px solid ${C.parchmentLow}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: C.parchmentLow, fontFamily: F },
+  stewardIconOn: { borderColor: C.brass, color: C.brass, boxShadow: `0 0 10px ${C.brassGlow}` },
   navLabel: { fontSize: 11, color: C.parchmentLow },
   navLabelOn: { color: C.brass },
 };
@@ -1170,15 +1905,32 @@ const S: Record<string, CSSProperties> = {
   card: { ...glass, padding: "18px 20px", marginBottom: 14 },
   cardCentered: { ...glass, padding: "22px 20px", marginBottom: 14, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" },
   eyebrow: { display: "flex", alignItems: "center", gap: 7, marginBottom: 12 },
+  prioHeadRow: { display: "flex", justifyContent: "space-between", alignItems: "center" },
+  prioLogLink: { background: "none", border: "none", color: C.brassSoft, fontSize: 12, cursor: "pointer", fontFamily: F },
+  prioExpandBtn: { width: "100%", background: "none", border: "1px dashed rgba(210,190,130,0.22)", borderRadius: 12, color: C.brassSoft, fontSize: 12.5, fontWeight: 600, padding: "10px", cursor: "pointer", fontFamily: F, marginTop: 4 },
   eyeText: { fontSize: 11, letterSpacing: "0.16em", color: C.brassSoft, fontWeight: 600 },
   verseText: { fontSize: 18, lineHeight: 1.6, color: C.parchment, marginBottom: 14, textAlign: "center" },
   verseRef: { fontSize: 11, letterSpacing: "0.12em", color: C.brassSoft },
   intent: { fontSize: 15, lineHeight: 1.7, color: C.parchment, textAlign: "center" },
   intentInput: { width: "100%", background: "none", border: "none", outline: "none", resize: "none", fontFamily: F, fontSize: 15, lineHeight: 1.7, color: C.parchment, textAlign: "center" },
   empty: { fontSize: 13, color: C.parchmentDim, textAlign: "center", padding: "6px 0" },
+  pulseSub: { fontSize: 12, color: C.parchmentDim, marginTop: -6, marginBottom: 14 },
+  pulseRow: { marginBottom: 10 },
+  pulseRowTop: { display: "flex", justifyContent: "space-between", alignItems: "center" },
+  pulseLabel: { fontSize: 14, color: C.parchment },
+  pulseBtns: { display: "flex", gap: 8 },
+  pulseBtn: { width: 30, height: 30, borderRadius: "50%", border: "1px solid rgba(210,190,130,0.22)", background: "rgba(30,26,16,0.5)", color: C.parchmentDim, fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: F, display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1 },
+  pulseNoteInput: { width: "100%", background: "none", border: "none", borderBottom: "1px solid rgba(210,190,130,0.16)", outline: "none", fontFamily: F, fontSize: 12, color: C.parchmentMid, padding: "4px 0", marginTop: 6 },
   prioLine: { position: "absolute", left: 19, top: 18, bottom: 20, width: 2, background: `linear-gradient(180deg,${C.walnutLite},${C.walnut})`, boxShadow: "0 0 4px rgba(0,0,0,0.5)" },
   prioRow: { display: "flex", gap: 14, alignItems: "flex-start", position: "relative" },
   prioNum: { width: 40, height: 40, borderRadius: "50%", flexShrink: 0, background: `radial-gradient(circle at 35% 28%,${C.walnutMid},${C.walnut} 70%,#3E2814)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, color: C.parchment, boxShadow: `0 3px 10px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,220,160,0.25),inset 0 -2px 4px rgba(0,0,0,0.4),0 0 0 5px rgba(20,18,11,0.85)`, zIndex: 1, textShadow: "0 1px 2px rgba(0,0,0,0.5)", border: "none", cursor: "pointer" },
+  prioNumDone: { background: `radial-gradient(circle at 35% 28%,#7A9860,#4E6838 70%,#26361A)`, opacity: 0.85 },
+  prioRowYellow: { boxShadow: `inset 3px 0 0 0 ${C.brass}` },
+  prioRowRed: { boxShadow: "inset 3px 0 0 0 #C87060" },
+  prioRowGreen: { boxShadow: "inset 3px 0 0 0 #8FAE6E" },
+  prioSubRed: { fontSize: 12, color: "#C87060", lineHeight: 1.4 },
+  prioSubGreen: { fontSize: 12, color: "#8FAE6E", lineHeight: 1.4 },
+  prioDetailBtn: { flexShrink: 0, alignSelf: "center", background: "none", border: "none", color: C.parchmentDim, fontSize: 18, padding: "6px 4px", cursor: "pointer", fontFamily: F },
   prioTitle: { fontSize: 15, color: C.parchment, lineHeight: 1.4, marginBottom: 3 },
   prioSub: { fontSize: 12, color: C.parchmentDim, lineHeight: 1.4 },
   swipeWrap: { position: "relative", overflow: "hidden", borderRadius: 12, touchAction: "pan-y" },
@@ -1196,11 +1948,6 @@ const S: Record<string, CSSProperties> = {
   journalCard: { ...glass, padding: "16px 20px", marginBottom: 14, display: "flex", alignItems: "center", gap: 12 },
   journalText: { fontSize: 13, color: C.parchmentMid, marginTop: 2 },
   journalInput: { width: "100%", marginTop: 10, background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: "10px 12px", outline: "none", resize: "vertical", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
-  exerciseCard: { ...glass, padding: "14px 16px", marginBottom: 14, display: "flex", alignItems: "center", gap: 12, border: "1px solid rgba(138,180,106,0.28)" },
-  exerciseDone: { opacity: 0.72, borderColor: "rgba(138,180,106,0.42)" },
-  exerciseText: { fontSize: 13, color: C.parchmentMid, lineHeight: 1.45, marginTop: -2 },
-  exerciseBtn: { flexShrink: 0, background: "rgba(30,26,16,0.7)", border: "1px solid rgba(138,180,106,0.46)", borderRadius: 18, color: "#A8C888", fontSize: 12, fontWeight: 700, padding: "8px 13px", cursor: "pointer", fontFamily: F },
-  exerciseBtnDone: { background: "rgba(138,180,106,0.22)", color: C.parchment },
   writeBtn: { flexShrink: 0, alignSelf: "flex-start", background: "transparent", border: `1.5px solid ${C.brass}`, borderRadius: 24, color: C.brass, fontSize: 13, fontWeight: 600, padding: "10px 18px", cursor: "pointer", boxShadow: `0 0 16px ${C.brassGlow},inset 0 0 8px rgba(216,170,62,0.1)` },
   msgBar: { display: "flex", alignItems: "center", gap: 11, background: "rgba(8,10,5,0.55)", backdropFilter: "blur(8px)", borderRadius: 30, padding: "11px 11px 11px 17px", marginBottom: 14, border: "1px solid rgba(210,190,130,0.16)", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.5),0 2px 8px rgba(0,0,0,0.3)" },
   msgInput: { flex: 1, background: "none", border: "none", color: C.parchment, fontSize: 14, outline: "none", fontFamily: F },
@@ -1210,10 +1957,16 @@ const S: Record<string, CSSProperties> = {
   bottomTag: { textAlign: "center", fontSize: 10, letterSpacing: "0.18em", color: C.brassSoft, opacity: 0.7, marginBottom: 8 },
   pageTitle: { fontSize: 28, fontWeight: 400, color: C.parchment, marginBottom: 4, textShadow: "0 2px 6px rgba(0,0,0,0.5)" },
   pageSub: { fontSize: 13, color: C.parchmentDim, marginBottom: 18 },
+  toneRow: { display: "flex", gap: 6, marginBottom: 14, marginTop: -4 },
+  toneOpt: { flex: 1, background: "rgba(24,20,12,0.55)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 14, color: C.parchmentDim, fontSize: 11.5, fontWeight: 600, padding: "7px 4px", cursor: "pointer", fontFamily: F },
+  toneOptOn: { borderColor: C.brass, background: "rgba(216,170,62,0.16)", color: C.parchment },
   logRow: { display: "flex", gap: 8, marginBottom: 14 },
   logInput: { flex: 1, background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: "12px 14px", outline: "none", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
   logBtn: { background: `linear-gradient(135deg,${C.walnutMid},${C.walnut})`, border: "none", borderRadius: 12, color: C.parchment, fontSize: 13, fontWeight: 700, padding: "12px 18px", cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,220,160,0.15)" },
   commitRow: { display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 14 },
+  tribeRow: { display: "flex", gap: 12, alignItems: "center", marginBottom: 10 },
+  tribeNameBtn: { flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer", fontFamily: F, padding: 0 },
+  tribeTagSelect: { width: "100%", background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchmentMid, fontSize: 13, fontFamily: F, padding: "10px 12px", outline: "none", marginBottom: 14 },
   dot: { width: 22, height: 22, borderRadius: "50%", flexShrink: 0, marginTop: 1, background: "rgba(0,0,0,0.2)", border: `1.5px solid ${C.parchmentLow}`, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#7AB46A", boxShadow: "inset 0 1px 3px rgba(0,0,0,0.4)" },
   dotDone: { background: "rgba(120,180,106,0.25)", borderColor: "#7AB46A" },
   jobRow: { marginBottom: 14, paddingBottom: 14, borderBottom: "1px solid rgba(210,190,130,0.12)" },
@@ -1238,6 +1991,7 @@ const S: Record<string, CSSProperties> = {
   bubbleU: { marginLeft: "auto" },
   bubbleName: { fontSize: 9, letterSpacing: "0.14em", color: C.brassSoft, marginBottom: 5, fontWeight: 600 },
   bubbleText: { ...glass, padding: "13px 15px", fontSize: 14, lineHeight: 1.65, color: C.parchment, display: "inline-block", whiteSpace: "pre-wrap", borderTopLeftRadius: 5 },
+  chatPrioChip: { alignSelf: "flex-start", background: "rgba(216,170,62,0.14)", border: "1px solid rgba(216,170,62,0.4)", borderRadius: 16, color: C.brassSoft, fontSize: 12, fontWeight: 600, padding: "6px 12px", cursor: "pointer", fontFamily: F },
   bubbleTextU: { background: `linear-gradient(135deg,${C.walnut},${C.walnutMid})`, border: `1px solid ${C.walnutLite}50`, borderTopLeftRadius: 18, borderTopRightRadius: 5 },
   chatBar: { display: "flex", gap: 8, padding: "10px 18px 16px", borderTop: "1px solid rgba(210,190,130,0.12)", alignItems: "center" },
   calendarCard: { ...glass, padding: "14px 16px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
@@ -1268,6 +2022,9 @@ const M: Record<string, CSSProperties> = {
   grid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 },
   choice: { background: "rgba(34,30,18,0.9)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 12, color: C.parchment, fontSize: 14, padding: "16px", cursor: "pointer", fontFamily: F, boxShadow: "0 2px 8px rgba(0,0,0,0.4)" },
   input: { width: "100%", background: "rgba(8,10,5,0.7)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 12, color: C.parchment, fontSize: 15, fontFamily: F, padding: "14px", outline: "none", marginBottom: 12, boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
+  statusOpt: { width: "100%", textAlign: "left", background: "rgba(8,10,5,0.4)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchmentDim, fontSize: 14, fontFamily: F, padding: "13px 16px", marginBottom: 8, cursor: "pointer" },
+  statusOptOn: { borderColor: C.brass, background: "rgba(216,170,62,0.14)", color: C.parchment },
+  notesArea: { width: "100%", minHeight: 80, background: "rgba(8,10,5,0.7)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: 14, outline: "none", marginBottom: 4, resize: "vertical" },
   next: { width: "100%", background: `linear-gradient(135deg,${C.brass},${C.brassDeep})`, border: "none", borderRadius: 12, color: C.ink, fontSize: 15, fontWeight: 700, padding: "15px", cursor: "pointer", marginBottom: 8, fontFamily: F, boxShadow: `0 4px 18px ${C.brassGlow}` },
   cancel: { width: "100%", background: "none", border: "none", color: C.parchmentDim, fontSize: 13, cursor: "pointer", padding: "10px", fontFamily: F },
 };

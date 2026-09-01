@@ -1,6 +1,6 @@
 kind = "web"
 previewPath = "/"
-title = "Arlo"
+title = "Steward"
 version = "1.0.0"
 id = "artifacts/arlo"
 router = "path"
