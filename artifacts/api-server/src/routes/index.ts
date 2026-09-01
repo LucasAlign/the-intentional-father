@@ -12,9 +12,15 @@ const router: IRouter = Router();
 
 router.use(healthRouter);
 router.use(authRouter);
-router.use(requireAuth, dbUserContext, googleCalendarRouter);
-router.use(requireAuth, dbUserContext, stewardRouter);
-router.use(requireAuth, dbUserContext, interviewRouter);
-router.use(requireAuth, dbUserContext, adminRouter);
+// Establish authentication and the RLS-scoped database transaction once for
+// the protected router stack. Applying these middlewares separately to each
+// child router opens another pooled connection every time an earlier router
+// does not match the request, which can exhaust the pool under parallel page
+// loads and block even public OAuth callbacks.
+router.use(requireAuth, dbUserContext);
+router.use(googleCalendarRouter);
+router.use(stewardRouter);
+router.use(interviewRouter);
+router.use(adminRouter);
 
 export default router;
