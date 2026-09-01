@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
-import { db, betaInvites } from "@workspace/db";
+import { db, pool, betaInvites } from "@workspace/db";
+import { migrateRelationships, migratePursuits } from "@workspace/db/migrations";
 import { desc, eq } from "drizzle-orm";
 import { isAdmin } from "../lib/auth";
 import { sendApprovalEmail } from "../lib/email";
@@ -48,6 +49,22 @@ router.patch('/admin/beta-invites/:id', async (req: Request, res: Response) => {
   } catch (err) {
     req.log?.error({ err }, 'Error updating beta invite');
     res.status(500).json({ error: 'Failed to update beta invite' });
+  }
+});
+
+// POST /api/admin/run-migration
+// TEMPORARY — one-off trigger for #28/#29's production backfill (relationships,
+// pursuits). Both underlying functions are safe to re-run (skip already-migrated
+// data). Remove this route once the backfill has been confirmed against production.
+router.post('/admin/run-migration', async (req: Request, res: Response) => {
+  if (!isAdmin(req.user?.email)) { res.status(403).json({ error: 'Forbidden' }); return; }
+  try {
+    const relationships = await migrateRelationships(pool);
+    const pursuits = await migratePursuits(pool);
+    res.json({ relationships, pursuits });
+  } catch (err) {
+    req.log?.error({ err }, 'Error running migration');
+    res.status(500).json({ error: 'Migration failed' });
   }
 });
 
