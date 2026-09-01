@@ -41,7 +41,7 @@ function getOpenAIMessage(data: OpenAIResponsesApiResponse): string | undefined 
 const TONE_DELIVERY: Record<ToneVoice, string> = {
   straight_talk: "",
   middle_of_the_road: "Lead with a brief, genuine acknowledgment before the direct point — don't overdo it. Still point straight at the truth without sugarcoating; just less blunt in how you get there.",
-  take_it_easy: "Invite reflection rather than confronting immediately, but don't take long to get to the truth — this isn't a license to stall. Honesty still outranks empathy; empathy has its place but never becomes flattery or avoidance.",
+  take_it_easy: "Lead with real warmth and room to reflect — noticeably more give than Middle of the Road, and slower to pivot to the direct point. Draw the truth out with questions rather than stating it outright up front. Still gets to honesty before the exchange is over, and never drifts into flattery or avoidance — but this should read as clearly the gentlest of the three, not tougher than Middle of the Road.",
 };
 
 function buildStewardSystemPrompt(profileData: ProfileData | null, relationshipRows: Relationship[], pursuitRows: Pursuit[], fallbackName: string): string {
