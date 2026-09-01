@@ -594,7 +594,7 @@ export default function Home() {
       {editPursuit && <PursuitModal pursuit={editPursuit} onClose={() => setEditPursuit(null)} onSaved={refreshPursuits} onDeleted={() => { refreshPursuits(); refreshJobs(); }} />}
       {profileMenu && <ProfileMenu name={user?.firstName} email={user?.email} onClose={() => setProfileMenu(false)} onLogout={logout} />}
       {priorityDetail && <PriorityDetailModal task={priorityDetail} onClose={() => setPriorityDetail(null)} onChanged={refreshTasks} />}
-      {completedLogOpen && <CompletedLogModal onClose={() => setCompletedLogOpen(false)} />}
+      {completedLogOpen && <CompletedLogModal onClose={() => setCompletedLogOpen(false)} onChanged={refreshTasks} />}
       {journalHistoryOpen && <JournalHistoryModal onClose={() => setJournalHistoryOpen(false)} onSaved={refreshJournal} />}
     </div>
   );
@@ -914,7 +914,10 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
   const [dragging, setDragging] = useState(false);
   const [crossedOff, setCrossedOff] = useState(false);
   const [pulsed, setPulsed] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const { error, flash } = useTapError();
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (confirmTimer.current) clearTimeout(confirmTimer.current); }, []);
 
   async function tapNumber() {
     if (task.recurrencePeriod) {
@@ -922,7 +925,15 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
       setPulsed(true);
       const ok = await onLogToday(task.id);
       if (!ok) { setPulsed(false); flash("Couldn't save — try again"); }
+    } else if (!confirming) {
+      // One-off priorities need a second tap to confirm (#45) — recurring
+      // "log today" taps stay single-tap since they're not a final done.
+      setConfirming(true);
+      if (confirmTimer.current) clearTimeout(confirmTimer.current);
+      confirmTimer.current = setTimeout(() => setConfirming(false), 3000);
     } else {
+      if (confirmTimer.current) clearTimeout(confirmTimer.current);
+      setConfirming(false);
       setCrossedOff(true);
       setTimeout(async () => {
         const ok = await onComplete(task.id);
@@ -965,7 +976,9 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
     : "yellow";
   const rowStyle = statusColor === "red" ? S.prioRowRed : statusColor === "green" ? S.prioRowGreen : S.prioRowYellow;
   const subStyle = statusColor === "red" ? S.prioSubRed : statusColor === "green" ? S.prioSubGreen : S.prioSub;
-  const subText = task.partial
+  const subText = confirming
+    ? "Tap again to mark done"
+    : task.partial
     ? "Stuck — needs a nudge"
     : task.recurrencePeriod && task.slipping
     ? "Streak broke — needs a nudge"
@@ -986,16 +999,16 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
         onPointerCancel={up}
       >
         <button
-          style={{ ...S.prioNum, ...(numDone ? S.prioNumDone : {}) }}
-          title={task.recurrencePeriod ? "Complete for today" : "Mark done"}
+          style={{ ...S.prioNum, ...(numDone ? S.prioNumDone : {}), ...(confirming ? { borderColor: C.brass, color: C.brass, boxShadow: `0 0 8px ${C.brassGlow}` } : {}) }}
+          title={task.recurrencePeriod ? "Complete for today" : confirming ? "Tap again to confirm" : "Mark done"}
           onClick={tapNumber}
           disabled={crossedOff || (task.recurrencePeriod ? task.completedToday || pulsed : false)}
         >
-          {index + 1}
+          {confirming ? "✓" : index + 1}
         </button>
         <div style={{ flex: 1, paddingTop: 3, opacity: crossedOff ? 0.45 : 1, transition: "opacity 0.2s ease" }}>
           <div style={{ ...S.prioTitle, textDecoration: crossedOff ? "line-through" : "none", transition: "text-decoration-color 0.2s ease" }}>{task.text}</div>
-          {subText && <div style={subStyle}>{subText}</div>}
+          {subText && <div style={confirming ? { ...S.prioSub, color: C.brass } : subStyle}>{subText}</div>}
         </div>
         <button style={S.prioDetailBtn} title="View details" onClick={() => onOpenDetail(task)}>›</button>
       </div>
@@ -1812,11 +1825,29 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
 }
 
 // ── Completed priorities log modal ────────────────────────────────────────────
-function CompletedLogModal({ onClose }: { onClose: () => void }) {
+function CompletedLogModal({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
   const [data, setData] = useState<{ items: Task[]; doneCount: number; totalCount: number; pct: number } | null>(null);
+  const [reopeningIds, setReopeningIds] = useState<number[]>([]);
+  const reopenError = useKeyedTapError<number>();
+
   useEffect(() => {
     fetch(`${API}/tasks/completed`).then(r => r.ok ? r.json() : null).then(setData);
   }, []);
+
+  async function reopen(id: number) {
+    setReopeningIds(prev => [...prev, id]);
+    try {
+      const r = await fetch(`${API}/tasks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: false }) });
+      if (r.ok) {
+        setData(prev => prev ? { ...prev, items: prev.items.filter(t => t.id !== id), doneCount: prev.doneCount - 1 } : prev);
+        onChanged();
+        return;
+      }
+    } catch { /* fall through */ }
+    setReopeningIds(prev => prev.filter(item => item !== id));
+    reopenError.flash(id, "Couldn't reopen — try again");
+  }
+
   return (
     <div style={M.overlay}>
       <div style={M.sheet}>
@@ -1826,12 +1857,18 @@ function CompletedLogModal({ onClose }: { onClose: () => void }) {
         <div style={{ ...S.prioSub, marginBottom: 14 }}>{data?.doneCount ?? 0} of {data?.totalCount ?? 0} priorities completed ({data?.pct ?? 0}%)</div>
         <div>
           {(data?.items ?? []).map(t => (
-            <div key={t.id} style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 14 }}>
-              <span style={{ color: "#A8C888", fontSize: 14, lineHeight: 1.4 }}>✓</span>
-              <div>
-                <div style={{ ...S.prioTitle, textDecoration: "line-through" }}>{t.text}</div>
-                {t.category && <div style={S.prioSub}>{t.category}</div>}
+            <div key={t.id} style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                <span style={{ color: "#A8C888", fontSize: 14, lineHeight: 1.4 }}>✓</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ ...S.prioTitle, textDecoration: "line-through" }}>{t.text}</div>
+                  {t.category && <div style={S.prioSub}>{t.category}</div>}
+                </div>
+                <button style={S.prioLogLink} disabled={reopeningIds.includes(t.id)} onClick={() => reopen(t.id)}>
+                  {reopeningIds.includes(t.id) ? "Reopening…" : "Reopen"}
+                </button>
               </div>
+              <TapError message={reopenError.get(t.id)} />
             </div>
           ))}
           {data && data.items.length === 0 && <div style={S.empty}>Nothing completed yet.</div>}
