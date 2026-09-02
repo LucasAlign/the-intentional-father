@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { CSSProperties, ReactElement, PointerEvent } from "react";
+import type { CSSProperties, ReactElement, ReactNode, PointerEvent } from "react";
 import { useAuth } from "@workspace/replit-auth-web";
 import { useLocation } from "wouter";
 
@@ -70,7 +70,7 @@ interface Journal { reflect: string; commit_text: string; }
 type RelationshipCategory = "spouse" | "child" | "family" | "friend" | "other";
 interface Relationship {
   id: number; name: string | null; category: RelationshipCategory; type: string;
-  notes: string; commitments: string; biggestChallenge: string; isPrimary: boolean;
+  notes: string; commitments: string; biggestChallenge: string; starred: boolean; sortOrder: number | null;
 }
 const RELATIONSHIP_CATEGORIES: RelationshipCategory[] = ["spouse", "child", "family", "friend", "other"];
 const RELATIONSHIP_CATEGORY_LABEL: Record<RelationshipCategory, string> = { spouse: "Spouse", child: "Child", family: "Family", friend: "Friend", other: "Other" };
@@ -336,10 +336,11 @@ function journalPromptsFor(profile: ProfileData | null, relationships: Relations
 }
 
 function primaryRelationship(relationships: Relationship[]): Relationship | null {
-  // The list arrives pre-sorted (spouse > child > family > friend, then
-  // creation order) — an explicit pin wins if set, otherwise the sorted top
-  // item is the default "who's featured" answer.
-  return relationships.find(r => r.isPrimary) ?? relationships[0] ?? null;
+  // The list arrives pre-sorted (starred first, in their own manual/default
+  // order, then unstarred the same way) — Today's Intention is just
+  // whoever sorts first among the starred, or the overall top of the list
+  // if nobody's starred (#65).
+  return relationships.find(r => r.starred) ?? relationships[0] ?? null;
 }
 
 function dayOfYear(date = new Date()) {
@@ -1247,6 +1248,110 @@ function SwipeCommitment({ commit, byId, onToggleDone, onDelete, onEdit }: {
   );
 }
 
+// One row in the People list: drag handle, star (pin to top), name/category
+// — tapping the name opens the edit modal. Extracted so DraggableRelationshipList
+// only has to know about dragging, not what a person looks like.
+function PersonRow({ r, dragProps, onToggleStar, onEdit, error }: {
+  r: Relationship; dragProps: { onPointerDown: (e: PointerEvent<HTMLButtonElement>) => void };
+  onToggleStar: () => void; onEdit: () => void; error: string | null;
+}) {
+  return (
+    <div>
+      <div style={S.tribeRow}>
+        <button style={S.dragHandle} {...dragProps} aria-label="Drag to reorder">⠿</button>
+        <button
+          style={{ ...S.pulseBtn, ...(r.starred ? { borderColor: C.brass, color: C.brass, boxShadow: `0 0 8px ${C.brassGlow}` } : {}) }}
+          onClick={onToggleStar} aria-label={r.starred ? "Unstar" : "Star — pin to top"}
+        >★</button>
+        <button style={S.tribeNameBtn} onClick={onEdit}>
+          <div style={S.prioTitle}>{relationshipLabel(r)}</div>
+          <div style={S.prioSub}>{RELATIONSHIP_CATEGORY_LABEL[r.category]}{r.type && r.type !== r.category ? ` — ${r.type}` : ""}</div>
+        </button>
+      </div>
+      <TapError message={error} />
+    </div>
+  );
+}
+
+// A press-and-drag reorderable list, scoped to one starred/unstarred group
+// (#65) — dragging never needs to cross groups since each instance only
+// ever holds one group's rows. Rows swap live as the dragged row crosses a
+// neighbor's position; the parent only hears about the final order, on
+// release, and owns saving it.
+function DraggableRelationshipList({ items, onReorder, renderRow }: {
+  items: Relationship[];
+  onReorder: (orderedIds: number[]) => void;
+  renderRow: (r: Relationship, dragHandleProps: { onPointerDown: (e: PointerEvent<HTMLButtonElement>) => void }) => ReactNode;
+}) {
+  const [order, setOrder] = useState<Relationship[]>(items);
+  const [draggingId, setDraggingId] = useState<number | null>(null);
+  const [dragOffset, setDragOffset] = useState(0);
+  const rowRefs = useRef(new Map<number, HTMLDivElement>());
+  const startY = useRef(0);
+  const startIndex = useRef(0);
+
+  // The prop is the source of truth whenever nothing's being dragged right
+  // now — keeps this in sync with server data (e.g. after adding someone).
+  useEffect(() => { if (draggingId === null) setOrder(items); }, [items, draggingId]);
+
+  function down(id: number, e: PointerEvent<HTMLButtonElement>) {
+    const idx = order.findIndex(r => r.id === id);
+    if (idx === -1) return;
+    startY.current = e.clientY;
+    startIndex.current = idx;
+    setDraggingId(id);
+    setDragOffset(0);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+  function move(e: PointerEvent<HTMLDivElement>) {
+    if (draggingId === null) return;
+    const dy = e.clientY - startY.current;
+    setDragOffset(dy);
+    const draggedEl = rowRefs.current.get(draggingId);
+    if (!draggedEl) return;
+    const rowHeight = draggedEl.offsetHeight || 1;
+    const idx = order.findIndex(r => r.id === draggingId);
+    const targetIndex = Math.max(0, Math.min(order.length - 1, startIndex.current + Math.round(dy / rowHeight)));
+    if (targetIndex !== idx) {
+      setOrder(prev => {
+        const next = [...prev];
+        const [moved] = next.splice(idx, 1);
+        next.splice(targetIndex, 0, moved);
+        return next;
+      });
+      startY.current = e.clientY;
+      startIndex.current = targetIndex;
+      setDragOffset(0);
+    }
+  }
+  function up() {
+    if (draggingId === null) return;
+    setDraggingId(null);
+    setDragOffset(0);
+    onReorder(order.map(r => r.id));
+  }
+
+  return (
+    <div onPointerMove={move} onPointerUp={up} onPointerCancel={up}>
+      {order.map(r => (
+        <div
+          key={r.id}
+          ref={el => { if (el) rowRefs.current.set(r.id, el); else rowRefs.current.delete(r.id); }}
+          style={{
+            position: "relative",
+            zIndex: draggingId === r.id ? 2 : 1,
+            transform: draggingId === r.id ? `translateY(${dragOffset}px)` : "none",
+            transition: draggingId === r.id ? "none" : "transform 0.15s ease",
+            boxShadow: draggingId === r.id ? "0 6px 16px rgba(0,0,0,0.5)" : "none",
+          }}
+        >
+          {renderRow(r, { onPointerDown: (e) => down(r.id, e) })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function Relationships({ relationships, refreshRelationships, commits, refreshCommits }: {
   relationships: Relationship[]; refreshRelationships: () => void;
   commits: Commit[]; refreshCommits: () => void;
@@ -1257,9 +1362,14 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
   const [editingCommit, setEditingCommit] = useState<Commit | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [deletingIds, setDeletingIds] = useState<number[]>([]);
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const resetSave = useSaveStatus();
   const primaryTapError = useKeyedTapError<number>();
+  const { error: orderError, flash: flashOrderError } = useTapError();
   const primaryRel = primaryRelationship(relationships);
   const byId = new Map(relationships.map(r => [r.id, r]));
+  const starredPeople = relationships.filter(r => r.starred);
+  const unstarredPeople = relationships.filter(r => !r.starred);
   const intentionText = primaryRel?.name
     ? `Ask ${primaryRel.name} about their week before you talk about yours.`
     : "Log commitments to the people who matter most — spouse, kids, parents, close friends.";
@@ -1289,12 +1399,29 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
       return false;
     }
   }
-  async function togglePrimary(r: Relationship) {
+  async function toggleStarred(r: Relationship) {
     try {
-      const res = await fetch(`${API}/relationships/${r.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isPrimary: !r.isPrimary }) });
+      const res = await fetch(`${API}/relationships/${r.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ starred: !r.starred }) });
       if (res.ok) { refreshRelationships(); return; }
     } catch { /* fall through */ }
     primaryTapError.flash(r.id, "Couldn't save — try again");
+  }
+  async function reorderGroup(starred: boolean, orderedIds: number[]) {
+    try {
+      const res = await fetch(`${API}/relationships/reorder`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ starred, orderedIds }),
+      });
+      if (res.ok) { refreshRelationships(); return; }
+    } catch { /* fall through */ }
+    flashOrderError("Couldn't save the new order — try again");
+  }
+  async function resetPeopleOrder() {
+    await resetSave.save(async () => {
+      const r = await fetch(`${API}/relationships/reset`, { method: "POST" });
+      if (r.ok) { refreshRelationships(); setResetConfirmOpen(false); return true; }
+      return false;
+    });
   }
 
   return (
@@ -1304,25 +1431,52 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
       <div style={S.card}><div style={S.eyebrow}><Icon name="heart" /><span style={S.eyeText}>TODAY'S INTENTION</span></div><div style={S.intent}>{intentionText}</div></div>
 
       <div style={S.card}>
-        <div style={S.eyebrow}><span style={S.eyeText}>PEOPLE</span></div>
+        <div style={S.prioHeadRow}>
+          <div style={S.eyebrow}><span style={S.eyeText}>PEOPLE</span></div>
+          {relationships.length > 0 && <button style={S.prioLogLink} onClick={() => setResetConfirmOpen(true)}>Reset order</button>}
+        </div>
+        <TapError message={orderError} />
         {relationships.length === 0 ? (
           <div style={S.empty}>No one added yet.</div>
         ) : (
-          relationships.map(r => (
-            <div key={r.id}>
-              <div style={S.tribeRow}>
-                <button style={{ ...S.pulseBtn, ...(r.isPrimary ? { borderColor: C.brass, color: C.brass, boxShadow: `0 0 8px ${C.brassGlow}` } : {}) }} onClick={() => togglePrimary(r)} aria-label={r.isPrimary ? "Unset as featured" : "Feature on Today's Intention"}>★</button>
-                <button style={S.tribeNameBtn} onClick={() => setEditing(r)}>
-                  <div style={S.prioTitle}>{relationshipLabel(r)}</div>
-                  <div style={S.prioSub}>{RELATIONSHIP_CATEGORY_LABEL[r.category]}{r.type && r.type !== r.category ? ` — ${r.type}` : ""}</div>
-                </button>
-              </div>
-              <TapError message={primaryTapError.get(r.id)} />
-            </div>
-          ))
+          <>
+            {starredPeople.length > 0 && (
+              <DraggableRelationshipList
+                items={starredPeople}
+                onReorder={ids => reorderGroup(true, ids)}
+                renderRow={(r, dragProps) => (
+                  <PersonRow r={r} dragProps={dragProps} onToggleStar={() => toggleStarred(r)} onEdit={() => setEditing(r)} error={primaryTapError.get(r.id)} />
+                )}
+              />
+            )}
+            {starredPeople.length > 0 && unstarredPeople.length > 0 && <div style={S.peopleDivider} />}
+            {unstarredPeople.length > 0 && (
+              <DraggableRelationshipList
+                items={unstarredPeople}
+                onReorder={ids => reorderGroup(false, ids)}
+                renderRow={(r, dragProps) => (
+                  <PersonRow r={r} dragProps={dragProps} onToggleStar={() => toggleStarred(r)} onEdit={() => setEditing(r)} error={primaryTapError.get(r.id)} />
+                )}
+              />
+            )}
+          </>
         )}
         <button style={{ ...S.intakeBtn, marginTop: 14 }} onClick={() => setAddOpen(true)}>＋  Add person</button>
       </div>
+      {resetConfirmOpen && (
+        <div style={M.overlay}>
+          <div style={M.sheet}>
+            <div style={M.strip} />
+            <div style={M.head}><div style={M.title}>Reset People Order?</div></div>
+            <div style={{ ...S.prioSub, marginBottom: 18 }}>This clears your custom order and stars — People goes back to spouse, then children, pinned at the top.</div>
+            <SaveStatus status={resetSave.status} onRetry={resetPeopleOrder} />
+            <button style={{ ...M.next, background: "#C87060" }} disabled={resetSave.status === "saving"} onClick={resetPeopleOrder}>
+              {resetSave.status === "saving" ? "Resetting…" : "Reset order"}
+            </button>
+            <button style={M.cancel} onClick={() => setResetConfirmOpen(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
 
       <button style={{ ...S.intakeBtn, marginBottom: 4 }} onClick={() => setLogOpen(true)}>＋  Log a commitment</button>
 
@@ -2785,6 +2939,8 @@ const S: Record<string, CSSProperties> = {
   commitExpandPanel: { marginLeft: 34, marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(210,190,130,0.12)", display: "flex", flexDirection: "column", gap: 6 },
   tribeRow: { display: "flex", gap: 12, alignItems: "center", marginBottom: 10 },
   tribeNameBtn: { flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer", fontFamily: F, padding: 0 },
+  dragHandle: { flexShrink: 0, width: 22, background: "none", border: "none", color: C.parchmentLow, fontSize: 16, cursor: "grab", padding: "6px 0", touchAction: "none", fontFamily: F },
+  peopleDivider: { height: 1, background: "rgba(210,190,130,0.14)", margin: "4px 0 10px" },
   tribeTagSelect: { width: "100%", background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchmentMid, fontSize: 13, fontFamily: F, padding: "10px 12px", outline: "none", marginBottom: 14 },
   dot: { width: 22, height: 22, borderRadius: "50%", flexShrink: 0, marginTop: 1, background: "rgba(0,0,0,0.2)", border: `1.5px solid ${C.parchmentLow}`, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#7AB46A", boxShadow: "inset 0 1px 3px rgba(0,0,0,0.4)" },
   dotDone: { background: "rgba(120,180,106,0.25)", borderColor: "#7AB46A" },

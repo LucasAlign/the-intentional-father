@@ -77,9 +77,15 @@ export const relationships = pgTable("relationships", {
   notes: text("notes").notNull().default(""),
   commitments: text("commitments").notNull().default(""),
   biggestChallenge: text("biggest_challenge").notNull().default(""),
-  // Featured on Today's Intention. Exactly one true per user, enforced at
-  // the application layer (setting a new primary clears the previous one).
-  isPrimary: boolean("is_primary").notNull().default(false),
+  // Pinned to the top of the People list — many can be true at once (#65).
+  // Today's Intention reads whichever starred person sorts first. Defaults
+  // to true for spouse/child at creation, false otherwise.
+  starred: boolean("starred").notNull().default(false),
+  // Manual drag position within the starred/unstarred group (#65) — null
+  // means "not yet manually reordered, use the category-rank default".
+  // Written a whole group at a time (PATCH /relationships/reorder), not
+  // per-row, so it's never ambiguous relative to other rows in the group.
+  sortOrder: integer("sort_order"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

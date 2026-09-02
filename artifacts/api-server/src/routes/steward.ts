@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import { db, withUserSession } from "@workspace/db";
 import { journalEntries, chatMessages, tasks, taskCompletions, commits, jobs, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit } from "@workspace/db";
-import { eq, desc, asc, gte, lte, and, isNull, inArray, sql } from "drizzle-orm";
+import { eq, desc, asc, gte, lte, and, isNull, inArray, notInArray, sql } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
 import { normalizeProfileData, isToneVoice, DEFAULT_TONE_VOICE, type ProfileData, type ToneVoice } from "../lib/profile";
 import { aiRateLimit } from "../middlewares/aiRateLimit";
@@ -458,7 +458,13 @@ router.post('/pulse-checks', async (req: Request, res: Response) => {
 // GET /api/relationships
 router.get('/relationships', async (req: Request, res: Response) => {
   try {
-    const rows = await db.select().from(relationships).where(eq(relationships.userId, req.user!.id)).orderBy(RELATIONSHIP_RANK_SQL, relationships.createdAt);
+    // Starred first, then within each group: an explicit manual position
+    // (set a whole group at a time by PATCH /relationships/reorder) beats
+    // the category-rank default: any row still null falls through to it.
+    // A row added after its group was already manually ordered sorts last
+    // within the group (NULLS LAST) until it's dragged into place (#65).
+    const rows = await db.select().from(relationships).where(eq(relationships.userId, req.user!.id))
+      .orderBy(desc(relationships.starred), sql`${relationships.sortOrder} ASC NULLS LAST`, RELATIONSHIP_RANK_SQL, relationships.createdAt);
     res.json(rows);
   } catch (err) {
     req.log?.error({ err }, 'Error fetching relationships');
@@ -469,7 +475,7 @@ router.get('/relationships', async (req: Request, res: Response) => {
 // POST /api/relationships
 router.post('/relationships', async (req: Request, res: Response) => {
   try {
-    const { name, category, type, notes, commitments, biggestChallenge } = req.body;
+    const { name, category, type, notes, commitments, biggestChallenge, starred } = req.body;
     if (!isRelationshipCategory(category)) { res.status(400).json({ error: 'Invalid category' }); return; }
     const [row] = await db.insert(relationships).values({
       userId: req.user!.id,
@@ -479,6 +485,9 @@ router.post('/relationships', async (req: Request, res: Response) => {
       notes: typeof notes === 'string' ? notes : '',
       commitments: typeof commitments === 'string' ? commitments : '',
       biggestChallenge: typeof biggestChallenge === 'string' ? biggestChallenge : '',
+      // Spouse and children are starred by default; everything else isn't,
+      // unless the caller says otherwise (#65).
+      starred: typeof starred === 'boolean' ? starred : (category === 'spouse' || category === 'child'),
     }).returning();
     res.json(row);
   } catch (err) {
@@ -487,12 +496,58 @@ router.post('/relationships', async (req: Request, res: Response) => {
   }
 });
 
+// PATCH /api/relationships/reorder
+// Registered before /relationships/:id so "reorder" isn't swallowed as an
+// :id. Rewrites sortOrder for a whole starred/unstarred group at once, in
+// the order given — simpler and unambiguous vs. per-row fractional
+// insertion, since a manually-touched group never has to interleave with
+// still-default rows (#65).
+router.patch('/relationships/reorder', async (req: Request, res: Response) => {
+  try {
+    const { starred, orderedIds } = req.body;
+    if (typeof starred !== 'boolean' || !Array.isArray(orderedIds) || orderedIds.length === 0 || orderedIds.some((id: unknown) => typeof id !== 'number')) {
+      res.status(400).json({ error: 'starred (boolean) and orderedIds (number[]) are required' });
+      return;
+    }
+    const owned = await db.select({ id: relationships.id }).from(relationships)
+      .where(and(eq(relationships.userId, req.user!.id), eq(relationships.starred, starred), inArray(relationships.id, orderedIds)));
+    const ownedIds = new Set(owned.map((r) => r.id));
+    if (ownedIds.size !== orderedIds.length || orderedIds.some((id) => !ownedIds.has(id))) {
+      res.status(400).json({ error: 'orderedIds must exactly match the ids in that group' });
+      return;
+    }
+    for (let i = 0; i < orderedIds.length; i++) {
+      await db.update(relationships).set({ sortOrder: i }).where(and(eq(relationships.id, orderedIds[i]), eq(relationships.userId, req.user!.id)));
+    }
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error reordering relationships');
+    res.status(500).json({ error: 'Failed to reorder relationships' });
+  }
+});
+
+// POST /api/relationships/reset
+// Restores the whole People list to fresh-install defaults: clears every
+// manual sortOrder and resets starred to spouse/child only (#65).
+router.post('/relationships/reset', async (req: Request, res: Response) => {
+  try {
+    const uid = req.user!.id;
+    await db.update(relationships).set({ sortOrder: null }).where(eq(relationships.userId, uid));
+    await db.update(relationships).set({ starred: true }).where(and(eq(relationships.userId, uid), inArray(relationships.category, ['spouse', 'child'])));
+    await db.update(relationships).set({ starred: false }).where(and(eq(relationships.userId, uid), notInArray(relationships.category, ['spouse', 'child'])));
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error resetting relationships order');
+    res.status(500).json({ error: 'Failed to reset relationships order' });
+  }
+});
+
 // PATCH /api/relationships/:id
 router.patch('/relationships/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    const { name, category, type, notes, commitments, biggestChallenge, isPrimary } = req.body;
+    const { name, category, type, notes, commitments, biggestChallenge, starred } = req.body;
     if (category !== undefined && !isRelationshipCategory(category)) { res.status(400).json({ error: 'Invalid category' }); return; }
     const updates: Partial<typeof relationships.$inferInsert> = {};
     if (name !== undefined) updates.name = typeof name === 'string' ? name.trim() || null : null;
@@ -501,15 +556,9 @@ router.patch('/relationships/:id', async (req: Request, res: Response) => {
     if (notes !== undefined) updates.notes = notes;
     if (commitments !== undefined) updates.commitments = commitments;
     if (biggestChallenge !== undefined) updates.biggestChallenge = biggestChallenge;
-    if (typeof isPrimary === 'boolean') updates.isPrimary = isPrimary;
-
-    // Only one relationship can be primary at a time — clearing every other
-    // row first and this update both run inside the same per-request RLS
-    // transaction (see lib/db's beginUserSession), so this is atomic without
-    // any extra transaction handling here.
-    if (isPrimary === true) {
-      await db.update(relationships).set({ isPrimary: false }).where(and(eq(relationships.userId, req.user!.id), eq(relationships.isPrimary, true)));
-    }
+    // Any number of relationships can be starred now (#65) — no more
+    // clearing every other row to keep it exclusive.
+    if (typeof starred === 'boolean') updates.starred = starred;
     if (Object.keys(updates).length > 0) await db.update(relationships).set(updates).where(and(eq(relationships.id, id), eq(relationships.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
