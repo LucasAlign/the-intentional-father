@@ -19,6 +19,11 @@ export const usersTable = pgTable("users", {
   firstName: varchar("first_name"),
   lastName: varchar("last_name"),
   profileImageUrl: varchar("profile_image_url"),
+  // The OIDC refresh token from this user's most recent login, reused on
+  // later logins when the provider doesn't hand back a fresh one (Google
+  // only reliably returns one on first consent) so the session stays
+  // refreshable without forcing the user to re-approve every time (#57).
+  refreshToken: text("refresh_token"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

@@ -145,6 +145,25 @@ async function upsertUser(claims: Record<string, unknown>) {
   }
 }
 
+// Google (and most OIDC providers) only reliably return a refresh_token on
+// a user's first consent for a given scope set — a returning login's token
+// exchange typically comes back without one. Falling back to the one saved
+// from a prior login (rather than forcing prompt=consent to guarantee a
+// fresh one every time) is what lets login skip the extra approval screen
+// on repeat visits (#57).
+async function resolveSessionRefreshToken(
+  dbUser: { id: string; refreshToken: string | null },
+  tokens: oidc.TokenEndpointResponse & oidc.TokenEndpointResponseHelpers,
+): Promise<string | undefined> {
+  if (tokens.refresh_token) {
+    if (tokens.refresh_token !== dbUser.refreshToken) {
+      await db.update(usersTable).set({ refreshToken: tokens.refresh_token }).where(eq(usersTable.id, dbUser.id));
+    }
+    return tokens.refresh_token;
+  }
+  return dbUser.refreshToken ?? undefined;
+}
+
 function splitName(name: string): { firstName: string | null; lastName: string | null } {
   const [firstName, ...rest] = name.trim().split(/\s+/);
   return { firstName: firstName || null, lastName: rest.join(" ") || null };
@@ -223,7 +242,12 @@ function makeLoginHandler(provider: OidcProvider) {
       include_granted_scopes: "true",
       code_challenge: codeChallenge,
       code_challenge_method: "S256",
-      prompt: "consent select_account",
+      // "select_account" alone still lets a user switch accounts without
+      // forcing Google's full permissions screen on every login — a
+      // returning user who already approved this app doesn't see it.
+      // (#57 — this used to also force "consent" here, which is why login
+      // required approving twice.)
+      prompt: "select_account",
       state,
       nonce,
     });
@@ -324,6 +348,8 @@ function makeCallbackHandler(provider: OidcProvider) {
       return;
     }
 
+    const refreshToken = await resolveSessionRefreshToken(dbUser, tokens);
+
     const now = Math.floor(Date.now() / 1000);
     const sessionData: SessionData = {
       user: {
@@ -335,7 +361,7 @@ function makeCallbackHandler(provider: OidcProvider) {
       },
       provider,
       access_token: tokens.access_token,
-      refresh_token: tokens.refresh_token,
+      refresh_token: refreshToken,
       expires_at: tokens.expiresIn() ? now + tokens.expiresIn()! : claims.exp,
     };
 
@@ -587,6 +613,8 @@ router.post(
         return;
       }
 
+      const refreshToken = await resolveSessionRefreshToken(dbUser, tokens);
+
       const now = Math.floor(Date.now() / 1000);
       const sessionData: SessionData = {
         user: {
@@ -598,7 +626,7 @@ router.post(
         },
         provider: "google",
         access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
+        refresh_token: refreshToken,
         expires_at: tokens.expiresIn() ? now + tokens.expiresIn()! : claims.exp,
       };
 

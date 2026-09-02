@@ -70,6 +70,7 @@ async function ensureAuthTables(): Promise<void> {
     "CREATE TABLE IF NOT EXISTS sessions (sid varchar PRIMARY KEY, sess jsonb NOT NULL, expire timestamp NOT NULL)",
     "CREATE INDEX IF NOT EXISTS \"IDX_session_expire\" ON sessions (expire)",
     "CREATE TABLE IF NOT EXISTS users (id varchar PRIMARY KEY DEFAULT gen_random_uuid(), email varchar UNIQUE, first_name varchar, last_name varchar, profile_image_url varchar, created_at timestamp with time zone NOT NULL DEFAULT now(), updated_at timestamp with time zone NOT NULL DEFAULT now())",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS refresh_token text",
     "CREATE TABLE IF NOT EXISTS beta_invites (id serial PRIMARY KEY, email varchar NOT NULL UNIQUE, status varchar NOT NULL DEFAULT 'active', invited_at timestamp with time zone NOT NULL DEFAULT now(), accepted_at timestamp with time zone)",
     "CREATE INDEX IF NOT EXISTS \"IDX_beta_invites_email\" ON beta_invites (email)",
     "CREATE TABLE IF NOT EXISTS email_login_codes (id serial PRIMARY KEY, email varchar NOT NULL, code_hash text NOT NULL, expires_at timestamp with time zone NOT NULL, consumed_at timestamp with time zone, attempts integer NOT NULL DEFAULT 0, created_at timestamp with time zone NOT NULL DEFAULT now())",
