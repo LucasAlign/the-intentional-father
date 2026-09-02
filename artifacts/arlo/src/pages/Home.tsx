@@ -443,7 +443,7 @@ export default function Home() {
   }
 
   const refreshTasks = useCallback(() => {
-    getList<Task>(`${API}/tasks?today=${ymd(new Date())}`).then(setTasks);
+    return getList<Task>(`${API}/tasks?today=${ymd(new Date())}`).then(setTasks);
   }, []);
   const refreshCommits = useCallback(() => {
     getList<Commit>(`${API}/commits`).then(setCommits);
@@ -677,7 +677,14 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
     setDeletingIds(prev => prev.includes(id) ? prev : [...prev, id]);
     try {
       const r = await fetch(`${API}/tasks/${id}`, { method: "DELETE" });
-      if (r.ok) { refreshTasks(); return true; }
+      if (r.ok) {
+        await refreshTasks();
+        // Deletes are soft now (#54) — the id must be un-hidden once the
+        // refreshed list lands, or a later Reopen from the Deleted list
+        // fetches the task back as open but this stale id keeps hiding it.
+        setDeletingIds(prev => prev.filter(item => item !== id));
+        return true;
+      }
       setDeletingIds(prev => prev.filter(item => item !== id));
       return false;
     } catch {
