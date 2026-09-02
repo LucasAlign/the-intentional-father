@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useId } from "react";
 import type { CSSProperties, ReactElement, ReactNode, PointerEvent } from "react";
 import { useAuth } from "@workspace/replit-auth-web";
 import { useLocation } from "wouter";
@@ -59,7 +59,7 @@ interface Commit {
   id: number; text: string; notes: string; madeDate: string; dueDate: string | null; done: boolean;
   relationshipId: number | null; adHocName: string | null; adHocCategory: RelationshipCategory | null;
 }
-interface Job { id: number; biz: string; name: string; stage: string; due: string; pct: number; pursuitId: number | null; }
+interface Job { id: number; biz: string; name: string; stage: string; due: string; pct: number; pursuitId: number | null; materials: string; budget: string; risk: string; }
 type PursuitCategory = "job" | "business" | "volunteer" | "other";
 interface Pursuit { id: number; name: string; category: PursuitCategory; notes: string; }
 const PURSUIT_CATEGORIES: PursuitCategory[] = ["job", "business", "volunteer", "other"];
@@ -227,19 +227,22 @@ const saveStatusRetry: CSSProperties = { background: "none", border: "none", pad
 
 function SaveStatus({ status, onRetry }: { status: SaveState; onRetry?: () => void }) {
   if (status === "idle") return null;
-  if (status === "saving") return <div style={saveStatusText}>Saving…</div>;
-  if (status === "saved") return <div style={{ ...saveStatusText, color: "#8FAE6E" }}>Saved</div>;
+  if (status === "saving") return <div role="status" style={saveStatusText}>Saving…</div>;
+  if (status === "saved") return <div role="status" style={{ ...saveStatusText, color: "#8FAE6E" }}>Saved</div>;
   return (
-    <div style={{ ...saveStatusText, color: "#C87060", display: "flex", alignItems: "center", gap: 6 }}>
+    <div role="alert" style={{ ...saveStatusText, color: "#C87060", display: "flex", alignItems: "center", gap: 6 }}>
       <span>Couldn&apos;t save</span>
       {onRetry && <button style={saveStatusRetry} onClick={onRetry}>Retry</button>}
     </div>
   );
 }
 
+// role="alert" (#36) so a screen reader announces a validation/save
+// failure as it appears, the same way the visible red text draws the eye —
+// shared by every TapError call site in the app.
 function TapError({ message }: { message: string | null }) {
   if (!message) return null;
-  return <div style={{ fontSize: 11.5, color: "#C87060", marginTop: 4, fontFamily: F }}>{message}</div>;
+  return <div role="alert" style={{ fontSize: 11.5, color: "#C87060", marginTop: 4, fontFamily: F }}>{message}</div>;
 }
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
@@ -260,7 +263,10 @@ function Icon({ name, size = 15, color = C.brassSoft, stroke = 1.6 }: { name: Ic
     send: <path d="M3 11l18-8-8 18-2-7-8-3z" fill={color} stroke="none" />,
     mic: <><path d="M12 1a3 3 0 0 1 3 3v8a3 3 0 0 1-6 0V4a3 3 0 0 1 3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" /></>,
   };
-  return <svg {...p}>{m[name]}</svg>;
+  // Every icon in the app is decorative — paired with a visible label, or
+  // sitting inside a button that carries its own aria-label — so it's
+  // hidden from assistive tech rather than announced as an unlabeled image (#36).
+  return <svg {...p} aria-hidden="true">{m[name]}</svg>;
 }
 
 const NAV: { id: TabId; icon: IconName | "stewardIcon"; label: string }[] = [
@@ -276,6 +282,55 @@ const BIZ_PALETTE = ["#8AB46A", "#6AAEC8", "#C89840", "#B080C0", "#C87060", "#60
 function pursuitColor(pursuitId: number | null, ids: number[]) {
   const i = pursuitId === null ? -1 : ids.indexOf(pursuitId);
   return BIZ_PALETTE[i >= 0 ? i % BIZ_PALETTE.length : 0];
+}
+
+// ── Modal dialog shell (#36) ──────────────────────────────────────────────────
+// Every modal in the app renders the same overlay/sheet/strip/head/title
+// boilerplate by hand — this centralizes the part that needs real a11y
+// behavior (dialog semantics, a labelled heading, Escape-to-close, focus
+// moved in on open and restored to whatever triggered it on close) so
+// every modal gets it uniformly instead of retrofitting each one by hand.
+// Callers still own the overlay div (and whatever click-outside behavior
+// it has, if any) — this only replaces the sheet and its header.
+function ModalSheet({ title, headExtra, onClose, sheetOnClick, children }: {
+  title: ReactNode; headExtra?: ReactNode; onClose: () => void;
+  sheetOnClick?: (e: React.MouseEvent) => void; children: ReactNode;
+}) {
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  // Captured during render, before this modal's own DOM (and any child
+  // autoFocus field inside it) commits — an effect would run too late and
+  // read the modal's own newly-focused child back as "what was focused
+  // before," breaking the on-close restore for every modal with a
+  // pre-focused field.
+  const [previouslyFocused] = useState<HTMLElement | null>(() => document.activeElement as HTMLElement | null);
+
+  useEffect(() => {
+    // A child field with autoFocus may have already claimed focus in this
+    // same commit — respect it instead of yanking focus back to the sheet.
+    if (!sheetRef.current?.contains(document.activeElement)) {
+      sheetRef.current?.focus();
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      if (previouslyFocused && document.contains(previouslyFocused)) previouslyFocused.focus();
+    };
+    // onClose is re-created per render in most callers (inline arrow) — keying
+    // this on mount only avoids tearing down/rebuilding focus state every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div ref={sheetRef} style={M.sheet} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} onClick={sheetOnClick}>
+      <div style={M.strip} />
+      <div style={M.head}><div style={M.title} id={titleId}>{title}</div>{headExtra}</div>
+      {children}
+    </div>
+  );
 }
 
 // ── Date helpers ───────────────────────────────────────────────────────────────
@@ -429,6 +484,8 @@ export default function Home() {
   const [editJob, setEditJob] = useState<Job | null>(null);
   const [pursuitModal, setPursuitModal] = useState(false);
   const [editPursuit, setEditPursuit] = useState<Pursuit | null>(null);
+  const [closedPursuitsOpen, setClosedPursuitsOpen] = useState(false);
+  const [closePursuitPrompt, setClosePursuitPrompt] = useState<Pursuit | null>(null);
   const [calendarAccounts, setCalendarAccounts] = useState<string[]>([]);
   const [isAdmin, setIsAdmin] = useState(false);
   const [profileMenu, setProfileMenu] = useState(false);
@@ -461,6 +518,19 @@ export default function Home() {
   const refreshPursuits = useCallback(() => {
     getList<Pursuit>(`${API}/pursuits`).then(setPursuits);
   }, []);
+  // After a job save, check whether it just became the last incomplete job
+  // in its pursuit — if so, surface the auto-close prompt (#48). Re-fetches
+  // jobs directly rather than trusting `jobs` state, which is still stale
+  // at the moment the save that triggered this resolves.
+  const maybePromptPursuitClose = useCallback(async (pursuitId: number | null) => {
+    if (pursuitId === null) return;
+    const freshJobs = await getList<Job>(`${API}/jobs`);
+    setJobs(freshJobs);
+    const pursuitJobs = freshJobs.filter(j => j.pursuitId === pursuitId);
+    if (pursuitJobs.length === 0 || !pursuitJobs.every(j => j.pct === 100)) return;
+    const pursuit = pursuits.find(p => p.id === pursuitId);
+    if (pursuit) setClosePursuitPrompt(pursuit);
+  }, [pursuits]);
   const refreshCalendarStatus = useCallback(() => {
     getJson(`${API}/google-calendar/status`, { accounts: [] }).then((d) => {
       setCalendarAccounts(isRecord(d) && Array.isArray(d.accounts) ? d.accounts as string[] : isRecord(d) && d.connected ? ["Google Calendar"] : []);
@@ -584,18 +654,18 @@ export default function Home() {
       <div style={R.screen}>
         {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} onOpenJournalHistory={() => setJournalHistoryOpen(true)} />}
         {tab === "her" && <Relationships relationships={relationships} refreshRelationships={refreshRelationships} commits={commits} refreshCommits={refreshCommits} />}
-        {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} />}
+        {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} onOpenClosed={() => setClosedPursuitsOpen(true)} />}
         {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} />}
         {tab === "week" && <WeekView events={week} jobs={jobs} pursuits={pursuits} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await fetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
       </div>
 
       <div style={R.navWrap}>
         <div style={R.navLine} />
-        <nav style={R.nav}>
+        <nav style={R.nav} aria-label="Main">
           {NAV.map(n => (
-            <button key={n.id} style={R.navBtn} onClick={() => setTab(n.id)}>
+            <button key={n.id} style={R.navBtn} onClick={() => setTab(n.id)} aria-current={tab === n.id ? "page" : undefined}>
               {n.icon === "stewardIcon"
-                ? <div style={{ ...R.stewardIcon, ...(tab === n.id ? R.stewardIconOn : {}) }}>S</div>
+                ? <div style={{ ...R.stewardIcon, ...(tab === n.id ? R.stewardIconOn : {}) }} aria-hidden="true">S</div>
                 : <Icon name={n.icon as IconName} size={20} color={tab === n.id ? C.brass : C.parchmentLow} stroke={tab === n.id ? 1.9 : 1.6} />}
               <span style={{ ...R.navLabel, ...(tab === n.id ? R.navLabelOn : {}) }}>{n.label}</span>
             </button>
@@ -604,9 +674,17 @@ export default function Home() {
       </div>
 
       {jobModal && <JobModal pursuits={pursuits} onClose={() => setJobModal(false)} onCreated={refreshJobs} />}
-      {editJob && <JobEditModal job={editJob} pursuits={pursuits} onClose={() => setEditJob(null)} onSaved={refreshJobs} onDeleted={refreshJobs} />}
+      {editJob && <JobEditModal job={editJob} pursuits={pursuits} onClose={() => setEditJob(null)} onSaved={maybePromptPursuitClose} onDeleted={refreshJobs} />}
       {pursuitModal && <PursuitModal onClose={() => setPursuitModal(false)} onSaved={refreshPursuits} />}
-      {editPursuit && <PursuitModal pursuit={editPursuit} onClose={() => setEditPursuit(null)} onSaved={refreshPursuits} onDeleted={() => { refreshPursuits(); refreshJobs(); }} />}
+      {editPursuit && <PursuitModal pursuit={editPursuit} onClose={() => setEditPursuit(null)} onSaved={refreshPursuits} onDeleted={() => { refreshPursuits(); refreshJobs(); }} onClosed={refreshPursuits} />}
+      {closedPursuitsOpen && <PursuitsClosedModal onClose={() => setClosedPursuitsOpen(false)} onChanged={refreshPursuits} />}
+      {closePursuitPrompt && (
+        <PursuitCloseFinishedPrompt
+          pursuit={closePursuitPrompt}
+          onClose={() => setClosePursuitPrompt(null)}
+          onClosed={() => { setClosePursuitPrompt(null); refreshPursuits(); }}
+        />
+      )}
       {profileMenu && <ProfileMenu name={user?.firstName} email={user?.email} onClose={() => setProfileMenu(false)} onLogout={logout} />}
       {priorityDetail && <PriorityDetailModal task={priorityDetail} onClose={() => setPriorityDetail(null)} onChanged={refreshTasks} />}
       {completedLogOpen && <CompletedLogModal onClose={() => setCompletedLogOpen(false)} onChanged={refreshTasks} />}
@@ -618,13 +696,11 @@ export default function Home() {
 function ProfileMenu({ name, email, onClose, onLogout }: { name?: string | null; email?: string | null; onClose: () => void; onLogout: () => void }) {
   return (
     <div style={M.overlay} onClick={onClose}>
-      <div style={M.sheet} onClick={e => e.stopPropagation()}>
-        <div style={M.strip} />
-        <div style={M.head}><div style={M.title}>{name || email || "Profile"}</div></div>
+      <ModalSheet title={name || email || "Profile"} onClose={onClose} sheetOnClick={e => e.stopPropagation()}>
         <a style={{ ...M.next, textDecoration: "none", display: "block", textAlign: "center" }} href="mailto:admin@lucasalign.com?subject=Steward%20feedback">Contact Support / Feedback</a>
         <button style={{ ...M.next, background: "none", border: "1px solid rgba(210,190,130,0.18)", color: C.parchmentDim, boxShadow: "none" }} onClick={onLogout}>Log Out</button>
         <button style={M.cancel} onClick={onClose}>Cancel</button>
-      </div>
+      </ModalSheet>
     </div>
   );
 }
@@ -1127,11 +1203,11 @@ function TodayMsgBar({ ci, setCi, sending, onSend }: { ci: string; setCi: (v: st
   return (
     <div style={S.msgBar}>
       <Icon name="chat" size={17} color={C.parchmentLow} />
-      <input style={S.msgInput} value={ci} onChange={e => setCi(e.target.value)} onKeyDown={e => e.key === "Enter" && onSend()} placeholder="Message Steward..." />
-      <button style={{ ...S.micBtn, ...(listening ? S.micBtnOn : {}) }} onClick={toggle} title={listening ? "Stop" : "Voice input"}>
+      <input style={S.msgInput} value={ci} onChange={e => setCi(e.target.value)} onKeyDown={e => e.key === "Enter" && onSend()} placeholder="Message Steward..." aria-label="Message Steward" />
+      <button style={{ ...S.micBtn, ...(listening ? S.micBtnOn : {}) }} onClick={toggle} title={listening ? "Stop" : "Voice input"} aria-label={listening ? "Stop voice input" : "Voice input"}>
         <Icon name="mic" size={15} color={listening ? C.ink : C.parchmentDim} stroke={1.8} />
       </button>
-      <button style={S.msgSend} disabled={sending} onClick={() => onSend()}><Icon name="send" size={16} color={C.ink} /></button>
+      <button style={S.msgSend} disabled={sending} onClick={() => onSend()} aria-label="Send message"><Icon name="send" size={16} color={C.ink} /></button>
     </div>
   );
 }
@@ -1479,16 +1555,14 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
       </div>
       {resetConfirmOpen && (
         <div style={M.overlay}>
-          <div style={M.sheet}>
-            <div style={M.strip} />
-            <div style={M.head}><div style={M.title}>Reset People Order?</div></div>
+          <ModalSheet title="Reset People Order?" onClose={() => setResetConfirmOpen(false)}>
             <div style={{ ...S.prioSub, marginBottom: 18 }}>This clears your custom order and stars — People goes back to spouse, then children, pinned at the top.</div>
             <SaveStatus status={resetSave.status} onRetry={resetPeopleOrder} />
             <button style={{ ...M.next, background: "#C87060" }} disabled={resetSave.status === "saving"} onClick={resetPeopleOrder}>
               {resetSave.status === "saving" ? "Resetting…" : "Reset order"}
             </button>
             <button style={M.cancel} onClick={() => setResetConfirmOpen(false)}>Cancel</button>
-          </div>
+          </ModalSheet>
         </div>
       )}
 
@@ -1640,10 +1714,7 @@ function CommitLogModal({ relationships, onClose, onSaved, onRelationshipAdded }
 
   return (
     <div style={M.overlay}>
-      <div style={M.sheet}>
-        <div style={M.strip} />
-        <div style={M.head}><div style={M.title}>Log a Commitment</div></div>
-
+      <ModalSheet title="Log a Commitment" onClose={onClose}>
         <CommitTargetPicker
           relationships={relationships}
           relationshipId={relationshipId} setRelationshipId={setRelationshipId}
@@ -1670,7 +1741,7 @@ function CommitLogModal({ relationships, onClose, onSaved, onRelationshipAdded }
           {saveStatus.status === "saving" ? "Saving…" : "Log commitment"}
         </button>
         <button style={M.cancel} onClick={onClose}>Cancel</button>
-      </div>
+      </ModalSheet>
     </div>
   );
 }
@@ -1727,10 +1798,7 @@ function CommitEditModal({ commit, relationships, onClose, onSaved, onDeleted, o
 
   return (
     <div style={M.overlay}>
-      <div style={M.sheet}>
-        <div style={M.strip} />
-        <div style={M.head}><div style={M.title}>Edit Commitment</div></div>
-
+      <ModalSheet title="Edit Commitment" onClose={onClose}>
         <CommitTargetPicker
           relationships={relationships}
           relationshipId={relationshipId} setRelationshipId={setRelationshipId}
@@ -1759,7 +1827,7 @@ function CommitEditModal({ commit, relationships, onClose, onSaved, onDeleted, o
         <TapError message={delErr} />
         <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete commitment"}</button>
         <button style={M.cancel} onClick={onClose}>Cancel</button>
-      </div>
+      </ModalSheet>
     </div>
   );
 }
@@ -1795,9 +1863,7 @@ function CommitHistoryModal({ commits, byId, onClose, onChanged }: {
 
   return (
     <div style={M.overlay}>
-      <div style={M.sheet}>
-        <div style={M.strip} />
-        <div style={M.head}><div style={M.title}>Kept Commitments</div></div>
+      <ModalSheet title="Kept Commitments" onClose={onClose}>
         <div style={S.scrollCap5}>
           {commits.map(c => (
             <div key={c.id} style={{ marginBottom: 14 }}>
@@ -1838,7 +1904,7 @@ function CommitHistoryModal({ commits, byId, onClose, onChanged }: {
         </div>
 
         <button style={M.cancel} onClick={onClose}>Close</button>
-      </div>
+      </ModalSheet>
     </div>
   );
 }
@@ -1881,10 +1947,7 @@ function RelationshipModal({ relationship, onClose, onSaved, onDeleted }: {
 
   return (
     <div style={M.overlay}>
-      <div style={M.sheet}>
-        <div style={M.strip} />
-        <div style={M.head}><div style={M.title}>{relationship ? "Edit Person" : "Add Person"}</div></div>
-
+      <ModalSheet title={relationship ? "Edit Person" : "Add Person"} onClose={onClose}>
         <div style={E.fieldGroup}>
           <div style={E.label}>Name</div>
           <input style={M.input} value={name} onChange={e => setName(e.target.value)} placeholder="Name (optional)" />
@@ -1931,7 +1994,7 @@ function RelationshipModal({ relationship, onClose, onSaved, onDeleted }: {
           <button style={{ ...M.cancel, color: "#C87060" }} onClick={() => setConfirmingDelete(true)}>Delete Person</button>
         ))}
         <button style={M.cancel} onClick={onClose}>Cancel</button>
-      </div>
+      </ModalSheet>
     </div>
   );
 }
@@ -1984,9 +2047,7 @@ function PeopleDeletedModal({ onClose, onChanged }: { onClose: () => void; onCha
 
   return (
     <div style={M.overlay}>
-      <div style={M.sheet}>
-        <div style={M.strip} />
-        <div style={M.head}><div style={M.title}>Deleted People</div></div>
+      <ModalSheet title="Deleted People" onClose={onClose}>
         <div style={S.scrollCap5}>
           {(deleted ?? []).map(p => (
             <div key={p.id} style={{ marginBottom: 14 }}>
@@ -2018,15 +2079,15 @@ function PeopleDeletedModal({ onClose, onChanged }: { onClose: () => void; onCha
           {deleted && deleted.length === 0 && <div style={S.empty}>No one deleted.</div>}
         </div>
         <button style={M.cancel} onClick={onClose}>Close</button>
-      </div>
+      </ModalSheet>
     </div>
   );
 }
 
 // ── Work ───────────────────────────────────────────────────────────────────
-function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit }: {
+function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit, onOpenClosed }: {
   jobs: Job[]; pursuits: Pursuit[]; onJob: () => void; onEdit: (j: Job) => void;
-  onAddPursuit: () => void; onEditPursuit: (p: Pursuit) => void;
+  onAddPursuit: () => void; onEditPursuit: (p: Pursuit) => void; onOpenClosed: () => void;
 }) {
   const pursuitIds = pursuits.map(p => p.id);
   const jobsByPursuit = new Map<number | null, Job[]>();
@@ -2055,6 +2116,9 @@ function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit }: {
     <div style={S.scroll}>
       <div style={S.pageTitle}>Work</div>
       <div style={S.pageSub}>Active jobs by pursuit. Tap a row to edit.</div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 2 }}>
+        <button style={S.prioLogLink} onClick={onOpenClosed}>Closed ›</button>
+      </div>
       {pursuits.length === 0 && jobs.length === 0 ? (
         <div style={S.card}><div style={S.empty}>No pursuits yet. Add one to start planning ahead.</div></div>
       ) : (
@@ -2145,11 +2209,11 @@ function StewardChatBar({ input, setInput, send, sending }: { input: string; set
   const { listening, toggle } = useSpeech(setInput);
   return (
     <div style={S.chatBar}>
-      <input style={S.msgInput} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === "Enter" && send()} placeholder="Brain dump anything..." />
-      <button style={{ ...S.micBtn, ...(listening ? S.micBtnOn : {}) }} onClick={toggle} title={listening ? "Stop" : "Voice input"}>
+      <input style={S.msgInput} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === "Enter" && send()} placeholder="Brain dump anything..." aria-label="Message Steward" />
+      <button style={{ ...S.micBtn, ...(listening ? S.micBtnOn : {}) }} onClick={toggle} title={listening ? "Stop" : "Voice input"} aria-label={listening ? "Stop voice input" : "Voice input"}>
         <Icon name="mic" size={15} color={listening ? C.ink : C.parchmentDim} stroke={1.8} />
       </button>
-      <button style={S.msgSend} disabled={sending} onClick={send}><Icon name="send" size={16} color={C.ink} /></button>
+      <button style={S.msgSend} disabled={sending} onClick={send} aria-label="Send message"><Icon name="send" size={16} color={C.ink} /></button>
     </div>
   );
 }
@@ -2226,7 +2290,10 @@ function JobModal({ pursuits, onClose, onCreated }: { pursuits: Pursuit[]; onClo
     await saveStatus.save(async () => {
       const r = await fetch(`${API}/jobs`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: final.name || "Untitled job", due: final.due || "", stage: "New", pct: 0, pursuitId }),
+        body: JSON.stringify({
+          name: final.name || "Untitled job", due: final.due || "", stage: "New", pct: 0, pursuitId,
+          materials: final.materials || "", budget: final.budget || "", risk: final.risk || "",
+        }),
       });
       if (r.ok) { onCreated(); onClose(); return true; }
       return false;
@@ -2242,9 +2309,7 @@ function JobModal({ pursuits, onClose, onCreated }: { pursuits: Pursuit[]; onClo
   if (pickingPursuit) {
     return (
       <div style={M.overlay}>
-        <div style={M.sheet}>
-          <div style={M.strip} />
-          <div style={M.head}><div style={M.title}>New Job</div></div>
+        <ModalSheet title="New Job" onClose={onClose}>
           <div style={M.q}>Which pursuit is this for?</div>
           <div style={E.chipRow}>
             {pursuits.map(p => (
@@ -2253,16 +2318,14 @@ function JobModal({ pursuits, onClose, onCreated }: { pursuits: Pursuit[]; onClo
           </div>
           <button style={M.cancel} onClick={() => choosePursuit(null)}>Skip — not tied to a pursuit</button>
           <button style={M.cancel} onClick={onClose}>Cancel</button>
-        </div>
+        </ModalSheet>
       </div>
     );
   }
 
   return (
     <div style={M.overlay}>
-      <div style={M.sheet}>
-        <div style={M.strip} />
-        <div style={M.head}><div style={M.title}>New Job</div><div style={S.prioSub}>{step + 1} / {Qs.length}</div></div>
+      <ModalSheet title="New Job" headExtra={<div style={S.prioSub}>{step + 1} / {Qs.length}</div>} onClose={onClose}>
         <div style={M.track}><div style={{ ...M.fill, width: ((step + 1) / Qs.length * 100) + "%" }} /></div>
         <div style={M.q}>{q.q}</div>
         <>
@@ -2271,18 +2334,21 @@ function JobModal({ pursuits, onClose, onCreated }: { pursuits: Pursuit[]; onClo
         </>
         <SaveStatus status={saveStatus.status} onRetry={() => submit(answers)} />
         <button style={M.cancel} onClick={onClose}>Cancel</button>
-      </div>
+      </ModalSheet>
     </div>
   );
 }
 
 // ── Job edit modal ────────────────────────────────────────────────────────────
-function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job; pursuits: Pursuit[]; onClose: () => void; onSaved: () => void; onDeleted: () => void }) {
+function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job; pursuits: Pursuit[]; onClose: () => void; onSaved: (pursuitId: number | null) => void; onDeleted: () => void }) {
   const [name, setName] = useState(job.name);
   const [pursuitId, setPursuitId] = useState<number | null>(job.pursuitId);
   const [stage, setStage] = useState(job.stage);
   const [due, setDue] = useState(job.due);
   const [pct, setPct] = useState(job.pct);
+  const [materials, setMaterials] = useState(job.materials);
+  const [budget, setBudget] = useState(job.budget);
+  const [risk, setRisk] = useState(job.risk);
   const saveStatus = useSaveStatus();
   const [validationErr, setValidationErr] = useState("");
   const [deleting, setDeleting] = useState(false);
@@ -2294,9 +2360,9 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
     await saveStatus.save(async () => {
       const r = await fetch(`${API}/jobs/${job.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), pursuitId, stage: stage.trim(), due: due.trim(), pct }),
+        body: JSON.stringify({ name: name.trim(), pursuitId, stage: stage.trim(), due: due.trim(), pct, materials: materials.trim(), budget: budget.trim(), risk: risk.trim() }),
       });
-      if (r.ok) { onSaved(); onClose(); return true; }
+      if (r.ok) { onSaved(pursuitId); onClose(); return true; }
       return false;
     });
   }
@@ -2312,10 +2378,7 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
 
   return (
     <div style={M.overlay}>
-      <div style={M.sheet}>
-        <div style={M.strip} />
-        <div style={M.head}><div style={M.title}>Edit Job</div></div>
-
+      <ModalSheet title="Edit Job" onClose={onClose}>
         <div style={E.fieldGroup}>
           <div style={E.label}>Job name</div>
           <input style={M.input} value={name} onChange={e => setName(e.target.value)} placeholder="Job name" />
@@ -2341,6 +2404,18 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
           <div style={E.label}>Progress — {pct}%</div>
           <input type="range" min={0} max={100} value={pct} onChange={e => setPct(Number(e.target.value))} style={E.slider} />
         </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Materials needed</div>
+          <input style={M.input} value={materials} onChange={e => setMaterials(e.target.value)} placeholder="e.g. 4×8 aluminum, vinyl" />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Budget or quote</div>
+          <input style={M.input} value={budget} onChange={e => setBudget(e.target.value)} placeholder="e.g. $2,400 or not sure" />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Could slow this down</div>
+          <input style={M.input} value={risk} onChange={e => setRisk(e.target.value)} placeholder="e.g. approval, weather" />
+        </div>
 
         <TapError message={validationErr || null} />
         <SaveStatus status={saveStatus.status} onRetry={save} />
@@ -2348,14 +2423,14 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
         <TapError message={delErr || null} />
         <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete Job"}</button>
         <button style={M.cancel} onClick={onClose}>Cancel</button>
-      </div>
+      </ModalSheet>
     </div>
   );
 }
 
 // ── Pursuit add/edit modal ──────────────────────────────────────────────────────
-function PursuitModal({ pursuit, onClose, onSaved, onDeleted }: {
-  pursuit?: Pursuit; onClose: () => void; onSaved: () => void; onDeleted?: () => void;
+function PursuitModal({ pursuit, onClose, onSaved, onDeleted, onClosed }: {
+  pursuit?: Pursuit; onClose: () => void; onSaved: () => void; onDeleted?: () => void; onClosed?: () => void;
 }) {
   const [name, setName] = useState(pursuit?.name ?? "");
   const [category, setCategory] = useState<PursuitCategory>(pursuit?.category ?? "job");
@@ -2364,6 +2439,8 @@ function PursuitModal({ pursuit, onClose, onSaved, onDeleted }: {
   const [validationErr, setValidationErr] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [delErr, setDelErr] = useState("");
+  const [closing, setClosing] = useState(false);
+  const [closeErr, setCloseErr] = useState("");
 
   async function save() {
     if (!name.trim()) { setValidationErr("Name is required."); return; }
@@ -2388,12 +2465,22 @@ function PursuitModal({ pursuit, onClose, onSaved, onDeleted }: {
     } catch { setDelErr("Couldn't reach the server."); setDeleting(false); }
   }
 
+  // Manual close (#48) — no completion gate, unlike the auto-prompt: this
+  // is also how you archive a pursuit you're abandoning, not just one that
+  // finished. Soft, reversible from the Closed history view.
+  async function close() {
+    if (!pursuit) return;
+    setClosing(true);
+    try {
+      const r = await fetch(`${API}/pursuits/${pursuit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: true }) });
+      if (r.ok) { onClosed?.(); onClose(); }
+      else { setCloseErr("Couldn't close. Try again."); setClosing(false); }
+    } catch { setCloseErr("Couldn't reach the server."); setClosing(false); }
+  }
+
   return (
     <div style={M.overlay}>
-      <div style={M.sheet}>
-        <div style={M.strip} />
-        <div style={M.head}><div style={M.title}>{pursuit ? "Edit Pursuit" : "Add Pursuit"}</div></div>
-
+      <ModalSheet title={pursuit ? "Edit Pursuit" : "Add Pursuit"} onClose={onClose}>
         <div style={E.fieldGroup}>
           <div style={E.label}>Name</div>
           <input style={M.input} value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Signs, church volunteering" autoFocus />
@@ -2414,10 +2501,94 @@ function PursuitModal({ pursuit, onClose, onSaved, onDeleted }: {
         <TapError message={validationErr || null} />
         <SaveStatus status={saveStatus.status} onRetry={save} />
         <button style={M.next} disabled={saveStatus.status === "saving"} onClick={save}>{saveStatus.status === "saving" ? "Saving…" : "Save"}</button>
+        <TapError message={closeErr || null} />
+        {pursuit && <button style={M.cancel} disabled={closing} onClick={close}>{closing ? "Closing…" : "Close Pursuit"}</button>}
         <TapError message={delErr || null} />
         {pursuit && <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete Pursuit"}</button>}
         <button style={M.cancel} onClick={onClose}>Cancel</button>
-      </div>
+      </ModalSheet>
+    </div>
+  );
+}
+
+// Closed-pursuits history view (#48) — mirrors PeopleDeletedModal/
+// CompletedLogModal: a Reopen action, no permanent-delete step needed here
+// since "Delete Pursuit" already covers permanent removal separately.
+function PursuitsClosedModal({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
+  const [closed, setClosed] = useState<Pursuit[] | null>(null);
+  const [reopeningIds, setReopeningIds] = useState<number[]>([]);
+  const reopenError = useKeyedTapError<number>();
+
+  const load = useCallback(() => {
+    fetch(`${API}/pursuits/deleted`).then(r => r.ok ? r.json() : null).then(d => setClosed(d?.items ?? []));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function reopen(id: number) {
+    setReopeningIds(prev => [...prev, id]);
+    try {
+      const r = await fetch(`${API}/pursuits/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: false }) });
+      if (r.ok) {
+        setClosed(prev => prev ? prev.filter(p => p.id !== id) : prev);
+        onChanged();
+        return;
+      }
+    } catch { /* fall through */ }
+    setReopeningIds(prev => prev.filter(item => item !== id));
+    reopenError.flash(id, "Couldn't reopen — try again");
+  }
+
+  return (
+    <div style={M.overlay}>
+      <ModalSheet title="Closed Pursuits" onClose={onClose}>
+        <div style={S.scrollCap5}>
+          {(closed ?? []).map(p => (
+            <div key={p.id} style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={S.prioTitle}>{p.name}</div>
+                  <div style={S.prioSub}>{PURSUIT_CATEGORY_LABEL[p.category]}</div>
+                </div>
+                <button style={S.prioLogLink} disabled={reopeningIds.includes(p.id)} onClick={() => reopen(p.id)}>
+                  {reopeningIds.includes(p.id) ? "Reopening…" : "Reopen"}
+                </button>
+              </div>
+              <TapError message={reopenError.get(p.id)} />
+            </div>
+          ))}
+          {closed && closed.length === 0 && <div style={S.empty}>Nothing closed yet.</div>}
+        </div>
+        <button style={M.cancel} onClick={onClose}>Close</button>
+      </ModalSheet>
+    </div>
+  );
+}
+
+// Auto-close prompt (#48) — surfaced right after saving a job whose pct
+// change made it the pursuit's last incomplete job. Closing here uses the
+// same PATCH {deleted: true} as the manual action in PursuitModal.
+function PursuitCloseFinishedPrompt({ pursuit, onClose, onClosed }: { pursuit: Pursuit; onClose: () => void; onClosed: () => void }) {
+  const [closing, setClosing] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function close() {
+    setClosing(true);
+    try {
+      const r = await fetch(`${API}/pursuits/${pursuit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: true }) });
+      if (r.ok) { onClosed(); return; }
+      setErr("Couldn't close. Try again.");
+      setClosing(false);
+    } catch { setErr("Couldn't reach the server."); setClosing(false); }
+  }
+
+  return (
+    <div style={M.overlay}>
+      <ModalSheet title="All Done?" onClose={onClose}>
+        <div style={{ ...S.prioSub, marginBottom: 18 }}>Every job under {pursuit.name} is now complete. Close it out and move it to Closed Pursuits?</div>
+        <TapError message={err || null} />
+        <button style={M.next} disabled={closing} onClick={close}>{closing ? "Closing…" : "Close it out"}</button>
+        <button style={M.cancel} onClick={onClose}>Not yet</button>
+      </ModalSheet>
     </div>
   );
 }
@@ -2536,10 +2707,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
 
   return (
     <div style={M.overlay}>
-      <div style={M.sheet}>
-        <div style={M.strip} />
-        <div style={M.head}><div style={M.title}>{task.text}</div></div>
-
+      <ModalSheet title={task.text} onClose={onClose}>
         {task.recurrencePeriod ? (
           <>
             <div style={{ ...S.prioSub, marginBottom: 10 }}>
@@ -2602,7 +2770,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
         <TapError message={actionError} />
         <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete priority"}</button>
         <button style={M.cancel} onClick={onClose}>Close</button>
-      </div>
+      </ModalSheet>
     </div>
   );
 }
@@ -2639,9 +2807,7 @@ function CompletedLogModal({ onClose, onChanged }: { onClose: () => void; onChan
 
   return (
     <div style={M.overlay}>
-      <div style={M.sheet}>
-        <div style={M.strip} />
-        <div style={M.head}><div style={M.title}>Completed Priorities</div></div>
+      <ModalSheet title="Completed Priorities" onClose={onClose}>
         <div style={M.track}><div style={{ ...M.fill, width: `${data?.pct ?? 0}%` }} /></div>
         <div style={{ ...S.prioSub, marginBottom: 14 }}>{data?.doneCount ?? 0} of {data?.totalCount ?? 0} priorities completed ({data?.pct ?? 0}%)</div>
         <div style={S.scrollCap5}>
@@ -2684,7 +2850,7 @@ function CompletedLogModal({ onClose, onChanged }: { onClose: () => void; onChan
         </div>
 
         <button style={M.cancel} onClick={onClose}>Close</button>
-      </div>
+      </ModalSheet>
     </div>
   );
 }
@@ -2723,9 +2889,7 @@ function JournalHistoryModal({ onClose, onSaved }: { onClose: () => void; onSave
 
   return (
     <div style={M.overlay}>
-      <div style={M.sheet}>
-        <div style={M.strip} />
-        <div style={M.head}><div style={M.title}>Journal History</div></div>
+      <ModalSheet title="Journal History" onClose={onClose}>
         <div>
           {(entries ?? []).map(entry => (
             <div key={entry.date} style={S.card}>
@@ -2755,7 +2919,7 @@ function JournalHistoryModal({ onClose, onSaved }: { onClose: () => void; onSave
           {entries && entries.length === 0 && <div style={S.empty}>No journal entries yet.</div>}
         </div>
         <button style={M.cancel} onClick={onClose}>Close</button>
-      </div>
+      </ModalSheet>
     </div>
   );
 }
@@ -2836,6 +3000,7 @@ function AuthGate({
               autoComplete="name"
               autoFocus={!email}
               placeholder="Your name (optional)"
+              aria-label="Your name (optional)"
               value={name}
               onChange={e => setName(e.target.value)}
               onKeyDown={e => e.key === "Enter" && sendCode()}
@@ -2847,11 +3012,12 @@ function AuthGate({
               autoComplete="email"
               autoFocus={!!email}
               placeholder="you@example.com"
+              aria-label="Email address"
               value={email}
               onChange={e => setEmail(e.target.value)}
               onKeyDown={e => e.key === "Enter" && sendCode()}
             />
-            {error && <div style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{error}</div>}
+            {error && <div role="alert" style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{error}</div>}
             <button style={G.googleBtn} disabled={busy} onClick={sendCode}>{busy ? "Sending…" : "Send code"}</button>
             <button style={{ ...G.addHomeToggle, marginTop: 14 }} onClick={() => { setError(""); setStep("providers"); }}>Back</button>
           </>
@@ -2867,6 +3033,7 @@ function AuthGate({
               maxLength={6}
               autoFocus
               placeholder="000000"
+              aria-label="6-digit verification code"
               value={code}
               onChange={e => {
                 const next = e.target.value.replace(/\D/g, "").slice(0, 6);
@@ -2875,7 +3042,7 @@ function AuthGate({
               }}
               onKeyDown={e => e.key === "Enter" && verifyCode()}
             />
-            {error && <div style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{error}</div>}
+            {error && <div role="alert" style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{error}</div>}
             <button style={G.googleBtn} disabled={busy} onClick={() => verifyCode()}>{busy ? "Verifying…" : "Verify"}</button>
             <button style={{ ...G.addHomeToggle, marginTop: 14 }} disabled={busy} onClick={sendCode}>Resend code</button>
             <button style={{ ...G.addHomeToggle, marginTop: 10 }} onClick={() => { setError(""); setCode(""); setStep("email"); }}>Use a different email</button>
@@ -3108,7 +3275,10 @@ const M: Record<string, CSSProperties> = {
   // low-alpha walnut tint (matching the app's own palette) instead of flat
   // black is what actually reads as "dimmed," not "blacked out."
   overlay: { position: "fixed", inset: 0, background: "rgba(90,58,32,0.28)", display: "flex", alignItems: "flex-end", zIndex: 200, backdropFilter: "blur(3px)" },
-  sheet: { width: "100%", maxWidth: 440, margin: "0 auto", position: "relative", overflow: "hidden", background: "linear-gradient(160deg,rgba(34,30,18,0.98),rgba(16,14,8,0.98))", backdropFilter: "blur(24px)", borderRadius: "22px 22px 0 0", padding: "24px 24px 48px", border: "1px solid rgba(210,190,130,0.18)", borderBottom: "none", boxShadow: "0 -10px 50px rgba(0,0,0,0.7)" },
+  // maxHeight + overflowY (not a blanket `overflow: hidden`) so content
+  // taller than the viewport scrolls instead of clipping inaccessibly —
+  // every modal in the app shares this one sheet style (#66).
+  sheet: { width: "100%", maxWidth: 440, margin: "0 auto", maxHeight: "88vh", position: "relative", overflowY: "auto", overflowX: "hidden", background: "linear-gradient(160deg,rgba(34,30,18,0.98),rgba(16,14,8,0.98))", backdropFilter: "blur(24px)", borderRadius: "22px 22px 0 0", padding: "24px 24px 48px", border: "1px solid rgba(210,190,130,0.18)", borderBottom: "none", boxShadow: "0 -10px 50px rgba(0,0,0,0.7)" },
   strip: { position: "absolute", top: 0, left: 0, right: 0, height: 2, background: `linear-gradient(90deg,transparent,${C.brass},transparent)`, boxShadow: `0 0 14px ${C.brassGlow}` },
   head: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
   title: { fontSize: 23, color: C.parchment, fontWeight: 400 },

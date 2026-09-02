@@ -794,11 +794,24 @@ router.delete('/commits/:id', async (req: Request, res: Response) => {
 // GET /api/pursuits
 router.get('/pursuits', async (req: Request, res: Response) => {
   try {
-    const rows = await db.select().from(pursuits).where(eq(pursuits.userId, req.user!.id)).orderBy(asc(pursuits.name));
+    const rows = await db.select().from(pursuits).where(and(eq(pursuits.userId, req.user!.id), eq(pursuits.deleted, false))).orderBy(asc(pursuits.name));
     res.json(rows);
   } catch (err) {
     req.log?.error({ err }, 'Error fetching pursuits');
     res.status(500).json({ error: 'Failed to fetch pursuits' });
+  }
+});
+
+// GET /api/pursuits/deleted
+router.get('/pursuits/deleted', async (req: Request, res: Response) => {
+  try {
+    const items = await db.select().from(pursuits)
+      .where(and(eq(pursuits.userId, req.user!.id), eq(pursuits.deleted, true)))
+      .orderBy(desc(pursuits.deletedAt)).limit(200);
+    res.json({ items });
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching closed pursuits');
+    res.status(500).json({ error: 'Failed to fetch closed pursuits' });
   }
 });
 
@@ -826,12 +839,16 @@ router.patch('/pursuits/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    const { name, category, notes } = req.body;
+    const { name, category, notes, deleted } = req.body;
     if (category !== undefined && !isPursuitCategory(category)) { res.status(400).json({ error: 'Invalid category' }); return; }
     const updates: Partial<typeof pursuits.$inferInsert> = {};
     if (typeof name === 'string' && name.trim()) updates.name = name.trim();
     if (category !== undefined) updates.category = category;
     if (notes !== undefined) updates.notes = notes;
+    if (typeof deleted === 'boolean') {
+      updates.deleted = deleted;
+      updates.deletedAt = deleted ? new Date() : null;
+    }
     if (Object.keys(updates).length > 0) await db.update(pursuits).set(updates).where(and(eq(pursuits.id, id), eq(pursuits.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
@@ -879,11 +896,16 @@ router.get('/jobs', async (req: Request, res: Response) => {
 // POST /api/jobs
 router.post('/jobs', async (req: Request, res: Response) => {
   try {
-    const { name, stage, due, pct, pursuitId } = req.body;
+    const { name, stage, due, pct, pursuitId, materials, budget, risk } = req.body;
     if (!name) { res.status(400).json({ error: 'name is required' }); return; }
     const resolved = await resolvePursuitId(req.user!.id, pursuitId, res);
     if (!resolved.ok) return; // resolvePursuitId already responded
-    const [row] = await db.insert(jobs).values({ userId: req.user!.id, name, stage: stage || '', due: due || '', pct: pct ?? 0, pursuitId: resolved.value }).returning();
+    const [row] = await db.insert(jobs).values({
+      userId: req.user!.id, name, stage: stage || '', due: due || '', pct: pct ?? 0, pursuitId: resolved.value,
+      materials: typeof materials === 'string' ? materials : '',
+      budget: typeof budget === 'string' ? budget : '',
+      risk: typeof risk === 'string' ? risk : '',
+    }).returning();
     res.json(row);
   } catch (err) {
     req.log?.error({ err }, 'Error creating job');
@@ -896,12 +918,15 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    const { name, stage, due, pct, pursuitId } = req.body;
+    const { name, stage, due, pct, pursuitId, materials, budget, risk } = req.body;
     const updates: Partial<typeof jobs.$inferInsert> = {};
     if (name !== undefined) updates.name = name;
     if (stage !== undefined) updates.stage = stage;
     if (due !== undefined) updates.due = due;
     if (typeof pct === 'number') updates.pct = pct;
+    if (typeof materials === 'string') updates.materials = materials;
+    if (typeof budget === 'string') updates.budget = budget;
+    if (typeof risk === 'string') updates.risk = risk;
     if (pursuitId !== undefined) {
       const resolved = await resolvePursuitId(req.user!.id, pursuitId, res);
       if (!resolved.ok) return; // resolvePursuitId already responded

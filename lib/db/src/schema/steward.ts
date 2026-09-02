@@ -129,6 +129,12 @@ export const pursuits = pgTable("pursuits", {
   // Fixed set (job/business/volunteer/other) — see #14/#29's resolution.
   category: text("category").notNull(),
   notes: text("notes").notNull().default(""),
+  // Soft "closed" state (#48), matching tasks/commits/relationships — set
+  // automatically when a pursuit's last job crosses to 100%, or manually
+  // (e.g. abandoning one that never finished). Its jobs aren't touched;
+  // they just aren't shown once their parent pursuit is filtered out.
+  deleted: boolean("deleted").notNull().default(false),
+  deletedAt: timestamp("deleted_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -147,6 +153,11 @@ export const jobs = pgTable("jobs", {
   due: text("due").notNull().default(""),
   pct: integer("pct").notNull().default(0),
   pursuitId: integer("pursuit_id").references(() => pursuits.id, { onDelete: "set null" }),
+  // The add-job wizard asks all three of these but used to throw the
+  // answers away — nothing on the backend had anywhere to put them (#30).
+  materials: text("materials").notNull().default(""),
+  budget: text("budget").notNull().default(""),
+  risk: text("risk").notNull().default(""),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
