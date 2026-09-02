@@ -1482,6 +1482,9 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
         </div>
       )}
 
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 2 }}>
+        <button style={S.prioLogLink} onClick={() => setHistoryOpen(true)}>Kept &amp; Deleted history ›</button>
+      </div>
       <button style={{ ...S.intakeBtn, marginBottom: 4 }} onClick={() => setLogOpen(true)}>＋  Log a commitment</button>
 
       {open.length > 0 && (
@@ -1496,10 +1499,7 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
       )}
       {done.length > 0 && (
         <div style={{ ...S.card, opacity: 0.85 }}>
-          <div style={S.prioHeadRow}>
-            <div style={S.eyebrow}><span style={S.eyeText}>KEPT</span></div>
-            {done.length > KEPT_VISIBLE_CAP && <button style={S.prioLogLink} onClick={() => setHistoryOpen(true)}>History ›</button>}
-          </div>
+          <div style={S.eyebrow}><span style={S.eyeText}>KEPT</span></div>
           {done.slice(0, KEPT_VISIBLE_CAP).map(c => (
             <SwipeCommitment key={c.id} commit={c} byId={byId} onToggleDone={setCommitDone} onDelete={deleteCommit} onEdit={setEditingCommit} />
           ))}
