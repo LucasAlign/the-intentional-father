@@ -86,6 +86,12 @@ export const relationships = pgTable("relationships", {
   // Written a whole group at a time (PATCH /relationships/reorder), not
   // per-row, so it's never ambiguous relative to other rows in the group.
   sortOrder: integer("sort_order"),
+  // Soft delete (#64), matching tasks (#54) and commits (#60) — the row
+  // moves to the Deleted view (GET /relationships/deleted) and can be
+  // restored via PATCH { deleted: false }, or hard-removed via the
+  // separate DELETE /relationships/:id/permanent.
+  deleted: boolean("deleted").notNull().default(false),
+  deletedAt: timestamp("deleted_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

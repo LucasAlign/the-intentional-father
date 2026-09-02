@@ -1363,6 +1363,7 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
   const [historyOpen, setHistoryOpen] = useState(false);
   const [deletingIds, setDeletingIds] = useState<number[]>([]);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [deletedPeopleOpen, setDeletedPeopleOpen] = useState(false);
   const resetSave = useSaveStatus();
   const primaryTapError = useKeyedTapError<number>();
   const { error: orderError, flash: flashOrderError } = useTapError();
@@ -1433,7 +1434,10 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
       <div style={S.card}>
         <div style={S.prioHeadRow}>
           <div style={S.eyebrow}><span style={S.eyeText}>PEOPLE</span></div>
-          {relationships.length > 0 && <button style={S.prioLogLink} onClick={() => setResetConfirmOpen(true)}>Reset order</button>}
+          <div>
+            {relationships.length > 0 && <button style={S.prioLogLink} onClick={() => setResetConfirmOpen(true)}>Reset order</button>}
+            <button style={{ ...S.prioLogLink, marginLeft: 12 }} onClick={() => setDeletedPeopleOpen(true)}>Deleted ›</button>
+          </div>
         </div>
         <TapError message={orderError} />
         {relationships.length === 0 ? (
@@ -1512,6 +1516,7 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
         />
       )}
       {historyOpen && <CommitHistoryModal commits={done} byId={byId} onClose={() => setHistoryOpen(false)} onChanged={refreshCommits} />}
+      {deletedPeopleOpen && <PeopleDeletedModal onClose={() => setDeletedPeopleOpen(false)} onChanged={refreshRelationships} />}
       {commits.length === 0 && <div style={{ ...S.card }}><div style={S.empty}>No commitments logged yet.</div></div>}
       <div style={{ height: 32 }} />
     </div>
@@ -1839,6 +1844,7 @@ function RelationshipModal({ relationship, onClose, onSaved, onDeleted }: {
   const [commitments, setCommitments] = useState(relationship?.commitments ?? "");
   const [biggestChallenge, setBiggestChallenge] = useState(relationship?.biggestChallenge ?? "");
   const saveStatus = useSaveStatus();
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [delErr, setDelErr] = useState("");
 
@@ -1901,8 +1907,107 @@ function RelationshipModal({ relationship, onClose, onSaved, onDeleted }: {
         <SaveStatus status={saveStatus.status} onRetry={save} />
         <button style={M.next} disabled={saveStatus.status === "saving"} onClick={save}>{saveStatus.status === "saving" ? "Saving…" : "Save"}</button>
         <TapError message={delErr || null} />
-        {relationship && <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete Person"}</button>}
+        {relationship && confirmingDelete && (
+          <div style={{ ...S.prioSub, color: "#C87060", margin: "6px 0" }}>
+            Delete {relationshipLabel(relationship)}? They'll move to Deleted, where you can bring them back.
+          </div>
+        )}
+        {relationship && (confirmingDelete ? (
+          <>
+            <button style={{ ...M.next, background: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Yes, delete"}</button>
+            <button style={M.cancel} disabled={deleting} onClick={() => setConfirmingDelete(false)}>Cancel</button>
+          </>
+        ) : (
+          <button style={{ ...M.cancel, color: "#C87060" }} onClick={() => setConfirmingDelete(true)}>Delete Person</button>
+        ))}
         <button style={M.cancel} onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// Deleted-people view (#64) — reactivate brings someone back into the
+// starred/unstarred group they left (insertIntoOrderedGroup on the server
+// slots them back into rank position); permanently deleting is a second,
+// separately-confirmed step since — unlike everything else in this app —
+// it can't be undone.
+function PeopleDeletedModal({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
+  const [deleted, setDeleted] = useState<Relationship[] | null>(null);
+  const [busyIds, setBusyIds] = useState<number[]>([]);
+  const [confirmPermanentId, setConfirmPermanentId] = useState<number | null>(null);
+  const rowError = useKeyedTapError<number>();
+
+  const load = useCallback(() => {
+    fetch(`${API}/relationships/deleted`).then(r => r.ok ? r.json() : null).then(d => setDeleted(d?.items ?? []));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function reactivate(id: number) {
+    setBusyIds(prev => [...prev, id]);
+    try {
+      const r = await fetch(`${API}/relationships/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: false }) });
+      if (r.ok) {
+        setDeleted(prev => prev ? prev.filter(p => p.id !== id) : prev);
+        onChanged();
+        return;
+      }
+    } catch { /* fall through */ }
+    setBusyIds(prev => prev.filter(item => item !== id));
+    rowError.flash(id, "Couldn't bring them back — try again");
+  }
+
+  async function permanentlyDelete(id: number) {
+    setBusyIds(prev => [...prev, id]);
+    try {
+      const r = await fetch(`${API}/relationships/${id}/permanent`, { method: "DELETE" });
+      if (r.ok) {
+        setDeleted(prev => prev ? prev.filter(p => p.id !== id) : prev);
+        setConfirmPermanentId(null);
+        onChanged();
+        return;
+      }
+    } catch { /* fall through */ }
+    setBusyIds(prev => prev.filter(item => item !== id));
+    setConfirmPermanentId(null);
+    rowError.flash(id, "Couldn't permanently delete — try again");
+  }
+
+  return (
+    <div style={M.overlay}>
+      <div style={M.sheet}>
+        <div style={M.strip} />
+        <div style={M.head}><div style={M.title}>Deleted People</div></div>
+        <div style={S.scrollCap5}>
+          {(deleted ?? []).map(p => (
+            <div key={p.id} style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={S.prioTitle}>{relationshipLabel(p)}</div>
+                  <div style={S.prioSub}>{RELATIONSHIP_CATEGORY_LABEL[p.category]}{p.type && p.type !== p.category ? ` — ${p.type}` : ""}</div>
+                </div>
+                <button style={S.prioLogLink} disabled={busyIds.includes(p.id)} onClick={() => reactivate(p.id)}>
+                  {busyIds.includes(p.id) ? "Restoring…" : "Reactivate"}
+                </button>
+              </div>
+              {confirmPermanentId === p.id ? (
+                <div style={{ marginTop: 6 }}>
+                  <div style={{ ...S.prioSub, color: "#C87060", marginBottom: 6 }}>
+                    Permanently delete {relationshipLabel(p)}? This can't be undone.
+                  </div>
+                  <button style={{ ...S.prioLogLink, color: "#C87060" }} disabled={busyIds.includes(p.id)} onClick={() => permanentlyDelete(p.id)}>
+                    {busyIds.includes(p.id) ? "Deleting…" : "Yes, permanently delete"}
+                  </button>
+                  <button style={{ ...S.prioLogLink, marginLeft: 12 }} disabled={busyIds.includes(p.id)} onClick={() => setConfirmPermanentId(null)}>Cancel</button>
+                </div>
+              ) : (
+                <button style={{ ...S.prioLogLink, color: "#C87060", marginTop: 4 }} onClick={() => setConfirmPermanentId(p.id)}>Delete permanently</button>
+              )}
+              <TapError message={rowError.get(p.id)} />
+            </div>
+          ))}
+          {deleted && deleted.length === 0 && <div style={S.empty}>No one deleted.</div>}
+        </div>
+        <button style={M.cancel} onClick={onClose}>Close</button>
       </div>
     </div>
   );

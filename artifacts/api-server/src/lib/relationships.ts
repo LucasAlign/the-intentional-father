@@ -30,3 +30,9 @@ export const RELATIONSHIP_RANK_SQL: SQL = sql`CASE ${relationships.category}
   WHEN 'other' THEN 4
   ELSE 5
 END`;
+
+// Same ranking as RELATIONSHIP_RANK_SQL, for JS-side use (#65's
+// insertIntoOrderedGroup) — one source of truth for the category order.
+export const RELATIONSHIP_CATEGORY_RANK: Record<RelationshipCategory, number> = {
+  spouse: 0, child: 1, family: 2, friend: 3, other: 4,
+};
