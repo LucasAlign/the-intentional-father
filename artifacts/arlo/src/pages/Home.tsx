@@ -3091,7 +3091,7 @@ const S: Record<string, CSSProperties> = {
   calendarSmallBtn: { alignSelf: "stretch", background: "rgba(30,26,16,0.62)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 10, color: C.parchmentMid, fontSize: 12, fontWeight: 700, padding: "10px 12px", cursor: "pointer", fontFamily: F },
 };
 const M: Record<string, CSSProperties> = {
-  overlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "flex-end", zIndex: 200, backdropFilter: "blur(6px)" },
+  overlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.42)", display: "flex", alignItems: "flex-end", zIndex: 200, backdropFilter: "blur(6px)" },
   sheet: { width: "100%", maxWidth: 440, margin: "0 auto", position: "relative", overflow: "hidden", background: "linear-gradient(160deg,rgba(34,30,18,0.98),rgba(16,14,8,0.98))", backdropFilter: "blur(24px)", borderRadius: "22px 22px 0 0", padding: "24px 24px 48px", border: "1px solid rgba(210,190,130,0.18)", borderBottom: "none", boxShadow: "0 -10px 50px rgba(0,0,0,0.7)" },
   strip: { position: "absolute", top: 0, left: 0, right: 0, height: 2, background: `linear-gradient(90deg,transparent,${C.brass},transparent)`, boxShadow: `0 0 14px ${C.brassGlow}` },
   head: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
