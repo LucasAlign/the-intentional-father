@@ -536,11 +536,21 @@ export default function Home() {
         setChat(p => [...p, { role: "assistant", content: d.message }]);
         setSuggestedTone(isToneVoice(d.suggestTone) ? d.suggestTone : null);
       } else {
-        const errorText = await r.text();
-        setChat(p => [...p, { role: "assistant", content: "Steward is connected, but the chat request failed (" + r.status + "): " + (errorText || "No error details returned.") }]);
+        // 504 means the server's own OpenAI call timed out (#68) — a real,
+        // distinct-from-generic-failure response, not a network drop, so it
+        // gets its own friendly message instead of the raw status/body dump.
+        const timedOut = r.status === 504;
+        const assistantText = timedOut
+          ? "Steward is taking longer than usual to respond. Try again in a moment."
+          : "Steward is connected, but the chat request failed (" + r.status + "): " + ((await r.text()) || "No error details returned.");
+        setChat(p => [...p, { role: "assistant", content: assistantText }]);
+        // Restore the typed message instead of losing it (#67) — the input
+        // was cleared optimistically above before the request even went out.
+        setCi(text);
       }
     } catch {
       setChat(p => [...p, { role: "assistant", content: "I couldn't reach the server just now. Try again in a moment." }]);
+      setCi(text);
     } finally {
       setSending(false);
     }
