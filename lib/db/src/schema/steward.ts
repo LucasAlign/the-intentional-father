@@ -91,9 +91,18 @@ export const commits = pgTable("commits", {
   id: serial("id").primaryKey(),
   userId: text("user_id").notNull(),
   text: text("text").notNull(),
+  notes: text("notes").notNull().default(""),
   madeDate: text("made_date").notNull(),
+  dueDate: text("due_date"),
   done: boolean("done").notNull().default(false),
+  deleted: boolean("deleted").notNull().default(false),
+  deletedAt: timestamp("deleted_at"),
   relationshipId: integer("relationship_id").references(() => relationships.id, { onDelete: "set null" }),
+  // A one-time commitment target not added to the permanent Tribe list —
+  // mutually exclusive with relationshipId (#60). Kept separate from `notes`
+  // so "for [mechanic]" renders the same way "for [wife]" does.
+  adHocName: text("ad_hoc_name"),
+  adHocCategory: text("ad_hoc_category"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

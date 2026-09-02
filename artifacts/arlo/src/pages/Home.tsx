@@ -55,7 +55,10 @@ interface TaskHistory {
   completedToday: boolean;
   slipping: boolean;
 }
-interface Commit { id: number; text: string; madeDate: string; done: boolean; relationshipId: number | null; }
+interface Commit {
+  id: number; text: string; notes: string; madeDate: string; dueDate: string | null; done: boolean;
+  relationshipId: number | null; adHocName: string | null; adHocCategory: RelationshipCategory | null;
+}
 interface Job { id: number; biz: string; name: string; stage: string; due: string; pct: number; pursuitId: number | null; }
 type PursuitCategory = "job" | "business" | "volunteer" | "other";
 interface Pursuit { id: number; name: string; category: PursuitCategory; notes: string; }
@@ -64,13 +67,13 @@ const PURSUIT_CATEGORY_LABEL: Record<PursuitCategory, string> = { job: "Job", bu
 interface Event { id: number; date: string; time: string; title: string; sub: string; tag: string; kind: string; }
 interface Message { role: "user" | "assistant"; content: string; }
 interface Journal { reflect: string; commit_text: string; }
-type RelationshipCategory = "spouse" | "child" | "family" | "friend";
+type RelationshipCategory = "spouse" | "child" | "family" | "friend" | "other";
 interface Relationship {
   id: number; name: string | null; category: RelationshipCategory; type: string;
   notes: string; commitments: string; biggestChallenge: string; isPrimary: boolean;
 }
-const RELATIONSHIP_CATEGORIES: RelationshipCategory[] = ["spouse", "child", "family", "friend"];
-const RELATIONSHIP_CATEGORY_LABEL: Record<RelationshipCategory, string> = { spouse: "Spouse", child: "Child", family: "Family", friend: "Friend" };
+const RELATIONSHIP_CATEGORIES: RelationshipCategory[] = ["spouse", "child", "family", "friend", "other"];
+const RELATIONSHIP_CATEGORY_LABEL: Record<RelationshipCategory, string> = { spouse: "Spouse", child: "Child", family: "Family", friend: "Friend", other: "Other" };
 type ToneVoice = "straight_talk" | "middle_of_the_road" | "take_it_easy";
 interface ProfileData { name?: string | null; season_of_life?: string | null; voice?: ToneVoice | null; }
 type PulseCategory = "physical" | "mental" | "spiritual";
@@ -348,7 +351,7 @@ function rotatingItem(items: string[]) {
 }
 
 const PRIORITIES_VISIBLE_CAP = 3;
-const KEPT_VISIBLE_CAP = 5;
+const KEPT_VISIBLE_CAP = 10;
 
 function cadenceLabel(t: Task): string {
   if (!t.recurrencePeriod) return "";
@@ -446,7 +449,7 @@ export default function Home() {
     return getList<Task>(`${API}/tasks?today=${ymd(new Date())}`).then(setTasks);
   }, []);
   const refreshCommits = useCallback(() => {
-    getList<Commit>(`${API}/commits`).then(setCommits);
+    return getList<Commit>(`${API}/commits`).then(setCommits);
   }, []);
   const refreshRelationships = useCallback(() => {
     getList<Relationship>(`${API}/relationships`).then(setRelationships);
@@ -913,6 +916,60 @@ function PulseCheckCard({ pulseChecks, onSave }: {
 const SWIPE_REVEAL_WIDTH = 104;
 const SWIPE_REVEAL_THRESHOLD = 56;
 
+// Shared swipe-to-reveal gesture physics — left reveals a red action, right
+// (when allowed) reveals a green one. Releasing the swipe never fires
+// anything by itself; it only snaps open to reveal the button, which needs
+// its own deliberate tap (#54). Pure gesture state only — callers own what
+// the two actions are and how they render.
+function useSwipeReveal(canSwipeRight: boolean) {
+  const [startX, setStartX] = useState<number | null>(null);
+  const [offset, setOffset] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const baseOffset = useRef(0);
+  const lastMove = useRef<{ x: number; t: number } | null>(null);
+  const velocity = useRef(0); // px/ms — drives how quickly the swipe cue snaps/fades on release
+
+  function down(e: PointerEvent<HTMLDivElement>) {
+    setStartX(e.clientX);
+    baseOffset.current = offset;
+    lastMove.current = { x: e.clientX, t: e.timeStamp };
+    velocity.current = 0;
+    setDragging(true);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+  function move(e: PointerEvent<HTMLDivElement>) {
+    if (startX === null) return;
+    const maxRight = canSwipeRight ? SWIPE_REVEAL_WIDTH : 0;
+    const next = Math.min(maxRight, Math.max(-SWIPE_REVEAL_WIDTH, baseOffset.current + (e.clientX - startX)));
+    setOffset(next);
+    if (lastMove.current) {
+      const dt = Math.max(1, e.timeStamp - lastMove.current.t);
+      const dx = Math.abs(e.clientX - lastMove.current.x);
+      velocity.current = Math.min(3, dx / dt);
+    }
+    lastMove.current = { x: e.clientX, t: e.timeStamp };
+  }
+  function up() {
+    if (startX === null) return;
+    if (offset <= -SWIPE_REVEAL_THRESHOLD) setOffset(-SWIPE_REVEAL_WIDTH);
+    else if (offset >= SWIPE_REVEAL_THRESHOLD) setOffset(SWIPE_REVEAL_WIDTH);
+    else setOffset(0);
+    setStartX(null);
+    setDragging(false);
+  }
+  function close() { setOffset(0); }
+
+  // A fast flick settles/fades in almost instantly; a slow drag eases in —
+  // the fade speed tracks how fast the row was actually swiped.
+  const fadeMs = Math.round(Math.max(70, 260 - velocity.current * 90));
+  const cueTransition = dragging ? "none" : `opacity ${fadeMs}ms ease`;
+  const leftOpacity = Math.min(1, Math.max(0, -offset) / SWIPE_REVEAL_WIDTH);
+  const rightOpacity = Math.min(1, Math.max(0, offset) / SWIPE_REVEAL_WIDTH);
+  const rowTransition = dragging ? "none" : "transform 0.18s ease";
+
+  return { offset, dragging, down, move, up, close, leftOpacity, rightOpacity, cueTransition, rowTransition };
+}
+
 function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, onOpenDetail }: {
   task: Task; index: number; isLast: boolean;
   onComplete: (id: number) => Promise<boolean>;
@@ -920,9 +977,6 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
   onLogToday: (id: number) => Promise<boolean>;
   onOpenDetail: (task: Task) => void;
 }) {
-  const [startX, setStartX] = useState<number | null>(null);
-  const [offset, setOffset] = useState(0);
-  const [dragging, setDragging] = useState(false);
   const [crossedOff, setCrossedOff] = useState(false);
   const [pulsed, setPulsed] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -930,12 +984,10 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
   const [completing, setCompleting] = useState(false);
   const { error, flash } = useTapError();
   const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const baseOffset = useRef(0);
-  const lastMove = useRef<{ x: number; t: number } | null>(null);
-  const velocity = useRef(0); // px/ms — drives how quickly the swipe cue snaps/fades on release
   useEffect(() => () => { if (confirmTimer.current) clearTimeout(confirmTimer.current); }, []);
 
   const canSwipeComplete = !crossedOff && !completing && (task.recurrencePeriod ? !task.completedToday : true);
+  const swipe = useSwipeReveal(canSwipeComplete);
 
   async function tapNumber() {
     if (task.recurrencePeriod) {
@@ -966,12 +1018,12 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
     if (deleting) return;
     setDeleting(true);
     const ok = await onDelete(task.id);
-    if (!ok) { setDeleting(false); setOffset(0); flash("Couldn't delete — try again"); }
+    if (!ok) { setDeleting(false); swipe.close(); flash("Couldn't delete — try again"); }
   }
   async function runComplete() {
     if (!canSwipeComplete) return;
     setCompleting(true);
-    setOffset(0);
+    swipe.close();
     if (task.recurrencePeriod) {
       setPulsed(true);
       const ok = await onLogToday(task.id);
@@ -989,40 +1041,8 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
 
   function down(e: PointerEvent<HTMLDivElement>) {
     if (deleting || completing || crossedOff) return;
-    setStartX(e.clientX);
-    baseOffset.current = offset;
-    lastMove.current = { x: e.clientX, t: e.timeStamp };
-    velocity.current = 0;
-    setDragging(true);
-    e.currentTarget.setPointerCapture(e.pointerId);
+    swipe.down(e);
   }
-  function move(e: PointerEvent<HTMLDivElement>) {
-    if (startX === null) return;
-    const maxRight = canSwipeComplete ? SWIPE_REVEAL_WIDTH : 0;
-    const next = Math.min(maxRight, Math.max(-SWIPE_REVEAL_WIDTH, baseOffset.current + (e.clientX - startX)));
-    setOffset(next);
-    if (lastMove.current) {
-      const dt = Math.max(1, e.timeStamp - lastMove.current.t);
-      const dx = Math.abs(e.clientX - lastMove.current.x);
-      velocity.current = Math.min(3, dx / dt);
-    }
-    lastMove.current = { x: e.clientX, t: e.timeStamp };
-  }
-  function up() {
-    if (startX === null) return;
-    if (offset <= -SWIPE_REVEAL_THRESHOLD) setOffset(-SWIPE_REVEAL_WIDTH);
-    else if (offset >= SWIPE_REVEAL_THRESHOLD) setOffset(SWIPE_REVEAL_WIDTH);
-    else setOffset(0);
-    setStartX(null);
-    setDragging(false);
-  }
-
-  // A fast flick settles/fades in almost instantly; a slow drag eases in —
-  // the fade speed tracks how fast the row was actually swiped.
-  const fadeMs = Math.round(Math.max(70, 260 - velocity.current * 90));
-  const cueTransition = dragging ? "none" : `opacity ${fadeMs}ms ease`;
-  const deleteOpacity = Math.min(1, Math.max(0, -offset) / SWIPE_REVEAL_WIDTH);
-  const completeOpacity = Math.min(1, Math.max(0, offset) / SWIPE_REVEAL_WIDTH);
 
   const numDone = task.recurrencePeriod ? (task.completedToday || pulsed) : crossedOff;
 
@@ -1054,23 +1074,23 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
   return (
     <div style={{ ...S.swipeWrap, marginBottom: isLast ? 0 : 20 }}>
       <button
-        style={{ ...S.deleteCue, opacity: deleteOpacity, transition: cueTransition, pointerEvents: offset < 0 ? "auto" : "none" }}
+        style={{ ...S.deleteCue, opacity: swipe.leftOpacity, transition: swipe.cueTransition, pointerEvents: swipe.offset < 0 ? "auto" : "none" }}
         disabled={deleting} onClick={runDelete}
       >
         {deleting ? "Deleting…" : "Delete"}
       </button>
       <button
-        style={{ ...S.completeCue, opacity: completeOpacity, transition: cueTransition, pointerEvents: offset > 0 ? "auto" : "none" }}
+        style={{ ...S.completeCue, opacity: swipe.rightOpacity, transition: swipe.cueTransition, pointerEvents: swipe.offset > 0 ? "auto" : "none" }}
         disabled={completing} onClick={runComplete}
       >
         {completing ? "…" : "Complete"}
       </button>
       <div
-        style={{ ...S.prioRow, ...S.swipeFront, ...rowStyle, transform: "translateX(" + offset + "px)", transition: dragging ? "none" : "transform 0.18s ease" }}
+        style={{ ...S.prioRow, ...S.swipeFront, ...rowStyle, transform: "translateX(" + swipe.offset + "px)", transition: swipe.rowTransition }}
         onPointerDown={down}
-        onPointerMove={move}
-        onPointerUp={up}
-        onPointerCancel={up}
+        onPointerMove={swipe.move}
+        onPointerUp={swipe.up}
+        onPointerCancel={swipe.up}
       >
         <button
           style={{ ...S.prioNum, ...(numDone ? S.prioNumDone : {}), ...(confirming ? { borderColor: C.brass, color: C.brass, boxShadow: `0 0 8px ${C.brassGlow}` } : {}) }}
@@ -1110,44 +1130,164 @@ function relationshipLabel(r: Relationship): string {
   return r.name || r.type || RELATIONSHIP_CATEGORY_LABEL[r.category];
 }
 
+// A commitment's target is either an existing Tribe relationship, or a
+// one-time ad hoc name + category (#60) — never neither.
+function commitTargetLabel(c: Commit, byId: Map<number, Relationship>): string {
+  if (c.relationshipId && byId.has(c.relationshipId)) return relationshipLabel(byId.get(c.relationshipId)!);
+  if (c.adHocName) return c.adHocName;
+  return "someone";
+}
+function commitTargetSub(c: Commit, byId: Map<number, Relationship>): string {
+  if (c.relationshipId && byId.has(c.relationshipId)) {
+    const r = byId.get(c.relationshipId)!;
+    return RELATIONSHIP_CATEGORY_LABEL[r.category];
+  }
+  if (c.adHocCategory) return RELATIONSHIP_CATEGORY_LABEL[c.adHocCategory];
+  return "";
+}
+// [OVERDUE] / [DUE SOON] / [aging with no due date] — mirrors Steward's own
+// read of the same fields (stewardContext.ts) so the UI and the chat agree.
+function commitAgeStatus(c: Commit): { label: string; color: "red" | "brass" | null } {
+  if (c.dueDate) {
+    const dueInDays = Math.round((new Date(c.dueDate).getTime() - new Date(ymd(new Date())).getTime()) / 86400000);
+    if (dueInDays < 0) return { label: "Overdue", color: "red" };
+    if (dueInDays <= 3) return { label: dueInDays === 0 ? "Due today" : `Due in ${dueInDays}d`, color: "brass" };
+    return { label: `Due ${c.dueDate}`, color: null };
+  }
+  return { label: "", color: null };
+}
+
+// A commitment row: compact by default (text, who, made-date), with an
+// expand toggle revealing notes/due date and an Edit button. Swipe
+// left/right works on the collapsed row regardless of expand state —
+// reusing the same gesture as Priorities (#54), red reveals Delete, green
+// reveals Kept. Marking Kept has no confirm step (#60/Q3): unlike a
+// priority, toggling a commitment is already freely reversible.
+function SwipeCommitment({ commit, byId, onToggleDone, onDelete, onEdit }: {
+  commit: Commit; byId: Map<number, Relationship>;
+  onToggleDone: (id: number, done: boolean) => Promise<boolean>;
+  onDelete: (id: number) => Promise<boolean>;
+  onEdit: (commit: Commit) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [toggling, setToggling] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const { error, flash } = useTapError();
+  const swipe = useSwipeReveal(!commit.done && !toggling);
+
+  async function runToggle() {
+    if (toggling || deleting) return;
+    setToggling(true);
+    swipe.close();
+    const ok = await onToggleDone(commit.id, !commit.done);
+    setToggling(false);
+    if (!ok) flash("Couldn't save — try again");
+  }
+  async function runDelete() {
+    if (deleting) return;
+    setDeleting(true);
+    const ok = await onDelete(commit.id);
+    if (!ok) { setDeleting(false); swipe.close(); flash("Couldn't delete — try again"); }
+  }
+  function down(e: PointerEvent<HTMLDivElement>) {
+    if (deleting || toggling) return;
+    swipe.down(e);
+  }
+
+  const who = commitTargetLabel(commit, byId);
+  const sub = commitTargetSub(commit, byId);
+  const age = commit.done ? { label: "", color: null as "red" | "brass" | null } : commitAgeStatus(commit);
+  const ageColor = age.color === "red" ? "#C87060" : age.color === "brass" ? C.brass : C.parchmentDim;
+
+  return (
+    <div style={{ ...S.swipeWrap, marginBottom: 12 }}>
+      <button
+        style={{ ...S.deleteCue, opacity: swipe.leftOpacity, transition: swipe.cueTransition, pointerEvents: swipe.offset < 0 ? "auto" : "none" }}
+        disabled={deleting} onClick={runDelete}
+      >
+        {deleting ? "Deleting…" : "Delete"}
+      </button>
+      {!commit.done && (
+        <button
+          style={{ ...S.completeCue, opacity: swipe.rightOpacity, transition: swipe.cueTransition, pointerEvents: swipe.offset > 0 ? "auto" : "none" }}
+          disabled={toggling} onClick={runToggle}
+        >
+          {toggling ? "…" : "Kept"}
+        </button>
+      )}
+      <div
+        style={{ ...S.commitCard, transform: "translateX(" + swipe.offset + "px)", transition: swipe.rowTransition }}
+        onPointerDown={down} onPointerMove={swipe.move} onPointerUp={swipe.up} onPointerCancel={swipe.up}
+      >
+        <div style={{ ...S.commitRow, marginBottom: 0 }}>
+          <button style={{ ...S.dot, ...(commit.done ? S.dotDone : {}) }} disabled={toggling} onClick={runToggle} aria-label={commit.done ? "Reopen" : "Mark kept"}>
+            {commit.done ? "✓" : ""}
+          </button>
+          <div style={{ flex: 1 }}>
+            <div style={{ ...S.prioTitle, textDecoration: commit.done ? "line-through" : "none" }}>{commit.text}</div>
+            <div style={S.prioSub}>
+              For {who}{sub ? ` (${sub})` : ""} · Said {commit.madeDate}
+              {age.label && <span style={{ color: ageColor, marginLeft: 6 }}>{age.label}</span>}
+            </div>
+          </div>
+          <button style={S.commitExpandBtn} onClick={() => setExpanded(e => !e)} aria-label={expanded ? "Show less" : "Show more"}>
+            {expanded ? "▴" : "▾"}
+          </button>
+        </div>
+        {expanded && (
+          <div style={S.commitExpandPanel}>
+            {commit.notes && <div style={S.prioSub}>Note: {commit.notes}</div>}
+            {commit.dueDate && <div style={S.prioSub}>Due {commit.dueDate}</div>}
+            <button style={S.prioEditBtn} onClick={() => onEdit(commit)}>Edit</button>
+          </div>
+        )}
+      </div>
+      <TapError message={error} />
+    </div>
+  );
+}
+
 function Relationships({ relationships, refreshRelationships, commits, refreshCommits }: {
   relationships: Relationship[]; refreshRelationships: () => void;
   commits: Commit[]; refreshCommits: () => void;
 }) {
-  const [val, setVal] = useState("");
-  const [tagId, setTagId] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<Relationship | null>(null);
-  const [keptHistoryOpen, setKeptHistoryOpen] = useState(false);
-  const addSave = useSaveStatus();
-  const commitTapError = useKeyedTapError<number>();
+  const [logOpen, setLogOpen] = useState(false);
+  const [editingCommit, setEditingCommit] = useState<Commit | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [deletingIds, setDeletingIds] = useState<number[]>([]);
   const primaryTapError = useKeyedTapError<number>();
   const primaryRel = primaryRelationship(relationships);
   const byId = new Map(relationships.map(r => [r.id, r]));
   const intentionText = primaryRel?.name
     ? `Ask ${primaryRel.name} about their week before you talk about yours.`
     : "Log commitments to the people who matter most — spouse, kids, parents, close friends.";
-  const open = commits.filter(c => !c.done), done = commits.filter(c => c.done);
+  const open = commits.filter(c => !c.done && !deletingIds.includes(c.id));
+  const done = commits.filter(c => c.done && !deletingIds.includes(c.id));
 
-  async function add() {
-    const t = val.trim();
-    if (!t) return;
-    const ok = await addSave.save(async () => {
-      const r = await fetch(`${API}/commits`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: t, relationshipId: tagId ? Number(tagId) : null }),
-      });
-      if (r.ok) refreshCommits();
-      return r.ok;
-    });
-    if (ok) setVal("");
-  }
-  async function toggle(c: Commit) {
+  async function setCommitDone(id: number, doneVal: boolean): Promise<boolean> {
     try {
-      const r = await fetch(`${API}/commits/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: !c.done }) });
-      if (r.ok) { refreshCommits(); return; }
+      const r = await fetch(`${API}/commits/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: doneVal }) });
+      if (r.ok) { refreshCommits(); return true; }
     } catch { /* fall through */ }
-    commitTapError.flash(c.id, "Couldn't save — try again");
+    return false;
+  }
+  async function deleteCommit(id: number): Promise<boolean> {
+    setDeletingIds(prev => prev.includes(id) ? prev : [...prev, id]);
+    try {
+      const r = await fetch(`${API}/commits/${id}`, { method: "DELETE" });
+      if (r.ok) {
+        await refreshCommits();
+        setDeletingIds(prev => prev.filter(item => item !== id));
+        return true;
+      }
+      setDeletingIds(prev => prev.filter(item => item !== id));
+      return false;
+    } catch {
+      setDeletingIds(prev => prev.filter(item => item !== id));
+      return false;
+    }
   }
   async function togglePrimary(r: Relationship) {
     try {
@@ -1184,80 +1324,350 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
         <button style={{ ...S.intakeBtn, marginTop: 14 }} onClick={() => setAddOpen(true)}>＋  Add person</button>
       </div>
 
-      <div style={S.logRow}>
-        <input
-          style={S.logInput} value={val}
-          onChange={e => { setVal(e.target.value); if (addSave.status === "error") addSave.reset(); }}
-          onKeyDown={e => e.key === "Enter" && add()} placeholder="Log a commitment you made..."
-        />
-        <button style={S.logBtn} onClick={add}>Log</button>
-      </div>
-      <SaveStatus status={addSave.status} onRetry={add} />
-      {relationships.length > 0 && (
-        <select style={S.tribeTagSelect} value={tagId} onChange={e => setTagId(e.target.value)}>
-          <option value="">General (not tagged to anyone)</option>
-          {relationships.map(r => <option key={r.id} value={r.id}>{relationshipLabel(r)}</option>)}
-        </select>
-      )}
+      <button style={{ ...S.intakeBtn, marginBottom: 4 }} onClick={() => setLogOpen(true)}>＋  Log a commitment</button>
+
       {open.length > 0 && (
         <div style={S.card}>
           <div style={S.eyebrow}><span style={S.eyeText}>OPEN</span></div>
-          {open.map(c => (
-            <div key={c.id}>
-              <div style={S.commitRow}>
-                <button style={S.dot} onClick={() => toggle(c)} />
-                <div><div style={S.prioTitle}>{c.text}</div><div style={S.prioSub}>Said {c.madeDate}{c.relationshipId && byId.has(c.relationshipId) ? ` — for ${relationshipLabel(byId.get(c.relationshipId)!)}` : ""}</div></div>
-              </div>
-              <TapError message={commitTapError.get(c.id)} />
-            </div>
-          ))}
+          <div style={S.scrollCap5}>
+            {open.map(c => (
+              <SwipeCommitment key={c.id} commit={c} byId={byId} onToggleDone={setCommitDone} onDelete={deleteCommit} onEdit={setEditingCommit} />
+            ))}
+          </div>
         </div>
       )}
       {done.length > 0 && (
-        <div style={{ ...S.card, opacity: 0.5 }}>
+        <div style={{ ...S.card, opacity: 0.85 }}>
           <div style={S.prioHeadRow}>
             <div style={S.eyebrow}><span style={S.eyeText}>KEPT</span></div>
-            {done.length > KEPT_VISIBLE_CAP && <button style={S.prioLogLink} onClick={() => setKeptHistoryOpen(true)}>History ›</button>}
+            {done.length > KEPT_VISIBLE_CAP && <button style={S.prioLogLink} onClick={() => setHistoryOpen(true)}>History ›</button>}
           </div>
           {done.slice(0, KEPT_VISIBLE_CAP).map(c => (
-            <div key={c.id}>
-              <div style={S.commitRow}>
-                <button style={{ ...S.dot, ...S.dotDone }} onClick={() => toggle(c)}>✓</button>
-                <div style={{ ...S.prioTitle, textDecoration: "line-through" }}>{c.text}</div>
-              </div>
-              <TapError message={commitTapError.get(c.id)} />
-            </div>
+            <SwipeCommitment key={c.id} commit={c} byId={byId} onToggleDone={setCommitDone} onDelete={deleteCommit} onEdit={setEditingCommit} />
           ))}
         </div>
       )}
       {addOpen && <RelationshipModal onClose={() => setAddOpen(false)} onSaved={refreshRelationships} />}
       {editing && <RelationshipModal relationship={editing} onClose={() => setEditing(null)} onSaved={refreshRelationships} onDeleted={() => { refreshRelationships(); refreshCommits(); }} />}
-      {keptHistoryOpen && <KeptHistoryModal commits={done} byId={byId} onClose={() => setKeptHistoryOpen(false)} />}
+      {logOpen && <CommitLogModal relationships={relationships} onClose={() => setLogOpen(false)} onSaved={refreshCommits} onRelationshipAdded={refreshRelationships} />}
+      {editingCommit && (
+        <CommitEditModal
+          commit={editingCommit} relationships={relationships}
+          onClose={() => setEditingCommit(null)} onSaved={refreshCommits}
+          onDeleted={refreshCommits} onRelationshipAdded={refreshRelationships}
+        />
+      )}
+      {historyOpen && <CommitHistoryModal commits={done} byId={byId} onClose={() => setHistoryOpen(false)} onChanged={refreshCommits} />}
       {commits.length === 0 && <div style={{ ...S.card }}><div style={S.empty}>No commitments logged yet.</div></div>}
       <div style={{ height: 32 }} />
     </div>
   );
 }
 
-// ── Kept commitments history modal ──────────────────────────────────────────
-function KeptHistoryModal({ commits, byId, onClose }: { commits: Commit[]; byId: Map<number, Relationship>; onClose: () => void }) {
+// Shared "who is this to?" picker used by both the log and edit modals:
+// pick an existing Tribe relationship, or name someone new under a category
+// and choose whether it's a one-time thing or worth adding to Tribe (#60).
+function CommitTargetPicker({ relationships, relationshipId, setRelationshipId, newCategory, setNewCategory, newName, setNewName, addToTribe, setAddToTribe }: {
+  relationships: Relationship[];
+  relationshipId: string; setRelationshipId: (v: string) => void;
+  newCategory: RelationshipCategory | ""; setNewCategory: (v: RelationshipCategory | "") => void;
+  newName: string; setNewName: (v: string) => void;
+  addToTribe: boolean; setAddToTribe: (v: boolean) => void;
+}) {
+  const hasNew = newCategory !== "" && newName.trim() !== "";
+  function pickExisting(id: number) {
+    setRelationshipId(String(id));
+    setNewCategory(""); setNewName(""); setAddToTribe(false);
+  }
+  function pickNewCategory(cat: RelationshipCategory) {
+    setNewCategory(cat);
+    setRelationshipId("");
+  }
+  return (
+    <>
+      <div style={E.fieldGroup}>
+        <div style={E.label}>WHO IS THIS TO?</div>
+        {relationships.length > 0 && (
+          <div style={E.chipRow}>
+            {relationships.map(r => (
+              <button key={r.id} style={{ ...E.chip, ...(relationshipId === String(r.id) ? { background: C.brass, color: C.ink } : {}) }} onClick={() => pickExisting(r.id)}>
+                {relationshipLabel(r)}
+              </button>
+            ))}
+          </div>
+        )}
+        <div style={{ ...S.prioSub, marginTop: relationships.length > 0 ? 10 : 0, marginBottom: 6 }}>Someone new:</div>
+        <div style={E.chipRow}>
+          {RELATIONSHIP_CATEGORIES.map(cat => (
+            <button key={cat} style={{ ...E.chip, ...(newCategory === cat ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => pickNewCategory(cat)}>
+              {RELATIONSHIP_CATEGORY_LABEL[cat]}
+            </button>
+          ))}
+        </div>
+        {newCategory !== "" && (
+          <input style={{ ...M.input, marginTop: 8 }} value={newName} onChange={e => setNewName(e.target.value)} placeholder="Their name" autoFocus />
+        )}
+      </div>
+      {hasNew && (
+        <div style={E.fieldGroup}>
+          <div style={E.label}>ONE-TIME, OR ADD TO YOUR TRIBE LIST?</div>
+          <div style={E.chipRow}>
+            <button style={{ ...E.chip, ...(!addToTribe ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setAddToTribe(false)}>Just this once</button>
+            <button style={{ ...E.chip, ...(addToTribe ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setAddToTribe(true)}>Add to Tribe</button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+async function createAdHocRelationship(name: string, category: RelationshipCategory): Promise<number | null> {
+  const r = await fetch(`${API}/relationships`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, category, type: "", notes: "", commitments: "", biggestChallenge: "" }),
+  });
+  if (!r.ok) return null;
+  const created = await r.json();
+  return created.id ?? null;
+}
+
+// ── Log a commitment modal ──────────────────────────────────────────────────
+function CommitLogModal({ relationships, onClose, onSaved, onRelationshipAdded }: {
+  relationships: Relationship[]; onClose: () => void; onSaved: () => void; onRelationshipAdded: () => void;
+}) {
+  const [relationshipId, setRelationshipId] = useState("");
+  const [newCategory, setNewCategory] = useState<RelationshipCategory | "">("");
+  const [newName, setNewName] = useState("");
+  const [addToTribe, setAddToTribe] = useState(false);
+  const [text, setText] = useState("");
+  const [notes, setNotes] = useState("");
+  const [dueDate, setDueDate] = useState("");
+  const saveStatus = useSaveStatus();
+
+  const hasExisting = relationshipId !== "";
+  const hasNew = newCategory !== "" && newName.trim() !== "";
+  const canSave = text.trim() !== "" && (hasExisting || hasNew);
+
+  async function save() {
+    if (!canSave) return;
+    await saveStatus.save(async () => {
+      let targetRelationshipId: number | null = hasExisting ? Number(relationshipId) : null;
+      if (!hasExisting && hasNew && addToTribe) {
+        targetRelationshipId = await createAdHocRelationship(newName.trim(), newCategory as RelationshipCategory);
+        if (targetRelationshipId === null) return false;
+      }
+      const body: Record<string, unknown> = { text: text.trim(), notes: notes.trim(), dueDate: dueDate || null };
+      if (targetRelationshipId) body.relationshipId = targetRelationshipId;
+      else { body.adHocName = newName.trim(); body.adHocCategory = newCategory; }
+      const r = await fetch(`${API}/commits`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (r.ok) {
+        if (targetRelationshipId && addToTribe) onRelationshipAdded();
+        onSaved(); onClose();
+        return true;
+      }
+      return false;
+    });
+  }
+
+  return (
+    <div style={M.overlay}>
+      <div style={M.sheet}>
+        <div style={M.strip} />
+        <div style={M.head}><div style={M.title}>Log a Commitment</div></div>
+
+        <CommitTargetPicker
+          relationships={relationships}
+          relationshipId={relationshipId} setRelationshipId={setRelationshipId}
+          newCategory={newCategory} setNewCategory={setNewCategory}
+          newName={newName} setNewName={setNewName}
+          addToTribe={addToTribe} setAddToTribe={setAddToTribe}
+        />
+
+        <div style={E.fieldGroup}>
+          <div style={E.label}>WHAT DID YOU COMMIT TO?</div>
+          <input style={M.input} value={text} onChange={e => setText(e.target.value)} placeholder="e.g. Get him in touch with my pastor" />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>NOTE (OPTIONAL)</div>
+          <textarea style={M.input} rows={2} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Any detail worth remembering" />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>DUE DATE (OPTIONAL)</div>
+          <input type="date" style={M.input} value={dueDate} onChange={e => setDueDate(e.target.value)} />
+        </div>
+
+        <SaveStatus status={saveStatus.status} onRetry={save} />
+        <button style={M.next} disabled={!canSave || saveStatus.status === "saving"} onClick={save}>
+          {saveStatus.status === "saving" ? "Saving…" : "Log commitment"}
+        </button>
+        <button style={M.cancel} onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Edit commitment modal ───────────────────────────────────────────────────
+function CommitEditModal({ commit, relationships, onClose, onSaved, onDeleted, onRelationshipAdded }: {
+  commit: Commit; relationships: Relationship[];
+  onClose: () => void; onSaved: () => void; onDeleted: () => void; onRelationshipAdded: () => void;
+}) {
+  const [relationshipId, setRelationshipId] = useState(commit.relationshipId ? String(commit.relationshipId) : "");
+  const [newCategory, setNewCategory] = useState<RelationshipCategory | "">(commit.relationshipId ? "" : (commit.adHocCategory ?? ""));
+  const [newName, setNewName] = useState(commit.relationshipId ? "" : (commit.adHocName ?? ""));
+  const [addToTribe, setAddToTribe] = useState(false);
+  const [text, setText] = useState(commit.text);
+  const [notes, setNotes] = useState(commit.notes);
+  const [dueDate, setDueDate] = useState(commit.dueDate ?? "");
+  const saveStatus = useSaveStatus();
+  const [deleting, setDeleting] = useState(false);
+  const [delErr, setDelErr] = useState("");
+
+  const hasExisting = relationshipId !== "";
+  const hasNew = newCategory !== "" && newName.trim() !== "";
+  const canSave = text.trim() !== "" && (hasExisting || hasNew);
+
+  async function save() {
+    if (!canSave) return;
+    await saveStatus.save(async () => {
+      let targetRelationshipId: number | null = hasExisting ? Number(relationshipId) : null;
+      if (!hasExisting && hasNew && addToTribe) {
+        targetRelationshipId = await createAdHocRelationship(newName.trim(), newCategory as RelationshipCategory);
+        if (targetRelationshipId === null) return false;
+      }
+      const body: Record<string, unknown> = { text: text.trim(), notes: notes.trim(), dueDate: dueDate || null };
+      if (targetRelationshipId) body.relationshipId = targetRelationshipId;
+      else { body.adHocName = newName.trim(); body.adHocCategory = newCategory; }
+      const r = await fetch(`${API}/commits/${commit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (r.ok) {
+        if (targetRelationshipId && addToTribe) onRelationshipAdded();
+        onSaved(); onClose();
+        return true;
+      }
+      return false;
+    });
+  }
+
+  async function del() {
+    setDeleting(true);
+    try {
+      const r = await fetch(`${API}/commits/${commit.id}`, { method: "DELETE" });
+      if (r.ok) { onDeleted(); onClose(); }
+      else { setDelErr("Couldn't delete. Try again."); setDeleting(false); }
+    } catch { setDelErr("Couldn't reach the server."); setDeleting(false); }
+  }
+
+  return (
+    <div style={M.overlay}>
+      <div style={M.sheet}>
+        <div style={M.strip} />
+        <div style={M.head}><div style={M.title}>Edit Commitment</div></div>
+
+        <CommitTargetPicker
+          relationships={relationships}
+          relationshipId={relationshipId} setRelationshipId={setRelationshipId}
+          newCategory={newCategory} setNewCategory={setNewCategory}
+          newName={newName} setNewName={setNewName}
+          addToTribe={addToTribe} setAddToTribe={setAddToTribe}
+        />
+
+        <div style={E.fieldGroup}>
+          <div style={E.label}>WHAT DID YOU COMMIT TO?</div>
+          <input style={M.input} value={text} onChange={e => setText(e.target.value)} />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>NOTE (OPTIONAL)</div>
+          <textarea style={M.input} rows={2} value={notes} onChange={e => setNotes(e.target.value)} />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>DUE DATE (OPTIONAL)</div>
+          <input type="date" style={M.input} value={dueDate} onChange={e => setDueDate(e.target.value)} />
+        </div>
+
+        <SaveStatus status={saveStatus.status} onRetry={save} />
+        <button style={M.next} disabled={!canSave || saveStatus.status === "saving"} onClick={save}>
+          {saveStatus.status === "saving" ? "Saving…" : "Save"}
+        </button>
+        <TapError message={delErr} />
+        <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete commitment"}</button>
+        <button style={M.cancel} onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Kept & Deleted commitments history modal ────────────────────────────────
+function CommitHistoryModal({ commits, byId, onClose, onChanged }: {
+  commits: Commit[]; byId: Map<number, Relationship>; onClose: () => void; onChanged: () => void;
+}) {
+  const [deleted, setDeleted] = useState<Commit[] | null>(null);
+  const [reopeningIds, setReopeningIds] = useState<number[]>([]);
+  const reopenError = useKeyedTapError<number>();
+
+  const load = useCallback(() => {
+    fetch(`${API}/commits/deleted`).then(r => r.ok ? r.json() : null).then(d => setDeleted(d?.items ?? []));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  // Shared by both lists — "done: false" reopens a kept commitment,
+  // "deleted: false" restores a deleted one.
+  async function reopen(id: number, body: { done: boolean } | { deleted: boolean }) {
+    setReopeningIds(prev => [...prev, id]);
+    try {
+      const r = await fetch(`${API}/commits/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (r.ok) {
+        setDeleted(prev => prev && "deleted" in body ? prev.filter(c => c.id !== id) : prev);
+        onChanged();
+        return;
+      }
+    } catch { /* fall through */ }
+    setReopeningIds(prev => prev.filter(item => item !== id));
+    reopenError.flash(id, "Couldn't reopen — try again");
+  }
+
   return (
     <div style={M.overlay}>
       <div style={M.sheet}>
         <div style={M.strip} />
         <div style={M.head}><div style={M.title}>Kept Commitments</div></div>
-        <div>
+        <div style={S.scrollCap5}>
           {commits.map(c => (
-            <div key={c.id} style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 14 }}>
-              <span style={{ color: "#A8C888", fontSize: 14, lineHeight: 1.4 }}>✓</span>
-              <div>
-                <div style={{ ...S.prioTitle, textDecoration: "line-through" }}>{c.text}</div>
-                <div style={S.prioSub}>Said {c.madeDate}{c.relationshipId && byId.has(c.relationshipId) ? ` — for ${relationshipLabel(byId.get(c.relationshipId)!)}` : ""}</div>
+            <div key={c.id} style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                <span style={{ color: "#A8C888", fontSize: 14, lineHeight: 1.4 }}>✓</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ ...S.prioTitle, textDecoration: "line-through" }}>{c.text}</div>
+                  <div style={S.prioSub}>For {commitTargetLabel(c, byId)} · Said {c.madeDate}</div>
+                </div>
+                <button style={S.prioLogLink} disabled={reopeningIds.includes(c.id)} onClick={() => reopen(c.id, { done: false })}>
+                  {reopeningIds.includes(c.id) ? "Reopening…" : "Reopen"}
+                </button>
               </div>
+              <TapError message={reopenError.get(c.id)} />
             </div>
           ))}
           {commits.length === 0 && <div style={S.empty}>Nothing kept yet.</div>}
         </div>
+
+        <div style={{ ...E.label, marginTop: 22, marginBottom: 8 }}>DELETED</div>
+        <div style={S.scrollCap5}>
+          {(deleted ?? []).map(c => (
+            <div key={c.id} style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                <span style={{ color: "#C87060", fontSize: 14, lineHeight: 1.4 }}>✕</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ ...S.prioTitle, textDecoration: "line-through" }}>{c.text}</div>
+                  <div style={S.prioSub}>For {commitTargetLabel(c, byId)} · Said {c.madeDate}</div>
+                </div>
+                <button style={S.prioLogLink} disabled={reopeningIds.includes(c.id)} onClick={() => reopen(c.id, { deleted: false })}>
+                  {reopeningIds.includes(c.id) ? "Reopening…" : "Reopen"}
+                </button>
+              </div>
+              <TapError message={reopenError.get(c.id)} />
+            </div>
+          ))}
+          {deleted && deleted.length === 0 && <div style={S.empty}>Nothing deleted.</div>}
+        </div>
+
         <button style={M.cancel} onClick={onClose}>Close</button>
       </div>
     </div>
@@ -2370,6 +2780,9 @@ const S: Record<string, CSSProperties> = {
   logInput: { flex: 1, background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: "12px 14px", outline: "none", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
   logBtn: { background: `linear-gradient(135deg,${C.walnutMid},${C.walnut})`, border: "none", borderRadius: 12, color: C.parchment, fontSize: 13, fontWeight: 700, padding: "12px 18px", cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,220,160,0.15)" },
   commitRow: { display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 14 },
+  commitCard: { display: "flex", flexDirection: "column", width: "100%", background: "transparent" },
+  commitExpandBtn: { flexShrink: 0, alignSelf: "center", background: "none", border: "none", color: C.parchmentDim, fontSize: 14, padding: "6px 4px", cursor: "pointer", fontFamily: F },
+  commitExpandPanel: { marginLeft: 34, marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(210,190,130,0.12)", display: "flex", flexDirection: "column", gap: 6 },
   tribeRow: { display: "flex", gap: 12, alignItems: "center", marginBottom: 10 },
   tribeNameBtn: { flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer", fontFamily: F, padding: 0 },
   tribeTagSelect: { width: "100%", background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchmentMid, fontSize: 13, fontFamily: F, padding: "10px 12px", outline: "none", marginBottom: 14 },

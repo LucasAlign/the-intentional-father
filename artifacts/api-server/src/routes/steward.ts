@@ -112,6 +112,7 @@ Guidelines:
 - If a recurring priority is flagged slipping (its streak just broke), mention it directly when relevant — but only when it's genuinely notable, not as routine commentary on ordinary progress.
 - If today's Pulse Check shows a category clearly down, ask about it directly rather than letting it pass unmentioned — name which one (physical, mental, or spiritual) and what they noted, if anything. A category that's notably strong is worth acknowledging too. Don't force commentary on every check-in — only when it's genuinely notable, the same restraint as the slipping-priority guideline above.
 - Hold them accountable to commitments they've made to the people who matter most to them, by name where you know it — the same way you'd hold a brother to a promise.
+- If an open commitment is flagged overdue or due soon, or has sat logged a week or more with no due date, ask about it directly by name and who it was made to — the same restraint as the stuck-task guideline above, not routine commentary on every commitment.
 - Encourage real relationships and real action, never foster dependence on the app.${doNotSuggest}${alwaysRemind}${toneDelivery}
 - If ${name}'s current message clearly signals they want your delivery adjusted right now (e.g. "can you ease up" or "just give it to me straight"), say so in your reply, then end it with a tag on its own line: [SUGGEST_TONE:straight_talk], [SUGGEST_TONE:middle_of_the_road], or [SUGGEST_TONE:take_it_easy] — whichever they're asking for. Only include this tag when the signal is clear and it differs from their current setting; never include it as routine commentary.
 
@@ -533,28 +534,68 @@ router.delete('/relationships/:id', async (req: Request, res: Response) => {
 // GET /api/commits
 router.get('/commits', async (req: Request, res: Response) => {
   try {
-    const rows = await db.select().from(commits).where(eq(commits.userId, req.user!.id)).orderBy(desc(commits.createdAt));
+    const rows = await db.select().from(commits).where(and(eq(commits.userId, req.user!.id), eq(commits.deleted, false))).orderBy(desc(commits.createdAt));
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch commits' });
   }
 });
 
+// GET /api/commits/deleted
+router.get('/commits/deleted', async (req: Request, res: Response) => {
+  try {
+    const items = await db.select().from(commits)
+      .where(and(eq(commits.userId, req.user!.id), eq(commits.deleted, true)))
+      .orderBy(desc(commits.deletedAt)).limit(200);
+    res.json({ items });
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching deleted commits');
+    res.status(500).json({ error: 'Failed to fetch deleted commits' });
+  }
+});
+
+// Every commitment needs a named target — an existing relationship, or a
+// one-time ad hoc name + category (#60: no more "General"). The two are
+// mutually exclusive; this resolves req.body into whichever was given, or
+// responds with an error and returns null.
+async function resolveCommitTarget(
+  req: Request, res: Response,
+): Promise<{ relationshipId: number | null; adHocName: string | null; adHocCategory: string | null } | null> {
+  const { relationshipId, adHocName, adHocCategory } = req.body;
+  if (relationshipId !== undefined && relationshipId !== null) {
+    const relId = Number(relationshipId);
+    if (isNaN(relId)) { res.status(400).json({ error: 'Invalid relationshipId' }); return null; }
+    const [owned] = await db.select({ id: relationships.id }).from(relationships).where(and(eq(relationships.id, relId), eq(relationships.userId, req.user!.id))).limit(1);
+    if (!owned) { res.status(400).json({ error: 'relationshipId not found' }); return null; }
+    return { relationshipId: relId, adHocName: null, adHocCategory: null };
+  }
+  if (typeof adHocName === 'string' && adHocName.trim()) {
+    if (!isRelationshipCategory(adHocCategory)) {
+      res.status(400).json({ error: 'A valid category is required for a one-time commitment target' });
+      return null;
+    }
+    return { relationshipId: null, adHocName: adHocName.trim(), adHocCategory };
+  }
+  res.status(400).json({ error: 'Every commitment needs someone it was made to — pick a person or name someone new.' });
+  return null;
+}
+
 // POST /api/commits
 router.post('/commits', async (req: Request, res: Response) => {
   try {
-    const { text, relationshipId } = req.body;
+    const { text, notes, dueDate } = req.body;
     if (!text?.trim()) { res.status(400).json({ error: 'Commit text is required' }); return; }
-    let taggedRelationshipId: number | null = null;
-    if (relationshipId !== undefined && relationshipId !== null) {
-      const relId = Number(relationshipId);
-      if (isNaN(relId)) { res.status(400).json({ error: 'Invalid relationshipId' }); return; }
-      const [owned] = await db.select({ id: relationships.id }).from(relationships).where(and(eq(relationships.id, relId), eq(relationships.userId, req.user!.id))).limit(1);
-      if (!owned) { res.status(400).json({ error: 'relationshipId not found' }); return; }
-      taggedRelationshipId = relId;
+    if (dueDate !== undefined && dueDate !== null && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) {
+      res.status(400).json({ error: 'dueDate must be YYYY-MM-DD' });
+      return;
     }
+    const target = await resolveCommitTarget(req, res);
+    if (!target) return;
     const madeDate = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    const [row] = await db.insert(commits).values({ userId: req.user!.id, text: text.trim(), madeDate, done: false, relationshipId: taggedRelationshipId }).returning();
+    const [row] = await db.insert(commits).values({
+      userId: req.user!.id, text: text.trim(), notes: notes?.trim() || '', madeDate,
+      dueDate: dueDate || null, done: false, ...target,
+    }).returning();
     res.json(row);
   } catch (err) {
     req.log?.error({ err }, 'Error creating commit');
@@ -567,19 +608,29 @@ router.patch('/commits/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    const { done, relationshipId } = req.body;
+    const [existing] = await db.select().from(commits).where(and(eq(commits.id, id), eq(commits.userId, req.user!.id))).limit(1);
+    if (!existing) { res.status(404).json({ error: 'Commit not found' }); return; }
+
+    const { done, text, notes, dueDate, deleted, relationshipId, adHocName } = req.body;
     const updates: Partial<typeof commits.$inferInsert> = {};
     if (typeof done === 'boolean') updates.done = done;
-    if (relationshipId !== undefined) {
-      if (relationshipId === null) {
-        updates.relationshipId = null;
-      } else {
-        const relId = Number(relationshipId);
-        if (isNaN(relId)) { res.status(400).json({ error: 'Invalid relationshipId' }); return; }
-        const [owned] = await db.select({ id: relationships.id }).from(relationships).where(and(eq(relationships.id, relId), eq(relationships.userId, req.user!.id))).limit(1);
-        if (!owned) { res.status(400).json({ error: 'relationshipId not found' }); return; }
-        updates.relationshipId = relId;
-      }
+    if (typeof text === 'string' && text.trim()) updates.text = text.trim();
+    if (typeof notes === 'string') updates.notes = notes.trim();
+    if (dueDate !== undefined) {
+      if (dueDate === null) updates.dueDate = null;
+      else if (/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) updates.dueDate = dueDate;
+      else { res.status(400).json({ error: 'dueDate must be YYYY-MM-DD' }); return; }
+    }
+    if (typeof deleted === 'boolean') {
+      updates.deleted = deleted;
+      updates.deletedAt = deleted ? new Date() : null;
+    }
+    if (relationshipId !== undefined || adHocName !== undefined) {
+      const target = await resolveCommitTarget(req, res);
+      if (!target) return;
+      updates.relationshipId = target.relationshipId;
+      updates.adHocName = target.adHocName;
+      updates.adHocCategory = target.adHocCategory;
     }
     if (Object.keys(updates).length > 0) await db.update(commits).set(updates).where(and(eq(commits.id, id), eq(commits.userId, req.user!.id)));
     res.json({ success: true });
@@ -589,11 +640,14 @@ router.patch('/commits/:id', async (req: Request, res: Response) => {
 });
 
 // DELETE /api/commits/:id
+// Soft-delete: the row moves to the Deleted list (GET /commits/deleted) and
+// can be restored via PATCH { deleted: false } (#60, matching #54/#55).
 router.delete('/commits/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    await db.delete(commits).where(and(eq(commits.id, id), eq(commits.userId, req.user!.id)));
+    await db.update(commits).set({ deleted: true, deletedAt: new Date() })
+      .where(and(eq(commits.id, id), eq(commits.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete commit' });
