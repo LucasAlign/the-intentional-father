@@ -429,6 +429,8 @@ export default function Home() {
   const [editJob, setEditJob] = useState<Job | null>(null);
   const [pursuitModal, setPursuitModal] = useState(false);
   const [editPursuit, setEditPursuit] = useState<Pursuit | null>(null);
+  const [closedPursuitsOpen, setClosedPursuitsOpen] = useState(false);
+  const [closePursuitPrompt, setClosePursuitPrompt] = useState<Pursuit | null>(null);
   const [calendarAccounts, setCalendarAccounts] = useState<string[]>([]);
   const [isAdmin, setIsAdmin] = useState(false);
   const [profileMenu, setProfileMenu] = useState(false);
@@ -461,6 +463,19 @@ export default function Home() {
   const refreshPursuits = useCallback(() => {
     getList<Pursuit>(`${API}/pursuits`).then(setPursuits);
   }, []);
+  // After a job save, check whether it just became the last incomplete job
+  // in its pursuit — if so, surface the auto-close prompt (#48). Re-fetches
+  // jobs directly rather than trusting `jobs` state, which is still stale
+  // at the moment the save that triggered this resolves.
+  const maybePromptPursuitClose = useCallback(async (pursuitId: number | null) => {
+    if (pursuitId === null) return;
+    const freshJobs = await getList<Job>(`${API}/jobs`);
+    setJobs(freshJobs);
+    const pursuitJobs = freshJobs.filter(j => j.pursuitId === pursuitId);
+    if (pursuitJobs.length === 0 || !pursuitJobs.every(j => j.pct === 100)) return;
+    const pursuit = pursuits.find(p => p.id === pursuitId);
+    if (pursuit) setClosePursuitPrompt(pursuit);
+  }, [pursuits]);
   const refreshCalendarStatus = useCallback(() => {
     getJson(`${API}/google-calendar/status`, { accounts: [] }).then((d) => {
       setCalendarAccounts(isRecord(d) && Array.isArray(d.accounts) ? d.accounts as string[] : isRecord(d) && d.connected ? ["Google Calendar"] : []);
@@ -584,7 +599,7 @@ export default function Home() {
       <div style={R.screen}>
         {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} onOpenJournalHistory={() => setJournalHistoryOpen(true)} />}
         {tab === "her" && <Relationships relationships={relationships} refreshRelationships={refreshRelationships} commits={commits} refreshCommits={refreshCommits} />}
-        {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} />}
+        {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} onOpenClosed={() => setClosedPursuitsOpen(true)} />}
         {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} />}
         {tab === "week" && <WeekView events={week} jobs={jobs} pursuits={pursuits} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await fetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
       </div>
@@ -604,9 +619,17 @@ export default function Home() {
       </div>
 
       {jobModal && <JobModal pursuits={pursuits} onClose={() => setJobModal(false)} onCreated={refreshJobs} />}
-      {editJob && <JobEditModal job={editJob} pursuits={pursuits} onClose={() => setEditJob(null)} onSaved={refreshJobs} onDeleted={refreshJobs} />}
+      {editJob && <JobEditModal job={editJob} pursuits={pursuits} onClose={() => setEditJob(null)} onSaved={maybePromptPursuitClose} onDeleted={refreshJobs} />}
       {pursuitModal && <PursuitModal onClose={() => setPursuitModal(false)} onSaved={refreshPursuits} />}
-      {editPursuit && <PursuitModal pursuit={editPursuit} onClose={() => setEditPursuit(null)} onSaved={refreshPursuits} onDeleted={() => { refreshPursuits(); refreshJobs(); }} />}
+      {editPursuit && <PursuitModal pursuit={editPursuit} onClose={() => setEditPursuit(null)} onSaved={refreshPursuits} onDeleted={() => { refreshPursuits(); refreshJobs(); }} onClosed={refreshPursuits} />}
+      {closedPursuitsOpen && <PursuitsClosedModal onClose={() => setClosedPursuitsOpen(false)} onChanged={refreshPursuits} />}
+      {closePursuitPrompt && (
+        <PursuitCloseFinishedPrompt
+          pursuit={closePursuitPrompt}
+          onClose={() => setClosePursuitPrompt(null)}
+          onClosed={() => { setClosePursuitPrompt(null); refreshPursuits(); }}
+        />
+      )}
       {profileMenu && <ProfileMenu name={user?.firstName} email={user?.email} onClose={() => setProfileMenu(false)} onLogout={logout} />}
       {priorityDetail && <PriorityDetailModal task={priorityDetail} onClose={() => setPriorityDetail(null)} onChanged={refreshTasks} />}
       {completedLogOpen && <CompletedLogModal onClose={() => setCompletedLogOpen(false)} onChanged={refreshTasks} />}
@@ -2024,9 +2047,9 @@ function PeopleDeletedModal({ onClose, onChanged }: { onClose: () => void; onCha
 }
 
 // ── Work ───────────────────────────────────────────────────────────────────
-function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit }: {
+function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit, onOpenClosed }: {
   jobs: Job[]; pursuits: Pursuit[]; onJob: () => void; onEdit: (j: Job) => void;
-  onAddPursuit: () => void; onEditPursuit: (p: Pursuit) => void;
+  onAddPursuit: () => void; onEditPursuit: (p: Pursuit) => void; onOpenClosed: () => void;
 }) {
   const pursuitIds = pursuits.map(p => p.id);
   const jobsByPursuit = new Map<number | null, Job[]>();
@@ -2055,6 +2078,9 @@ function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit }: {
     <div style={S.scroll}>
       <div style={S.pageTitle}>Work</div>
       <div style={S.pageSub}>Active jobs by pursuit. Tap a row to edit.</div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 2 }}>
+        <button style={S.prioLogLink} onClick={onOpenClosed}>Closed ›</button>
+      </div>
       {pursuits.length === 0 && jobs.length === 0 ? (
         <div style={S.card}><div style={S.empty}>No pursuits yet. Add one to start planning ahead.</div></div>
       ) : (
@@ -2280,7 +2306,7 @@ function JobModal({ pursuits, onClose, onCreated }: { pursuits: Pursuit[]; onClo
 }
 
 // ── Job edit modal ────────────────────────────────────────────────────────────
-function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job; pursuits: Pursuit[]; onClose: () => void; onSaved: () => void; onDeleted: () => void }) {
+function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job; pursuits: Pursuit[]; onClose: () => void; onSaved: (pursuitId: number | null) => void; onDeleted: () => void }) {
   const [name, setName] = useState(job.name);
   const [pursuitId, setPursuitId] = useState<number | null>(job.pursuitId);
   const [stage, setStage] = useState(job.stage);
@@ -2302,7 +2328,7 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
         method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: name.trim(), pursuitId, stage: stage.trim(), due: due.trim(), pct, materials: materials.trim(), budget: budget.trim(), risk: risk.trim() }),
       });
-      if (r.ok) { onSaved(); onClose(); return true; }
+      if (r.ok) { onSaved(pursuitId); onClose(); return true; }
       return false;
     });
   }
@@ -2372,8 +2398,8 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
 }
 
 // ── Pursuit add/edit modal ──────────────────────────────────────────────────────
-function PursuitModal({ pursuit, onClose, onSaved, onDeleted }: {
-  pursuit?: Pursuit; onClose: () => void; onSaved: () => void; onDeleted?: () => void;
+function PursuitModal({ pursuit, onClose, onSaved, onDeleted, onClosed }: {
+  pursuit?: Pursuit; onClose: () => void; onSaved: () => void; onDeleted?: () => void; onClosed?: () => void;
 }) {
   const [name, setName] = useState(pursuit?.name ?? "");
   const [category, setCategory] = useState<PursuitCategory>(pursuit?.category ?? "job");
@@ -2382,6 +2408,8 @@ function PursuitModal({ pursuit, onClose, onSaved, onDeleted }: {
   const [validationErr, setValidationErr] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [delErr, setDelErr] = useState("");
+  const [closing, setClosing] = useState(false);
+  const [closeErr, setCloseErr] = useState("");
 
   async function save() {
     if (!name.trim()) { setValidationErr("Name is required."); return; }
@@ -2404,6 +2432,19 @@ function PursuitModal({ pursuit, onClose, onSaved, onDeleted }: {
       if (r.ok) { onDeleted?.(); onClose(); }
       else { setDelErr("Couldn't delete. Try again."); setDeleting(false); }
     } catch { setDelErr("Couldn't reach the server."); setDeleting(false); }
+  }
+
+  // Manual close (#48) — no completion gate, unlike the auto-prompt: this
+  // is also how you archive a pursuit you're abandoning, not just one that
+  // finished. Soft, reversible from the Closed history view.
+  async function close() {
+    if (!pursuit) return;
+    setClosing(true);
+    try {
+      const r = await fetch(`${API}/pursuits/${pursuit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: true }) });
+      if (r.ok) { onClosed?.(); onClose(); }
+      else { setCloseErr("Couldn't close. Try again."); setClosing(false); }
+    } catch { setCloseErr("Couldn't reach the server."); setClosing(false); }
   }
 
   return (
@@ -2432,9 +2473,97 @@ function PursuitModal({ pursuit, onClose, onSaved, onDeleted }: {
         <TapError message={validationErr || null} />
         <SaveStatus status={saveStatus.status} onRetry={save} />
         <button style={M.next} disabled={saveStatus.status === "saving"} onClick={save}>{saveStatus.status === "saving" ? "Saving…" : "Save"}</button>
+        <TapError message={closeErr || null} />
+        {pursuit && <button style={M.cancel} disabled={closing} onClick={close}>{closing ? "Closing…" : "Close Pursuit"}</button>}
         <TapError message={delErr || null} />
         {pursuit && <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete Pursuit"}</button>}
         <button style={M.cancel} onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// Closed-pursuits history view (#48) — mirrors PeopleDeletedModal/
+// CompletedLogModal: a Reopen action, no permanent-delete step needed here
+// since "Delete Pursuit" already covers permanent removal separately.
+function PursuitsClosedModal({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
+  const [closed, setClosed] = useState<Pursuit[] | null>(null);
+  const [reopeningIds, setReopeningIds] = useState<number[]>([]);
+  const reopenError = useKeyedTapError<number>();
+
+  const load = useCallback(() => {
+    fetch(`${API}/pursuits/deleted`).then(r => r.ok ? r.json() : null).then(d => setClosed(d?.items ?? []));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function reopen(id: number) {
+    setReopeningIds(prev => [...prev, id]);
+    try {
+      const r = await fetch(`${API}/pursuits/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: false }) });
+      if (r.ok) {
+        setClosed(prev => prev ? prev.filter(p => p.id !== id) : prev);
+        onChanged();
+        return;
+      }
+    } catch { /* fall through */ }
+    setReopeningIds(prev => prev.filter(item => item !== id));
+    reopenError.flash(id, "Couldn't reopen — try again");
+  }
+
+  return (
+    <div style={M.overlay}>
+      <div style={M.sheet}>
+        <div style={M.strip} />
+        <div style={M.head}><div style={M.title}>Closed Pursuits</div></div>
+        <div style={S.scrollCap5}>
+          {(closed ?? []).map(p => (
+            <div key={p.id} style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={S.prioTitle}>{p.name}</div>
+                  <div style={S.prioSub}>{PURSUIT_CATEGORY_LABEL[p.category]}</div>
+                </div>
+                <button style={S.prioLogLink} disabled={reopeningIds.includes(p.id)} onClick={() => reopen(p.id)}>
+                  {reopeningIds.includes(p.id) ? "Reopening…" : "Reopen"}
+                </button>
+              </div>
+              <TapError message={reopenError.get(p.id)} />
+            </div>
+          ))}
+          {closed && closed.length === 0 && <div style={S.empty}>Nothing closed yet.</div>}
+        </div>
+        <button style={M.cancel} onClick={onClose}>Close</button>
+      </div>
+    </div>
+  );
+}
+
+// Auto-close prompt (#48) — surfaced right after saving a job whose pct
+// change made it the pursuit's last incomplete job. Closing here uses the
+// same PATCH {deleted: true} as the manual action in PursuitModal.
+function PursuitCloseFinishedPrompt({ pursuit, onClose, onClosed }: { pursuit: Pursuit; onClose: () => void; onClosed: () => void }) {
+  const [closing, setClosing] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function close() {
+    setClosing(true);
+    try {
+      const r = await fetch(`${API}/pursuits/${pursuit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: true }) });
+      if (r.ok) { onClosed(); return; }
+      setErr("Couldn't close. Try again.");
+      setClosing(false);
+    } catch { setErr("Couldn't reach the server."); setClosing(false); }
+  }
+
+  return (
+    <div style={M.overlay}>
+      <div style={M.sheet}>
+        <div style={M.strip} />
+        <div style={M.head}><div style={M.title}>All Done?</div></div>
+        <div style={{ ...S.prioSub, marginBottom: 18 }}>Every job under {pursuit.name} is now complete. Close it out and move it to Closed Pursuits?</div>
+        <TapError message={err || null} />
+        <button style={M.next} disabled={closing} onClick={close}>{closing ? "Closing…" : "Close it out"}</button>
+        <button style={M.cancel} onClick={onClose}>Not yet</button>
       </div>
     </div>
   );

@@ -100,6 +100,8 @@ async function ensureAuthTables(): Promise<void> {
     "ALTER TABLE relationships ADD COLUMN IF NOT EXISTS deleted boolean NOT NULL DEFAULT false",
     "ALTER TABLE relationships ADD COLUMN IF NOT EXISTS deleted_at timestamp",
     "CREATE TABLE IF NOT EXISTS pursuits (id serial PRIMARY KEY, user_id text NOT NULL, name text NOT NULL, category text NOT NULL, notes text NOT NULL DEFAULT '', created_at timestamp NOT NULL DEFAULT now())",
+    "ALTER TABLE pursuits ADD COLUMN IF NOT EXISTS deleted boolean NOT NULL DEFAULT false",
+    "ALTER TABLE pursuits ADD COLUMN IF NOT EXISTS deleted_at timestamp",
     "CREATE TABLE IF NOT EXISTS pulse_checks (id serial PRIMARY KEY, user_id text NOT NULL, date text NOT NULL, category text NOT NULL, state text NOT NULL, note text NOT NULL DEFAULT '', created_at timestamp NOT NULL DEFAULT now())",
     "CREATE UNIQUE INDEX IF NOT EXISTS pulse_checks_user_date_category_unique ON pulse_checks (user_id, date, category)",
     "ALTER TABLE commits ADD COLUMN IF NOT EXISTS relationship_id integer REFERENCES relationships(id) ON DELETE SET NULL",
