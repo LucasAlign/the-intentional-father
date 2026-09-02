@@ -77,9 +77,21 @@ export const relationships = pgTable("relationships", {
   notes: text("notes").notNull().default(""),
   commitments: text("commitments").notNull().default(""),
   biggestChallenge: text("biggest_challenge").notNull().default(""),
-  // Featured on Today's Intention. Exactly one true per user, enforced at
-  // the application layer (setting a new primary clears the previous one).
-  isPrimary: boolean("is_primary").notNull().default(false),
+  // Pinned to the top of the People list — many can be true at once (#65).
+  // Today's Intention reads whichever starred person sorts first. Defaults
+  // to true for spouse/child at creation, false otherwise.
+  starred: boolean("starred").notNull().default(false),
+  // Manual drag position within the starred/unstarred group (#65) — null
+  // means "not yet manually reordered, use the category-rank default".
+  // Written a whole group at a time (PATCH /relationships/reorder), not
+  // per-row, so it's never ambiguous relative to other rows in the group.
+  sortOrder: integer("sort_order"),
+  // Soft delete (#64), matching tasks (#54) and commits (#60) — the row
+  // moves to the Deleted view (GET /relationships/deleted) and can be
+  // restored via PATCH { deleted: false }, or hard-removed via the
+  // separate DELETE /relationships/:id/permanent.
+  deleted: boolean("deleted").notNull().default(false),
+  deletedAt: timestamp("deleted_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -91,9 +103,18 @@ export const commits = pgTable("commits", {
   id: serial("id").primaryKey(),
   userId: text("user_id").notNull(),
   text: text("text").notNull(),
+  notes: text("notes").notNull().default(""),
   madeDate: text("made_date").notNull(),
+  dueDate: text("due_date"),
   done: boolean("done").notNull().default(false),
+  deleted: boolean("deleted").notNull().default(false),
+  deletedAt: timestamp("deleted_at"),
   relationshipId: integer("relationship_id").references(() => relationships.id, { onDelete: "set null" }),
+  // A one-time commitment target not added to the permanent Tribe list —
+  // mutually exclusive with relationshipId (#60). Kept separate from `notes`
+  // so "for [mechanic]" renders the same way "for [wife]" does.
+  adHocName: text("ad_hoc_name"),
+  adHocCategory: text("ad_hoc_category"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

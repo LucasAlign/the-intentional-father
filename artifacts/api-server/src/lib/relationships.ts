@@ -1,7 +1,7 @@
 import { sql, type SQL } from "drizzle-orm";
 import { relationships } from "@workspace/db";
 
-export const RELATIONSHIP_CATEGORIES = ["spouse", "child", "family", "friend"] as const;
+export const RELATIONSHIP_CATEGORIES = ["spouse", "child", "family", "friend", "other"] as const;
 export type RelationshipCategory = (typeof RELATIONSHIP_CATEGORIES)[number];
 export function isRelationshipCategory(value: unknown): value is RelationshipCategory {
   return typeof value === "string" && (RELATIONSHIP_CATEGORIES as readonly string[]).includes(value);
@@ -27,5 +27,12 @@ export const RELATIONSHIP_RANK_SQL: SQL = sql`CASE ${relationships.category}
   WHEN 'child' THEN 1
   WHEN 'family' THEN 2
   WHEN 'friend' THEN 3
-  ELSE 4
+  WHEN 'other' THEN 4
+  ELSE 5
 END`;
+
+// Same ranking as RELATIONSHIP_RANK_SQL, for JS-side use (#65's
+// insertIntoOrderedGroup) — one source of truth for the category order.
+export const RELATIONSHIP_CATEGORY_RANK: Record<RelationshipCategory, number> = {
+  spouse: 0, child: 1, family: 2, friend: 3, other: 4,
+};

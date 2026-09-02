@@ -86,10 +86,29 @@ async function ensureAuthTables(): Promise<void> {
     "CREATE TABLE IF NOT EXISTS profile (user_id text PRIMARY KEY, data jsonb, onboarded boolean NOT NULL DEFAULT false, created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now())",
     "CREATE TABLE IF NOT EXISTS interview_messages (id serial PRIMARY KEY, user_id text NOT NULL, role text NOT NULL, content text NOT NULL, created_at timestamp NOT NULL DEFAULT now())",
     "CREATE TABLE IF NOT EXISTS relationships (id serial PRIMARY KEY, user_id text NOT NULL, name text, category text NOT NULL, type text NOT NULL DEFAULT '', notes text NOT NULL DEFAULT '', commitments text NOT NULL DEFAULT '', biggest_challenge text NOT NULL DEFAULT '', is_primary boolean NOT NULL DEFAULT false, created_at timestamp NOT NULL DEFAULT now())",
+    // is_primary (exactly-one "featured" flag) is repurposed as starred
+    // (many can be true) for #65 — guarded so this only fires once, on
+    // whichever boot first sees the old column name.
+    `DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'relationships' AND column_name = 'is_primary')
+         AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'relationships' AND column_name = 'starred')
+      THEN
+        EXECUTE 'ALTER TABLE relationships RENAME COLUMN is_primary TO starred';
+      END IF;
+    END $$`,
+    "ALTER TABLE relationships ADD COLUMN IF NOT EXISTS sort_order integer",
+    "ALTER TABLE relationships ADD COLUMN IF NOT EXISTS deleted boolean NOT NULL DEFAULT false",
+    "ALTER TABLE relationships ADD COLUMN IF NOT EXISTS deleted_at timestamp",
     "CREATE TABLE IF NOT EXISTS pursuits (id serial PRIMARY KEY, user_id text NOT NULL, name text NOT NULL, category text NOT NULL, notes text NOT NULL DEFAULT '', created_at timestamp NOT NULL DEFAULT now())",
     "CREATE TABLE IF NOT EXISTS pulse_checks (id serial PRIMARY KEY, user_id text NOT NULL, date text NOT NULL, category text NOT NULL, state text NOT NULL, note text NOT NULL DEFAULT '', created_at timestamp NOT NULL DEFAULT now())",
     "CREATE UNIQUE INDEX IF NOT EXISTS pulse_checks_user_date_category_unique ON pulse_checks (user_id, date, category)",
     "ALTER TABLE commits ADD COLUMN IF NOT EXISTS relationship_id integer REFERENCES relationships(id) ON DELETE SET NULL",
+    "ALTER TABLE commits ADD COLUMN IF NOT EXISTS notes text NOT NULL DEFAULT ''",
+    "ALTER TABLE commits ADD COLUMN IF NOT EXISTS due_date text",
+    "ALTER TABLE commits ADD COLUMN IF NOT EXISTS deleted boolean NOT NULL DEFAULT false",
+    "ALTER TABLE commits ADD COLUMN IF NOT EXISTS deleted_at timestamp",
+    "ALTER TABLE commits ADD COLUMN IF NOT EXISTS ad_hoc_name text",
+    "ALTER TABLE commits ADD COLUMN IF NOT EXISTS ad_hoc_category text",
     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS pursuit_id integer REFERENCES pursuits(id) ON DELETE SET NULL",
     "CREATE TABLE IF NOT EXISTS google_calendar_connections (id serial PRIMARY KEY, user_id text NOT NULL, google_email text NOT NULL, access_token text NOT NULL, refresh_token text NOT NULL, scope text NOT NULL DEFAULT \x27\x27, expires_at timestamp NOT NULL, created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now())",
     "ALTER TABLE google_calendar_connections ADD COLUMN IF NOT EXISTS id serial",

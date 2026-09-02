@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import { db, withUserSession } from "@workspace/db";
 import { journalEntries, chatMessages, tasks, taskCompletions, commits, jobs, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit } from "@workspace/db";
-import { eq, desc, asc, gte, lte, and, isNull, inArray, sql } from "drizzle-orm";
+import { eq, desc, asc, gte, lte, and, isNull, inArray, notInArray, sql } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
 import { normalizeProfileData, isToneVoice, DEFAULT_TONE_VOICE, type ProfileData, type ToneVoice } from "../lib/profile";
 import { aiRateLimit } from "../middlewares/aiRateLimit";
@@ -9,7 +9,7 @@ import { SCRIPTURE_GROUNDING, getVerseOfTheDay } from "../lib/verses";
 import { computeCurrentPeriodStats, computeStreak, isSlipping, type RecurrencePeriod } from "../lib/priorityPeriods";
 import { buildTodayContext } from "../lib/stewardContext";
 import { isPulseCategory, isPulseState } from "../lib/pulseCheck";
-import { isRelationshipCategory, RELATIONSHIP_RANK_SQL } from "../lib/relationships";
+import { isRelationshipCategory, RELATIONSHIP_RANK_SQL, RELATIONSHIP_CATEGORY_RANK, type RelationshipCategory } from "../lib/relationships";
 import { isPursuitCategory } from "../lib/pursuits";
 
 const MAX_PULSE_NOTE_LENGTH = 500;
@@ -112,6 +112,7 @@ Guidelines:
 - If a recurring priority is flagged slipping (its streak just broke), mention it directly when relevant — but only when it's genuinely notable, not as routine commentary on ordinary progress.
 - If today's Pulse Check shows a category clearly down, ask about it directly rather than letting it pass unmentioned — name which one (physical, mental, or spiritual) and what they noted, if anything. A category that's notably strong is worth acknowledging too. Don't force commentary on every check-in — only when it's genuinely notable, the same restraint as the slipping-priority guideline above.
 - Hold them accountable to commitments they've made to the people who matter most to them, by name where you know it — the same way you'd hold a brother to a promise.
+- If an open commitment is flagged overdue or due soon, or has sat logged a week or more with no due date, ask about it directly by name and who it was made to — the same restraint as the stuck-task guideline above, not routine commentary on every commitment.
 - Encourage real relationships and real action, never foster dependence on the app.${doNotSuggest}${alwaysRemind}${toneDelivery}
 - If ${name}'s current message clearly signals they want your delivery adjusted right now (e.g. "can you ease up" or "just give it to me straight"), say so in your reply, then end it with a tag on its own line: [SUGGEST_TONE:straight_talk], [SUGGEST_TONE:middle_of_the_road], or [SUGGEST_TONE:take_it_easy] — whichever they're asking for. Only include this tag when the signal is clear and it differs from their current setting; never include it as routine commentary.
 
@@ -457,7 +458,13 @@ router.post('/pulse-checks', async (req: Request, res: Response) => {
 // GET /api/relationships
 router.get('/relationships', async (req: Request, res: Response) => {
   try {
-    const rows = await db.select().from(relationships).where(eq(relationships.userId, req.user!.id)).orderBy(RELATIONSHIP_RANK_SQL, relationships.createdAt);
+    // Starred first, then within each group: an explicit manual position
+    // (set a whole group at a time by PATCH /relationships/reorder) beats
+    // the category-rank default: any row still null falls through to it.
+    // insertIntoOrderedGroup keeps a row that newly joins an already-
+    // materialized group from landing at the very end regardless of rank.
+    const rows = await db.select().from(relationships).where(and(eq(relationships.userId, req.user!.id), eq(relationships.deleted, false)))
+      .orderBy(desc(relationships.starred), sql`${relationships.sortOrder} ASC NULLS LAST`, RELATIONSHIP_RANK_SQL, relationships.createdAt);
     res.json(rows);
   } catch (err) {
     req.log?.error({ err }, 'Error fetching relationships');
@@ -465,11 +472,52 @@ router.get('/relationships', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/relationships/deleted
+router.get('/relationships/deleted', async (req: Request, res: Response) => {
+  try {
+    const items = await db.select().from(relationships)
+      .where(and(eq(relationships.userId, req.user!.id), eq(relationships.deleted, true)))
+      .orderBy(desc(relationships.deletedAt)).limit(200);
+    res.json({ items });
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching deleted relationships');
+    res.status(500).json({ error: 'Failed to fetch deleted relationships' });
+  }
+});
+
+// When a row newly joins a starred/unstarred group that's already been
+// manually reordered (created starred, re-starred, or reactivated from
+// Deleted), a plain null sortOrder would sink it to the very end (#64/#65)
+// — instead, insert it just before the first existing member whose
+// category rank is >= its own (so e.g. a spouse, rank 0, always lands at
+// position 0), then renumber the group. A no-op if the group was never
+// manually touched — plain default rank order already handles that case.
+async function insertIntoOrderedGroup(userId: string, starred: boolean, newId: number): Promise<void> {
+  const groupRows = await db.select({ id: relationships.id, category: relationships.category, sortOrder: relationships.sortOrder })
+    .from(relationships)
+    .where(and(eq(relationships.userId, userId), eq(relationships.starred, starred), eq(relationships.deleted, false)));
+  const materialized = groupRows.filter((r) => r.sortOrder !== null && r.id !== newId).sort((a, b) => a.sortOrder! - b.sortOrder!);
+  if (materialized.length === 0) return;
+  const newRow = groupRows.find((r) => r.id === newId);
+  if (!newRow) return;
+  const newRank = RELATIONSHIP_CATEGORY_RANK[newRow.category as RelationshipCategory] ?? 5;
+  let insertAt = materialized.length;
+  for (let i = 0; i < materialized.length; i++) {
+    if ((RELATIONSHIP_CATEGORY_RANK[materialized[i].category as RelationshipCategory] ?? 5) >= newRank) { insertAt = i; break; }
+  }
+  const finalOrder = materialized.map((r) => r.id);
+  finalOrder.splice(insertAt, 0, newId);
+  for (let i = 0; i < finalOrder.length; i++) {
+    await db.update(relationships).set({ sortOrder: i }).where(and(eq(relationships.id, finalOrder[i]), eq(relationships.userId, userId)));
+  }
+}
+
 // POST /api/relationships
 router.post('/relationships', async (req: Request, res: Response) => {
   try {
-    const { name, category, type, notes, commitments, biggestChallenge } = req.body;
+    const { name, category, type, notes, commitments, biggestChallenge, starred } = req.body;
     if (!isRelationshipCategory(category)) { res.status(400).json({ error: 'Invalid category' }); return; }
+    const resolvedStarred: boolean = typeof starred === 'boolean' ? starred : (category === 'spouse' || category === 'child');
     const [row] = await db.insert(relationships).values({
       userId: req.user!.id,
       name: typeof name === 'string' ? name.trim() || null : null,
@@ -478,11 +526,61 @@ router.post('/relationships', async (req: Request, res: Response) => {
       notes: typeof notes === 'string' ? notes : '',
       commitments: typeof commitments === 'string' ? commitments : '',
       biggestChallenge: typeof biggestChallenge === 'string' ? biggestChallenge : '',
+      // Spouse and children are starred by default; everything else isn't,
+      // unless the caller says otherwise (#65).
+      starred: resolvedStarred,
     }).returning();
+    await insertIntoOrderedGroup(req.user!.id, resolvedStarred, row.id);
     res.json(row);
   } catch (err) {
     req.log?.error({ err }, 'Error creating relationship');
     res.status(500).json({ error: 'Failed to create relationship' });
+  }
+});
+
+// PATCH /api/relationships/reorder
+// Registered before /relationships/:id so "reorder" isn't swallowed as an
+// :id. Rewrites sortOrder for a whole starred/unstarred group at once, in
+// the order given — simpler and unambiguous vs. per-row fractional
+// insertion, since a manually-touched group never has to interleave with
+// still-default rows (#65).
+router.patch('/relationships/reorder', async (req: Request, res: Response) => {
+  try {
+    const { starred, orderedIds } = req.body;
+    if (typeof starred !== 'boolean' || !Array.isArray(orderedIds) || orderedIds.length === 0 || orderedIds.some((id: unknown) => typeof id !== 'number')) {
+      res.status(400).json({ error: 'starred (boolean) and orderedIds (number[]) are required' });
+      return;
+    }
+    const owned = await db.select({ id: relationships.id }).from(relationships)
+      .where(and(eq(relationships.userId, req.user!.id), eq(relationships.starred, starred), inArray(relationships.id, orderedIds)));
+    const ownedIds = new Set(owned.map((r) => r.id));
+    if (ownedIds.size !== orderedIds.length || orderedIds.some((id) => !ownedIds.has(id))) {
+      res.status(400).json({ error: 'orderedIds must exactly match the ids in that group' });
+      return;
+    }
+    for (let i = 0; i < orderedIds.length; i++) {
+      await db.update(relationships).set({ sortOrder: i }).where(and(eq(relationships.id, orderedIds[i]), eq(relationships.userId, req.user!.id)));
+    }
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error reordering relationships');
+    res.status(500).json({ error: 'Failed to reorder relationships' });
+  }
+});
+
+// POST /api/relationships/reset
+// Restores the whole People list to fresh-install defaults: clears every
+// manual sortOrder and resets starred to spouse/child only (#65).
+router.post('/relationships/reset', async (req: Request, res: Response) => {
+  try {
+    const uid = req.user!.id;
+    await db.update(relationships).set({ sortOrder: null }).where(eq(relationships.userId, uid));
+    await db.update(relationships).set({ starred: true }).where(and(eq(relationships.userId, uid), inArray(relationships.category, ['spouse', 'child'])));
+    await db.update(relationships).set({ starred: false }).where(and(eq(relationships.userId, uid), notInArray(relationships.category, ['spouse', 'child'])));
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error resetting relationships order');
+    res.status(500).json({ error: 'Failed to reset relationships order' });
   }
 });
 
@@ -491,7 +589,10 @@ router.patch('/relationships/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    const { name, category, type, notes, commitments, biggestChallenge, isPrimary } = req.body;
+    const [existing] = await db.select().from(relationships).where(and(eq(relationships.id, id), eq(relationships.userId, req.user!.id))).limit(1);
+    if (!existing) { res.status(404).json({ error: 'Relationship not found' }); return; }
+
+    const { name, category, type, notes, commitments, biggestChallenge, starred, deleted } = req.body;
     if (category !== undefined && !isRelationshipCategory(category)) { res.status(400).json({ error: 'Invalid category' }); return; }
     const updates: Partial<typeof relationships.$inferInsert> = {};
     if (name !== undefined) updates.name = typeof name === 'string' ? name.trim() || null : null;
@@ -500,16 +601,24 @@ router.patch('/relationships/:id', async (req: Request, res: Response) => {
     if (notes !== undefined) updates.notes = notes;
     if (commitments !== undefined) updates.commitments = commitments;
     if (biggestChallenge !== undefined) updates.biggestChallenge = biggestChallenge;
-    if (typeof isPrimary === 'boolean') updates.isPrimary = isPrimary;
-
-    // Only one relationship can be primary at a time — clearing every other
-    // row first and this update both run inside the same per-request RLS
-    // transaction (see lib/db's beginUserSession), so this is atomic without
-    // any extra transaction handling here.
-    if (isPrimary === true) {
-      await db.update(relationships).set({ isPrimary: false }).where(and(eq(relationships.userId, req.user!.id), eq(relationships.isPrimary, true)));
+    // Any number of relationships can be starred now (#65) — no more
+    // clearing every other row to keep it exclusive.
+    if (typeof starred === 'boolean') updates.starred = starred;
+    if (typeof deleted === 'boolean') {
+      updates.deleted = deleted;
+      updates.deletedAt = deleted ? new Date() : null;
     }
     if (Object.keys(updates).length > 0) await db.update(relationships).set(updates).where(and(eq(relationships.id, id), eq(relationships.userId, req.user!.id)));
+
+    // A row that just started being starred, or just came back from
+    // Deleted, is newly joining a group that might already be manually
+    // ordered — slot it in by rank instead of leaving it stranded (#64/#65).
+    const justReactivated = deleted === false && existing.deleted;
+    const justStarred = typeof starred === 'boolean' && starred && !existing.starred;
+    if (justReactivated || justStarred) {
+      const finalStarred = typeof starred === 'boolean' ? starred : existing.starred;
+      await insertIntoOrderedGroup(req.user!.id, finalStarred, id);
+    }
     res.json({ success: true });
   } catch (err) {
     req.log?.error({ err }, 'Error updating relationship');
@@ -518,11 +627,15 @@ router.patch('/relationships/:id', async (req: Request, res: Response) => {
 });
 
 // DELETE /api/relationships/:id
+// Soft-delete (#64): the row moves to the Deleted view (GET
+// /relationships/deleted) and can be restored via PATCH { deleted: false },
+// or permanently removed via the dedicated /permanent route below.
 router.delete('/relationships/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    await db.delete(relationships).where(and(eq(relationships.id, id), eq(relationships.userId, req.user!.id)));
+    await db.update(relationships).set({ deleted: true, deletedAt: new Date() })
+      .where(and(eq(relationships.id, id), eq(relationships.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
     req.log?.error({ err }, 'Error deleting relationship');
@@ -530,31 +643,91 @@ router.delete('/relationships/:id', async (req: Request, res: Response) => {
   }
 });
 
+// DELETE /api/relationships/:id/permanent
+// Only allowed once a row is already soft-deleted — a client bug can't
+// hard-delete an active person in one step (#64). commits.relationshipId
+// already has onDelete: "set null" at the DB level, so this is safe.
+router.delete('/relationships/:id/permanent', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id as string, 10);
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    const [existing] = await db.select({ deleted: relationships.deleted }).from(relationships)
+      .where(and(eq(relationships.id, id), eq(relationships.userId, req.user!.id))).limit(1);
+    if (!existing) { res.status(404).json({ error: 'Relationship not found' }); return; }
+    if (!existing.deleted) { res.status(400).json({ error: 'Delete it first before permanently removing it' }); return; }
+    await db.delete(relationships).where(and(eq(relationships.id, id), eq(relationships.userId, req.user!.id)));
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error permanently deleting relationship');
+    res.status(500).json({ error: 'Failed to permanently delete relationship' });
+  }
+});
+
 // GET /api/commits
 router.get('/commits', async (req: Request, res: Response) => {
   try {
-    const rows = await db.select().from(commits).where(eq(commits.userId, req.user!.id)).orderBy(desc(commits.createdAt));
+    const rows = await db.select().from(commits).where(and(eq(commits.userId, req.user!.id), eq(commits.deleted, false))).orderBy(desc(commits.createdAt));
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch commits' });
   }
 });
 
+// GET /api/commits/deleted
+router.get('/commits/deleted', async (req: Request, res: Response) => {
+  try {
+    const items = await db.select().from(commits)
+      .where(and(eq(commits.userId, req.user!.id), eq(commits.deleted, true)))
+      .orderBy(desc(commits.deletedAt)).limit(200);
+    res.json({ items });
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching deleted commits');
+    res.status(500).json({ error: 'Failed to fetch deleted commits' });
+  }
+});
+
+// Every commitment needs a named target — an existing relationship, or a
+// one-time ad hoc name + category (#60: no more "General"). The two are
+// mutually exclusive; this resolves req.body into whichever was given, or
+// responds with an error and returns null.
+async function resolveCommitTarget(
+  req: Request, res: Response,
+): Promise<{ relationshipId: number | null; adHocName: string | null; adHocCategory: string | null } | null> {
+  const { relationshipId, adHocName, adHocCategory } = req.body;
+  if (relationshipId !== undefined && relationshipId !== null) {
+    const relId = Number(relationshipId);
+    if (isNaN(relId)) { res.status(400).json({ error: 'Invalid relationshipId' }); return null; }
+    const [owned] = await db.select({ id: relationships.id }).from(relationships).where(and(eq(relationships.id, relId), eq(relationships.userId, req.user!.id))).limit(1);
+    if (!owned) { res.status(400).json({ error: 'relationshipId not found' }); return null; }
+    return { relationshipId: relId, adHocName: null, adHocCategory: null };
+  }
+  if (typeof adHocName === 'string' && adHocName.trim()) {
+    if (!isRelationshipCategory(adHocCategory)) {
+      res.status(400).json({ error: 'A valid category is required for a one-time commitment target' });
+      return null;
+    }
+    return { relationshipId: null, adHocName: adHocName.trim(), adHocCategory };
+  }
+  res.status(400).json({ error: 'Every commitment needs someone it was made to — pick a person or name someone new.' });
+  return null;
+}
+
 // POST /api/commits
 router.post('/commits', async (req: Request, res: Response) => {
   try {
-    const { text, relationshipId } = req.body;
+    const { text, notes, dueDate } = req.body;
     if (!text?.trim()) { res.status(400).json({ error: 'Commit text is required' }); return; }
-    let taggedRelationshipId: number | null = null;
-    if (relationshipId !== undefined && relationshipId !== null) {
-      const relId = Number(relationshipId);
-      if (isNaN(relId)) { res.status(400).json({ error: 'Invalid relationshipId' }); return; }
-      const [owned] = await db.select({ id: relationships.id }).from(relationships).where(and(eq(relationships.id, relId), eq(relationships.userId, req.user!.id))).limit(1);
-      if (!owned) { res.status(400).json({ error: 'relationshipId not found' }); return; }
-      taggedRelationshipId = relId;
+    if (dueDate !== undefined && dueDate !== null && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) {
+      res.status(400).json({ error: 'dueDate must be YYYY-MM-DD' });
+      return;
     }
+    const target = await resolveCommitTarget(req, res);
+    if (!target) return;
     const madeDate = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    const [row] = await db.insert(commits).values({ userId: req.user!.id, text: text.trim(), madeDate, done: false, relationshipId: taggedRelationshipId }).returning();
+    const [row] = await db.insert(commits).values({
+      userId: req.user!.id, text: text.trim(), notes: notes?.trim() || '', madeDate,
+      dueDate: dueDate || null, done: false, ...target,
+    }).returning();
     res.json(row);
   } catch (err) {
     req.log?.error({ err }, 'Error creating commit');
@@ -567,19 +740,29 @@ router.patch('/commits/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    const { done, relationshipId } = req.body;
+    const [existing] = await db.select().from(commits).where(and(eq(commits.id, id), eq(commits.userId, req.user!.id))).limit(1);
+    if (!existing) { res.status(404).json({ error: 'Commit not found' }); return; }
+
+    const { done, text, notes, dueDate, deleted, relationshipId, adHocName } = req.body;
     const updates: Partial<typeof commits.$inferInsert> = {};
     if (typeof done === 'boolean') updates.done = done;
-    if (relationshipId !== undefined) {
-      if (relationshipId === null) {
-        updates.relationshipId = null;
-      } else {
-        const relId = Number(relationshipId);
-        if (isNaN(relId)) { res.status(400).json({ error: 'Invalid relationshipId' }); return; }
-        const [owned] = await db.select({ id: relationships.id }).from(relationships).where(and(eq(relationships.id, relId), eq(relationships.userId, req.user!.id))).limit(1);
-        if (!owned) { res.status(400).json({ error: 'relationshipId not found' }); return; }
-        updates.relationshipId = relId;
-      }
+    if (typeof text === 'string' && text.trim()) updates.text = text.trim();
+    if (typeof notes === 'string') updates.notes = notes.trim();
+    if (dueDate !== undefined) {
+      if (dueDate === null) updates.dueDate = null;
+      else if (/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) updates.dueDate = dueDate;
+      else { res.status(400).json({ error: 'dueDate must be YYYY-MM-DD' }); return; }
+    }
+    if (typeof deleted === 'boolean') {
+      updates.deleted = deleted;
+      updates.deletedAt = deleted ? new Date() : null;
+    }
+    if (relationshipId !== undefined || adHocName !== undefined) {
+      const target = await resolveCommitTarget(req, res);
+      if (!target) return;
+      updates.relationshipId = target.relationshipId;
+      updates.adHocName = target.adHocName;
+      updates.adHocCategory = target.adHocCategory;
     }
     if (Object.keys(updates).length > 0) await db.update(commits).set(updates).where(and(eq(commits.id, id), eq(commits.userId, req.user!.id)));
     res.json({ success: true });
@@ -589,11 +772,14 @@ router.patch('/commits/:id', async (req: Request, res: Response) => {
 });
 
 // DELETE /api/commits/:id
+// Soft-delete: the row moves to the Deleted list (GET /commits/deleted) and
+// can be restored via PATCH { deleted: false } (#60, matching #54/#55).
 router.delete('/commits/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    await db.delete(commits).where(and(eq(commits.id, id), eq(commits.userId, req.user!.id)));
+    await db.update(commits).set({ deleted: true, deletedAt: new Date() })
+      .where(and(eq(commits.id, id), eq(commits.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete commit' });

@@ -1,7 +1,12 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
-import { db, journalEntries, tasks, taskCompletions, pulseChecks } from "@workspace/db";
+import { db, journalEntries, tasks, taskCompletions, pulseChecks, commits, relationships, type Relationship } from "@workspace/db";
 import { isSlipping, type RecurrencePeriod } from "./priorityPeriods";
 import { PULSE_STATE_LABEL, type PulseState } from "./pulseCheck";
+
+const RELATIONSHIP_CATEGORY_LABEL: Record<string, string> = { spouse: "Spouse", child: "Child", family: "Family", friend: "Friend", other: "Other" };
+function relationshipLabel(r: Pick<Relationship, "name" | "type" | "category">): string {
+  return r.name || r.type || RELATIONSHIP_CATEGORY_LABEL[r.category] || r.category;
+}
 
 // Single source of the "what's going on with this person today" text block
 // the AI reads. Extracted out of the /chat route so it's one well-defined
@@ -9,10 +14,11 @@ import { PULSE_STATE_LABEL, type PulseState } from "./pulseCheck";
 // today (see #12/#22's resolution: interview.ts isn't wired in yet, and
 // relationships context is dropped until #13 ships real data).
 export async function buildTodayContext(userId: string, today: string): Promise<string> {
-  const [recentJournal, openTasks, todayPulse] = await Promise.all([
+  const [recentJournal, openTasks, todayPulse, openCommits] = await Promise.all([
     db.select().from(journalEntries).where(eq(journalEntries.userId, userId)).orderBy(desc(journalEntries.date)).limit(3),
     db.select().from(tasks).where(and(eq(tasks.userId, userId), eq(tasks.done, false), eq(tasks.deleted, false))).orderBy(desc(tasks.createdAt)).limit(5),
     db.select().from(pulseChecks).where(and(eq(pulseChecks.userId, userId), eq(pulseChecks.date, today))),
+    db.select().from(commits).where(and(eq(commits.userId, userId), eq(commits.done, false), eq(commits.deleted, false))).orderBy(desc(commits.createdAt)).limit(5),
   ]);
 
   let context = '';
@@ -60,6 +66,31 @@ export async function buildTodayContext(userId: string, today: string): Promise<
     todayPulse.forEach((p) => {
       const note = p.note ? ` — note: "${p.note.slice(0, 150)}"` : '';
       context += `- ${p.category}: ${PULSE_STATE_LABEL[p.state as PulseState] ?? p.state}${note}\n`;
+    });
+    context += '\n';
+  }
+
+  if (openCommits.length > 0) {
+    const relIds = openCommits.filter((c) => c.relationshipId).map((c) => c.relationshipId!);
+    const rels = relIds.length > 0 ? await db.select().from(relationships).where(inArray(relationships.id, relIds)) : [];
+    const relById = new Map(rels.map((r) => [r.id, r]));
+
+    context += '## Commitments made to others:\n';
+    openCommits.forEach((c) => {
+      const rel = c.relationshipId ? relById.get(c.relationshipId) : undefined;
+      const who = rel ? relationshipLabel(rel) : c.adHocName ? `${c.adHocName} (${RELATIONSHIP_CATEGORY_LABEL[c.adHocCategory ?? ''] ?? c.adHocCategory})` : 'someone';
+
+      let status = '';
+      if (c.dueDate) {
+        const dueInDays = Math.round((new Date(c.dueDate).getTime() - new Date(today).getTime()) / 86400000);
+        if (dueInDays < 0) status = `[OVERDUE — was due ${c.dueDate}]`;
+        else if (dueInDays <= 3) status = `[DUE SOON — ${c.dueDate}]`;
+      } else {
+        const daysOld = Math.floor((Date.now() - c.createdAt.getTime()) / 86400000);
+        if (daysOld >= 7) status = `[NO DUE DATE — LOGGED ${daysOld} DAYS AGO]`;
+      }
+      const note = c.notes ? ` — note: "${c.notes.slice(0, 150)}"` : '';
+      context += `- To ${who}: ${c.text} (said ${c.madeDate})${status ? ' ' + status : ''}${note}\n`;
     });
     context += '\n';
   }
