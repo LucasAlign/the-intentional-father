@@ -17,6 +17,11 @@ const MAX_PULSE_NOTE_LENGTH = 500;
 const router = Router();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
 const MAX_CHAT_MESSAGE_LENGTH = 4000;
+// Without this, a slow OpenAI response has no server-side bound — something
+// in the network path (a proxy, an idle-connection limit) can cut the
+// request off first, which the browser can only report as a generic
+// network failure even though the server was still working (#68).
+const OPENAI_TIMEOUT_MS = 30_000;
 
 type OpenAIResponsesApiResponse = {
   output_text?: string;
@@ -1024,19 +1029,34 @@ router.post('/chat', aiRateLimit, async (req: Request, res: Response) => {
     // the writes below open their own short-lived session instead.
     await req.dbSession?.commit();
 
-    const response = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: OPENAI_MODEL,
-        instructions: STEWARD_SYSTEM_PROMPT + (context ? `\n\n## Today's context:\n${context}` : ''),
-        input: apiMessages,
-        max_output_tokens: 350,
-      }),
-    });
+    const timeoutController = new AbortController();
+    const timeoutTimer = setTimeout(() => timeoutController.abort(), OPENAI_TIMEOUT_MS);
+    let response: globalThis.Response;
+    try {
+      response = await fetch('https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: OPENAI_MODEL,
+          instructions: STEWARD_SYSTEM_PROMPT + (context ? `\n\n## Today's context:\n${context}` : ''),
+          input: apiMessages,
+          max_output_tokens: 350,
+        }),
+        signal: timeoutController.signal,
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        req.log?.error({ model: OPENAI_MODEL, timeoutMs: OPENAI_TIMEOUT_MS }, 'OpenAI request timed out');
+        res.status(504).json({ error: 'Steward is taking longer than usual to respond. Try again in a moment.' });
+        return;
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeoutTimer);
+    }
 
     if (!response.ok) {
       const error = await response.text();
