@@ -1011,7 +1011,7 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
           <div style={{ ...S.prioTitle, textDecoration: crossedOff ? "line-through" : "none", transition: "text-decoration-color 0.2s ease" }}>{task.text}</div>
           {subText && <div style={confirming ? { ...S.prioSub, color: C.brass } : subStyle}>{subText}</div>}
         </div>
-        <button style={S.prioDetailBtn} title="View details" onClick={() => onOpenDetail(task)}>›</button>
+        <button style={S.prioEditBtn} title="Edit" onClick={() => onOpenDetail(task)}>Edit</button>
       </div>
       <TapError message={error} />
     </div>
@@ -2233,7 +2233,7 @@ const S: Record<string, CSSProperties> = {
   prioRowGreen: { boxShadow: "inset 3px 0 0 0 #8FAE6E" },
   prioSubRed: { fontSize: 12, color: "#C87060", lineHeight: 1.4 },
   prioSubGreen: { fontSize: 12, color: "#8FAE6E", lineHeight: 1.4 },
-  prioDetailBtn: { flexShrink: 0, alignSelf: "center", background: "none", border: "none", color: C.parchmentDim, fontSize: 18, padding: "6px 4px", cursor: "pointer", fontFamily: F },
+  prioEditBtn: { flexShrink: 0, alignSelf: "center", background: "none", border: "none", color: C.brassSoft, fontSize: 12.5, fontWeight: 600, padding: "6px 4px", cursor: "pointer", fontFamily: F },
   prioTitle: { fontSize: 15, color: C.parchment, lineHeight: 1.4, marginBottom: 3 },
   prioSub: { fontSize: 12, color: C.parchmentDim, lineHeight: 1.4 },
   swipeWrap: { position: "relative", overflow: "hidden", borderRadius: 12, touchAction: "pan-y" },
