@@ -1352,7 +1352,7 @@ function StewardChat({ messages, input, setInput, send, sending, tasks, onOpenPr
     <div style={S.chatWrap}>
       <div style={{ padding: "4px 18px 0" }}>
         <div style={S.pageTitle}>Steward</div>
-        <div style={S.pageSub}>Your partner. Straight talk only.</div>
+        <div style={S.pageSub}>Your partner, bringing just the truth.</div>
         <div style={S.toneRow}>
           {(["straight_talk", "middle_of_the_road", "take_it_easy"] as const).map(t => (
             <button key={t} style={{ ...S.toneOpt, ...(tone === t ? S.toneOptOn : {}) }} onClick={() => onSetTone(t)}>{TONE_LABEL[t]}</button>
