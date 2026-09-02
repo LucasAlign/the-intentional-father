@@ -26,6 +26,8 @@ export const tasks = pgTable("tasks", {
   partial: boolean("partial").notNull().default(false),
   done: boolean("done").notNull().default(false),
   doneAt: timestamp("done_at"),
+  deleted: boolean("deleted").notNull().default(false),
+  deletedAt: timestamp("deleted_at"),
   recurrencePeriod: text("recurrence_period"),
   recurrenceTarget: integer("recurrence_target"),
   createdAt: timestamp("created_at").defaultNow().notNull(),

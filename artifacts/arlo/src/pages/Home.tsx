@@ -127,6 +127,118 @@ const glass: CSSProperties = {
   backdropFilter: "blur(3px)",
 };
 
+// ── Save status (#43) ────────────────────────────────────────────────────────
+// Text-field saves get the full lifecycle below — held at "saving" until the
+// server actually confirms (never an optimistic "saved"), typed text always
+// left exactly as entered on failure, retry only on explicit tap. Tap/toggle
+// actions (mark complete, pin, delete, …) keep their existing optimistic-then-
+// revert pattern and just gain a brief inline error on failure — a persistent
+// "Saving…" label would be noise for a sub-second round trip.
+type SaveState = "idle" | "saving" | "saved" | "error";
+
+function useSaveStatus() {
+  const [status, setStatus] = useState<SaveState>("idle");
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+
+  async function save(fn: () => Promise<boolean>): Promise<boolean> {
+    setStatus("saving");
+    let ok = false;
+    try { ok = await fn(); } catch { ok = false; }
+    if (ok) {
+      setStatus("saved");
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => setStatus("idle"), 2000);
+    } else {
+      setStatus("error");
+    }
+    return ok;
+  }
+  function reset() {
+    if (timer.current) clearTimeout(timer.current);
+    setStatus("idle");
+  }
+  return { status, save, reset };
+}
+
+// Same lifecycle as useSaveStatus, keyed — for a list of independently
+// saveable fields (Pulse Check's three notes, Journal History's per-date entries).
+function useKeyedSaveStatus<K extends string>() {
+  const [statuses, setStatuses] = useState<Partial<Record<K, SaveState>>>({});
+  const timers = useRef<Partial<Record<K, ReturnType<typeof setTimeout>>>>({});
+  useEffect(() => () => { Object.values(timers.current).forEach(t => t && clearTimeout(t as ReturnType<typeof setTimeout>)); }, []);
+
+  async function save(key: K, fn: () => Promise<boolean>): Promise<boolean> {
+    setStatuses(prev => ({ ...prev, [key]: "saving" }));
+    let ok = false;
+    try { ok = await fn(); } catch { ok = false; }
+    if (ok) {
+      setStatuses(prev => ({ ...prev, [key]: "saved" }));
+      if (timers.current[key]) clearTimeout(timers.current[key]);
+      timers.current[key] = setTimeout(() => setStatuses(prev => ({ ...prev, [key]: "idle" })), 2000);
+    } else {
+      setStatuses(prev => ({ ...prev, [key]: "error" }));
+    }
+    return ok;
+  }
+  function reset(key: K) {
+    if (timers.current[key]) clearTimeout(timers.current[key]);
+    setStatuses(prev => ({ ...prev, [key]: "idle" }));
+  }
+  function get(key: K): SaveState { return statuses[key] ?? "idle"; }
+  return { get, save, reset };
+}
+
+// Brief, self-clearing message for a tap/toggle action's failure — the item
+// itself already reverts visually; this just says why.
+function useTapError() {
+  const [error, setError] = useState<string | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function flash(msg: string) {
+    setError(msg);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setError(null), 3000);
+  }
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  return { error, flash };
+}
+
+// Same as useTapError, keyed — for a list of independently tappable rows
+// (Tribe's per-commitment toggle, per-relationship primary pin).
+function useKeyedTapError<K extends string | number>() {
+  const [errors, setErrors] = useState<Map<K, string>>(new Map());
+  const timers = useRef<Map<K, ReturnType<typeof setTimeout>>>(new Map());
+  function flash(key: K, msg: string) {
+    setErrors(prev => new Map(prev).set(key, msg));
+    const existing = timers.current.get(key);
+    if (existing) clearTimeout(existing);
+    timers.current.set(key, setTimeout(() => setErrors(prev => { const next = new Map(prev); next.delete(key); return next; }), 3000));
+  }
+  useEffect(() => () => { timers.current.forEach(t => clearTimeout(t)); }, []);
+  function get(key: K): string | null { return errors.get(key) ?? null; }
+  return { get, flash };
+}
+
+const saveStatusText: CSSProperties = { fontSize: 11.5, color: "#9C9272", marginTop: 5, fontFamily: F };
+const saveStatusRetry: CSSProperties = { background: "none", border: "none", padding: 0, color: "#C89A34", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: F, textDecoration: "underline" };
+
+function SaveStatus({ status, onRetry }: { status: SaveState; onRetry?: () => void }) {
+  if (status === "idle") return null;
+  if (status === "saving") return <div style={saveStatusText}>Saving…</div>;
+  if (status === "saved") return <div style={{ ...saveStatusText, color: "#8FAE6E" }}>Saved</div>;
+  return (
+    <div style={{ ...saveStatusText, color: "#C87060", display: "flex", alignItems: "center", gap: 6 }}>
+      <span>Couldn&apos;t save</span>
+      {onRetry && <button style={saveStatusRetry} onClick={onRetry}>Retry</button>}
+    </div>
+  );
+}
+
+function TapError({ message }: { message: string | null }) {
+  if (!message) return null;
+  return <div style={{ fontSize: 11.5, color: "#C87060", marginTop: 4, fontFamily: F }}>{message}</div>;
+}
+
 // ── Icons ─────────────────────────────────────────────────────────────────────
 type IconName = "book" | "heart" | "target" | "cal" | "clock" | "pen" | "chat" | "sun" | "work" | "user" | "send" | "mic";
 function Icon({ name, size = 15, color = C.brassSoft, stroke = 1.6 }: { name: IconName; size?: number; color?: string; stroke?: number }) {
@@ -236,6 +348,7 @@ function rotatingItem(items: string[]) {
 }
 
 const PRIORITIES_VISIBLE_CAP = 3;
+const KEPT_VISIBLE_CAP = 5;
 
 function cadenceLabel(t: Task): string {
   if (!t.recurrencePeriod) return "";
@@ -356,14 +469,20 @@ export default function Home() {
     getJson(`${API}/journal`, null).then((d) => { if (isRecord(d)) setJournal({ reflect: String(d.reflect || ""), commit_text: String(d.commitText ?? d.commit_text ?? "") }); });
   }, []);
 
-  async function savePulseCheck(category: PulseCategory, state: PulseState, note: string) {
-    setPulseChecks(prev => [...prev.filter(p => p.category !== category), { category, state, note }]);
+  async function savePulseCheck(category: PulseCategory, state: PulseState, note: string): Promise<boolean> {
     try {
-      await fetch(`${API}/pulse-checks`, {
+      const r = await fetch(`${API}/pulse-checks`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ date: ymd(new Date()), category, state, note }),
       });
-    } catch { /* optimistic update already applied; a stale read on next load self-corrects */ }
+      if (r.ok) {
+        setPulseChecks(prev => [...prev.filter(p => p.category !== category), { category, state, note }]);
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
   }
 
   useEffect(() => {
@@ -388,11 +507,14 @@ export default function Home() {
     refreshTasks(); refreshCommits(); refreshJobs(); refreshCalendarStatus(); refreshPulseChecks(); refreshRelationships(); refreshPursuits();
   }, [isAuthenticated, setLocation, refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus, refreshPulseChecks, refreshRelationships, refreshPursuits, refreshJournal]);
 
-  async function saveJournal(next: Journal) {
-    setJournal(next);
+  async function saveJournal(next: Journal): Promise<boolean> {
     try {
-      await fetch(`${API}/journal`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next) });
-    } catch { /* keep local */ }
+      const r = await fetch(`${API}/journal`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next) });
+      if (r.ok) { setJournal(next); return true; }
+      return false;
+    } catch {
+      return false;
+    }
   }
 
   async function send(msg?: string) {
@@ -473,7 +595,7 @@ export default function Home() {
       {editPursuit && <PursuitModal pursuit={editPursuit} onClose={() => setEditPursuit(null)} onSaved={refreshPursuits} onDeleted={() => { refreshPursuits(); refreshJobs(); }} />}
       {profileMenu && <ProfileMenu name={user?.firstName} email={user?.email} onClose={() => setProfileMenu(false)} onLogout={logout} />}
       {priorityDetail && <PriorityDetailModal task={priorityDetail} onClose={() => setPriorityDetail(null)} onChanged={refreshTasks} />}
-      {completedLogOpen && <CompletedLogModal onClose={() => setCompletedLogOpen(false)} />}
+      {completedLogOpen && <CompletedLogModal onClose={() => setCompletedLogOpen(false)} onChanged={refreshTasks} />}
       {journalHistoryOpen && <JournalHistoryModal onClose={() => setJournalHistoryOpen(false)} onSaved={refreshJournal} />}
     </div>
   );
@@ -498,9 +620,9 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   verse: string; tasks: Task[]; journal: Journal; events: Event[]; name?: string | null;
   profile: ProfileData | null; relationships: Relationship[]; primaryRel: Relationship | null;
   onSend: (m?: string) => void; ci: string; setCi: (v: string) => void; sending: boolean;
-  onSaveJournal: (j: Journal) => void; refreshTasks: () => void;
+  onSaveJournal: (j: Journal) => Promise<boolean>; refreshTasks: () => void;
   onOpenPriority: (t: Task) => void; onViewCompleted: () => void;
-  pulseChecks: PulseCheckEntry[]; onSavePulseCheck: (category: PulseCategory, state: PulseState, note: string) => void;
+  pulseChecks: PulseCheckEntry[]; onSavePulseCheck: (category: PulseCategory, state: PulseState, note: string) => Promise<boolean>;
   onOpenJournalHistory: () => void;
 }) {
   const [intent, setIntent] = useState(journal.commit_text);
@@ -510,6 +632,9 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   const [newTask, setNewTask] = useState("");
   const [deletingIds, setDeletingIds] = useState<number[]>([]);
   const [prioritiesExpanded, setPrioritiesExpanded] = useState(false);
+  const introSave = useSaveStatus();
+  const reflectSave = useSaveStatus();
+  const addTaskSave = useSaveStatus();
   useEffect(() => { setIntent(journal.commit_text); setReflect(journal.reflect); }, [journal.commit_text, journal.reflect]);
 
   const hr = new Date().getHours();
@@ -532,11 +657,12 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   async function addTask() {
     const t = newTask.trim();
     if (!t) return;
-    setNewTask("");
-    try {
+    const ok = await addTaskSave.save(async () => {
       const r = await fetch(`${API}/tasks`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: t }) });
       if (r.ok) refreshTasks();
-    } catch { /* ignore */ }
+      return r.ok;
+    });
+    if (ok) { setNewTask(""); setAdding(false); }
   }
   async function complete(id: number): Promise<boolean> {
     try {
@@ -547,14 +673,16 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
       return false;
     }
   }
-  async function deleteTask(id: number) {
+  async function deleteTask(id: number): Promise<boolean> {
     setDeletingIds(prev => prev.includes(id) ? prev : [...prev, id]);
     try {
       const r = await fetch(`${API}/tasks/${id}`, { method: "DELETE" });
-      if (r.ok) refreshTasks();
-      else setDeletingIds(prev => prev.filter(item => item !== id));
+      if (r.ok) { refreshTasks(); return true; }
+      setDeletingIds(prev => prev.filter(item => item !== id));
+      return false;
     } catch {
       setDeletingIds(prev => prev.filter(item => item !== id));
+      return false;
     }
   }
   async function logToday(id: number): Promise<boolean> {
@@ -590,9 +718,10 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
           value={intent}
           rows={2}
           placeholder={intentionPlaceholder}
-          onChange={e => setIntent(e.target.value)}
-          onBlur={() => intent !== journal.commit_text && onSaveJournal({ ...journal, commit_text: intent })}
+          onChange={e => { setIntent(e.target.value); if (introSave.status === "error") introSave.reset(); }}
+          onBlur={() => { if (intent !== journal.commit_text) introSave.save(() => onSaveJournal({ ...journal, commit_text: intent })); }}
         />
+        <SaveStatus status={introSave.status} onRetry={() => introSave.save(() => onSaveJournal({ ...journal, commit_text: intent }))} />
       </div>
 
       <PulseCheckCard pulseChecks={pulseChecks} onSave={onSavePulseCheck} />
@@ -620,9 +749,16 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
           </>
         )}
         {adding ? (
-          <div style={{ ...S.logRow, marginTop: 14, marginBottom: 0 }}>
-            <input style={S.logInput} value={newTask} autoFocus placeholder="One thing that moves it forward…" onChange={e => setNewTask(e.target.value)} onKeyDown={e => { if (e.key === "Enter") { addTask(); setAdding(false); } }} />
-            <button style={S.logBtn} onClick={() => { addTask(); setAdding(false); }}>Add</button>
+          <div style={{ marginTop: 14, marginBottom: 0 }}>
+            <div style={S.logRow}>
+              <input
+                style={S.logInput} value={newTask} autoFocus placeholder="One thing that moves it forward…"
+                onChange={e => { setNewTask(e.target.value); if (addTaskSave.status === "error") addTaskSave.reset(); }}
+                onKeyDown={e => { if (e.key === "Enter") addTask(); }}
+              />
+              <button style={S.logBtn} onClick={addTask}>Add</button>
+            </div>
+            <SaveStatus status={addTaskSave.status} onRetry={addTask} />
           </div>
         ) : (
           <button style={{ ...S.intakeBtn, marginTop: 14 }} onClick={() => setAdding(true)}>＋  Add a priority</button>
@@ -655,15 +791,18 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
           </div>
           <div style={S.journalText}>{journalPrompt}</div>
           {writing && (
-            <textarea
-              style={S.journalInput}
-              value={reflect}
-              rows={3}
-              autoFocus
-              placeholder="Write your reflection…"
-              onChange={e => setReflect(e.target.value)}
-              onBlur={() => reflect !== journal.reflect && onSaveJournal({ ...journal, reflect })}
-            />
+            <>
+              <textarea
+                style={S.journalInput}
+                value={reflect}
+                rows={3}
+                autoFocus
+                placeholder="Write your reflection…"
+                onChange={e => { setReflect(e.target.value); if (reflectSave.status === "error") reflectSave.reset(); }}
+                onBlur={() => { if (reflect !== journal.reflect) reflectSave.save(() => onSaveJournal({ ...journal, reflect })); }}
+              />
+              <SaveStatus status={reflectSave.status} onRetry={() => reflectSave.save(() => onSaveJournal({ ...journal, reflect }))} />
+            </>
           )}
         </div>
         <button style={S.writeBtn} onClick={() => setWriting(w => !w)}>{writing ? "Done" : "Write ›"}</button>
@@ -677,32 +816,56 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   );
 }
 
-const PULSE_STATE_GLYPH: Record<PulseState, string> = { down: "−", mid: "•", up: "+" };
 const PULSE_STATE_COLOR: Record<PulseState, string> = { down: "#C87060", mid: C.brassSoft, up: "#8FAE6E" };
+// Empty/half/full fuel gauge — #44's chosen icon direction. Both the outline
+// and the fill level use currentColor so the icon automatically picks up the
+// button's own active/inactive color, same as the plain-text glyph it replaces.
+const PULSE_GAUGE_FILL: Record<PulseState, { y: number; h: number }> = {
+  down: { y: 19, h: 5 },
+  mid: { y: 13, h: 11 },
+  up: { y: 8, h: 16 },
+};
+function PulseGaugeIcon({ state }: { state: PulseState }) {
+  const { y, h } = PULSE_GAUGE_FILL[state];
+  return (
+    <svg viewBox="0 0 20 28" width="22" height="22" style={{ display: "block" }}>
+      <rect x="6" y="1" width="8" height="4" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      <rect x="1" y="5" width="18" height="22" rx="4" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <rect x="4" y={y} width="12" height={h} rx="1.5" fill="currentColor" />
+    </svg>
+  );
+}
 
 function PulseCheckCard({ pulseChecks, onSave }: {
   pulseChecks: PulseCheckEntry[];
-  onSave: (category: PulseCategory, state: PulseState, note: string) => void;
+  onSave: (category: PulseCategory, state: PulseState, note: string) => Promise<boolean>;
 }) {
   const [drafts, setDrafts] = useState<Partial<Record<PulseCategory, string>>>({});
+  const [pendingState, setPendingState] = useState<Partial<Record<PulseCategory, PulseState>>>({});
+  const { error: tapError, flash } = useTapError();
+  const noteSave = useKeyedSaveStatus<PulseCategory>();
   const byCategory = new Map(pulseChecks.map(p => [p.category, p]));
 
-  function tapState(category: PulseCategory, state: PulseState) {
+  async function tapState(category: PulseCategory, state: PulseState) {
     const existing = byCategory.get(category);
-    onSave(category, state, existing?.note ?? "");
+    setPendingState(prev => ({ ...prev, [category]: state }));
+    const ok = await onSave(category, state, existing?.note ?? "");
+    setPendingState(prev => { const next = { ...prev }; delete next[category]; return next; });
+    if (!ok) flash("Couldn't save — try again");
   }
   function saveNote(category: PulseCategory, entry: PulseCheckEntry) {
     const note = drafts[category] ?? entry.note;
     if (note === entry.note) return;
-    onSave(category, entry.state, note);
+    noteSave.save(category, () => onSave(category, entry.state, note));
   }
 
   return (
     <div style={S.card}>
-      <div style={S.eyebrow}><Icon name="sun" /><span style={S.eyeText}>PHYSICAL, MENTAL, SPIRITUAL</span></div>
-      <div style={S.pulseSub}>Start your day doing what matters most.</div>
+      <div style={S.eyebrow}><Icon name="sun" /><span style={S.eyeText}>PULSE CHECK</span></div>
+      <div style={S.pulseSub}>How are you holding up?</div>
       {PULSE_CATEGORIES.map(({ id, label }) => {
         const entry = byCategory.get(id);
+        const displayState = pendingState[id] ?? entry?.state;
         return (
           <div key={id} style={S.pulseRow}>
             <div style={S.pulseRowTop}>
@@ -711,35 +874,42 @@ function PulseCheckCard({ pulseChecks, onSave }: {
                 {(["down", "mid", "up"] as PulseState[]).map(s => (
                   <button
                     key={s}
-                    style={{ ...S.pulseBtn, ...(entry?.state === s ? { borderColor: PULSE_STATE_COLOR[s], color: PULSE_STATE_COLOR[s], boxShadow: `0 0 8px ${PULSE_STATE_COLOR[s]}55` } : {}) }}
+                    style={{ ...S.pulseBtn, width: 46, height: 46, ...(displayState === s ? { borderColor: PULSE_STATE_COLOR[s], color: PULSE_STATE_COLOR[s], boxShadow: `0 0 8px ${PULSE_STATE_COLOR[s]}55` } : {}) }}
                     onClick={() => tapState(id, s)}
                     aria-label={`${label}: ${s}`}
                   >
-                    {PULSE_STATE_GLYPH[s]}
+                    <PulseGaugeIcon state={s} />
                   </button>
                 ))}
               </div>
             </div>
             {entry && (
-              <input
-                style={S.pulseNoteInput}
-                value={drafts[id] ?? entry.note}
-                placeholder="Add a note (optional)…"
-                onChange={e => setDrafts(prev => ({ ...prev, [id]: e.target.value }))}
-                onBlur={() => saveNote(id, entry)}
-              />
+              <>
+                <input
+                  style={S.pulseNoteInput}
+                  value={drafts[id] ?? entry.note}
+                  placeholder="Add a note (optional)…"
+                  onChange={e => { setDrafts(prev => ({ ...prev, [id]: e.target.value })); if (noteSave.get(id) === "error") noteSave.reset(id); }}
+                  onBlur={() => saveNote(id, entry)}
+                />
+                <SaveStatus status={noteSave.get(id)} onRetry={() => saveNote(id, entry)} />
+              </>
             )}
           </div>
         );
       })}
+      <TapError message={tapError} />
     </div>
   );
 }
 
+const SWIPE_REVEAL_WIDTH = 104;
+const SWIPE_REVEAL_THRESHOLD = 56;
+
 function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, onOpenDetail }: {
   task: Task; index: number; isLast: boolean;
   onComplete: (id: number) => Promise<boolean>;
-  onDelete: (id: number) => void;
+  onDelete: (id: number) => Promise<boolean>;
   onLogToday: (id: number) => Promise<boolean>;
   onOpenDetail: (task: Task) => void;
 }) {
@@ -748,37 +918,104 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
   const [dragging, setDragging] = useState(false);
   const [crossedOff, setCrossedOff] = useState(false);
   const [pulsed, setPulsed] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [completing, setCompleting] = useState(false);
+  const { error, flash } = useTapError();
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const baseOffset = useRef(0);
+  const lastMove = useRef<{ x: number; t: number } | null>(null);
+  const velocity = useRef(0); // px/ms — drives how quickly the swipe cue snaps/fades on release
+  useEffect(() => () => { if (confirmTimer.current) clearTimeout(confirmTimer.current); }, []);
+
+  const canSwipeComplete = !crossedOff && !completing && (task.recurrencePeriod ? !task.completedToday : true);
 
   async function tapNumber() {
     if (task.recurrencePeriod) {
       if (task.completedToday) return;
       setPulsed(true);
       const ok = await onLogToday(task.id);
-      if (!ok) setPulsed(false);
+      if (!ok) { setPulsed(false); flash("Couldn't save — try again"); }
+    } else if (!confirming) {
+      // One-off priorities need a second tap to confirm (#45) — recurring
+      // "log today" taps stay single-tap since they're not a final done.
+      setConfirming(true);
+      if (confirmTimer.current) clearTimeout(confirmTimer.current);
+      confirmTimer.current = setTimeout(() => setConfirming(false), 3000);
+    } else {
+      if (confirmTimer.current) clearTimeout(confirmTimer.current);
+      setConfirming(false);
+      setCrossedOff(true);
+      setTimeout(async () => {
+        const ok = await onComplete(task.id);
+        if (!ok) { setCrossedOff(false); flash("Couldn't save — try again"); }
+      }, 260);
+    }
+  }
+
+  // Swipe-revealed actions require a deliberate tap on the button — swiping
+  // alone never deletes or completes anything, it only reveals the control.
+  async function runDelete() {
+    if (deleting) return;
+    setDeleting(true);
+    const ok = await onDelete(task.id);
+    if (!ok) { setDeleting(false); setOffset(0); flash("Couldn't delete — try again"); }
+  }
+  async function runComplete() {
+    if (!canSwipeComplete) return;
+    setCompleting(true);
+    setOffset(0);
+    if (task.recurrencePeriod) {
+      setPulsed(true);
+      const ok = await onLogToday(task.id);
+      setCompleting(false);
+      if (!ok) { setPulsed(false); flash("Couldn't save — try again"); }
     } else {
       setCrossedOff(true);
       setTimeout(async () => {
         const ok = await onComplete(task.id);
-        if (!ok) setCrossedOff(false);
+        setCompleting(false);
+        if (!ok) { setCrossedOff(false); flash("Couldn't save — try again"); }
       }, 260);
     }
   }
 
   function down(e: PointerEvent<HTMLDivElement>) {
+    if (deleting || completing || crossedOff) return;
     setStartX(e.clientX);
+    baseOffset.current = offset;
+    lastMove.current = { x: e.clientX, t: e.timeStamp };
+    velocity.current = 0;
     setDragging(true);
     e.currentTarget.setPointerCapture(e.pointerId);
   }
   function move(e: PointerEvent<HTMLDivElement>) {
     if (startX === null) return;
-    setOffset(Math.min(0, Math.max(-104, e.clientX - startX)));
+    const maxRight = canSwipeComplete ? SWIPE_REVEAL_WIDTH : 0;
+    const next = Math.min(maxRight, Math.max(-SWIPE_REVEAL_WIDTH, baseOffset.current + (e.clientX - startX)));
+    setOffset(next);
+    if (lastMove.current) {
+      const dt = Math.max(1, e.timeStamp - lastMove.current.t);
+      const dx = Math.abs(e.clientX - lastMove.current.x);
+      velocity.current = Math.min(3, dx / dt);
+    }
+    lastMove.current = { x: e.clientX, t: e.timeStamp };
   }
   function up() {
-    if (offset <= -72) onDelete(task.id);
+    if (startX === null) return;
+    if (offset <= -SWIPE_REVEAL_THRESHOLD) setOffset(-SWIPE_REVEAL_WIDTH);
+    else if (offset >= SWIPE_REVEAL_THRESHOLD) setOffset(SWIPE_REVEAL_WIDTH);
+    else setOffset(0);
     setStartX(null);
-    setOffset(0);
     setDragging(false);
   }
+
+  // A fast flick settles/fades in almost instantly; a slow drag eases in —
+  // the fade speed tracks how fast the row was actually swiped.
+  const fadeMs = Math.round(Math.max(70, 260 - velocity.current * 90));
+  const cueTransition = dragging ? "none" : `opacity ${fadeMs}ms ease`;
+  const deleteOpacity = Math.min(1, Math.max(0, -offset) / SWIPE_REVEAL_WIDTH);
+  const completeOpacity = Math.min(1, Math.max(0, offset) / SWIPE_REVEAL_WIDTH);
 
   const numDone = task.recurrencePeriod ? (task.completedToday || pulsed) : crossedOff;
 
@@ -795,7 +1032,9 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
     : "yellow";
   const rowStyle = statusColor === "red" ? S.prioRowRed : statusColor === "green" ? S.prioRowGreen : S.prioRowYellow;
   const subStyle = statusColor === "red" ? S.prioSubRed : statusColor === "green" ? S.prioSubGreen : S.prioSub;
-  const subText = task.partial
+  const subText = confirming
+    ? "Tap again to mark done"
+    : task.partial
     ? "Stuck — needs a nudge"
     : task.recurrencePeriod && task.slipping
     ? "Streak broke — needs a nudge"
@@ -807,7 +1046,18 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
 
   return (
     <div style={{ ...S.swipeWrap, marginBottom: isLast ? 0 : 20 }}>
-      <div style={S.deleteCue}>Delete</div>
+      <button
+        style={{ ...S.deleteCue, opacity: deleteOpacity, transition: cueTransition, pointerEvents: offset < 0 ? "auto" : "none" }}
+        disabled={deleting} onClick={runDelete}
+      >
+        {deleting ? "Deleting…" : "Delete"}
+      </button>
+      <button
+        style={{ ...S.completeCue, opacity: completeOpacity, transition: cueTransition, pointerEvents: offset > 0 ? "auto" : "none" }}
+        disabled={completing} onClick={runComplete}
+      >
+        {completing ? "…" : "Complete"}
+      </button>
       <div
         style={{ ...S.prioRow, ...S.swipeFront, ...rowStyle, transform: "translateX(" + offset + "px)", transition: dragging ? "none" : "transform 0.18s ease" }}
         onPointerDown={down}
@@ -816,19 +1066,20 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
         onPointerCancel={up}
       >
         <button
-          style={{ ...S.prioNum, ...(numDone ? S.prioNumDone : {}) }}
-          title={task.recurrencePeriod ? "Complete for today" : "Mark done"}
+          style={{ ...S.prioNum, ...(numDone ? S.prioNumDone : {}), ...(confirming ? { borderColor: C.brass, color: C.brass, boxShadow: `0 0 8px ${C.brassGlow}` } : {}) }}
+          title={task.recurrencePeriod ? "Complete for today" : confirming ? "Tap again to confirm" : "Mark done"}
           onClick={tapNumber}
           disabled={crossedOff || (task.recurrencePeriod ? task.completedToday || pulsed : false)}
         >
-          {index + 1}
+          {confirming ? "✓" : index + 1}
         </button>
         <div style={{ flex: 1, paddingTop: 3, opacity: crossedOff ? 0.45 : 1, transition: "opacity 0.2s ease" }}>
           <div style={{ ...S.prioTitle, textDecoration: crossedOff ? "line-through" : "none", transition: "text-decoration-color 0.2s ease" }}>{task.text}</div>
-          {subText && <div style={subStyle}>{subText}</div>}
+          {subText && <div style={confirming ? { ...S.prioSub, color: C.brass } : subStyle}>{subText}</div>}
         </div>
-        <button style={S.prioDetailBtn} title="View details" onClick={() => onOpenDetail(task)}>›</button>
+        <button style={S.prioEditBtn} title="Edit" onClick={() => onOpenDetail(task)}>Edit</button>
       </div>
+      <TapError message={error} />
     </div>
   );
 }
@@ -849,7 +1100,7 @@ function TodayMsgBar({ ci, setCi, sending, onSend }: { ci: string; setCi: (v: st
 
 // ── Relationships ─────────────────────────────────────────────────────────────
 function relationshipLabel(r: Relationship): string {
-  return r.name || RELATIONSHIP_CATEGORY_LABEL[r.category];
+  return r.name || r.type || RELATIONSHIP_CATEGORY_LABEL[r.category];
 }
 
 function Relationships({ relationships, refreshRelationships, commits, refreshCommits }: {
@@ -860,6 +1111,10 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
   const [tagId, setTagId] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<Relationship | null>(null);
+  const [keptHistoryOpen, setKeptHistoryOpen] = useState(false);
+  const addSave = useSaveStatus();
+  const commitTapError = useKeyedTapError<number>();
+  const primaryTapError = useKeyedTapError<number>();
   const primaryRel = primaryRelationship(relationships);
   const byId = new Map(relationships.map(r => [r.id, r]));
   const intentionText = primaryRel?.name
@@ -870,20 +1125,29 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
   async function add() {
     const t = val.trim();
     if (!t) return;
-    setVal("");
-    try {
+    const ok = await addSave.save(async () => {
       const r = await fetch(`${API}/commits`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: t, relationshipId: tagId ? Number(tagId) : null }),
       });
       if (r.ok) refreshCommits();
-    } catch { /* */ }
+      return r.ok;
+    });
+    if (ok) setVal("");
   }
   async function toggle(c: Commit) {
-    try { const r = await fetch(`${API}/commits/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: !c.done }) }); if (r.ok) refreshCommits(); } catch { /* */ }
+    try {
+      const r = await fetch(`${API}/commits/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: !c.done }) });
+      if (r.ok) { refreshCommits(); return; }
+    } catch { /* fall through */ }
+    commitTapError.flash(c.id, "Couldn't save — try again");
   }
   async function togglePrimary(r: Relationship) {
-    try { const res = await fetch(`${API}/relationships/${r.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isPrimary: !r.isPrimary }) }); if (res.ok) refreshRelationships(); } catch { /* */ }
+    try {
+      const res = await fetch(`${API}/relationships/${r.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isPrimary: !r.isPrimary }) });
+      if (res.ok) { refreshRelationships(); return; }
+    } catch { /* fall through */ }
+    primaryTapError.flash(r.id, "Couldn't save — try again");
   }
 
   return (
@@ -898,12 +1162,15 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
           <div style={S.empty}>No one added yet.</div>
         ) : (
           relationships.map(r => (
-            <div key={r.id} style={S.tribeRow}>
-              <button style={{ ...S.pulseBtn, ...(r.isPrimary ? { borderColor: C.brass, color: C.brass, boxShadow: `0 0 8px ${C.brassGlow}` } : {}) }} onClick={() => togglePrimary(r)} aria-label={r.isPrimary ? "Unset as featured" : "Feature on Today's Intention"}>★</button>
-              <button style={S.tribeNameBtn} onClick={() => setEditing(r)}>
-                <div style={S.prioTitle}>{relationshipLabel(r)}</div>
-                <div style={S.prioSub}>{RELATIONSHIP_CATEGORY_LABEL[r.category]}{r.type && r.type !== r.category ? ` — ${r.type}` : ""}</div>
-              </button>
+            <div key={r.id}>
+              <div style={S.tribeRow}>
+                <button style={{ ...S.pulseBtn, ...(r.isPrimary ? { borderColor: C.brass, color: C.brass, boxShadow: `0 0 8px ${C.brassGlow}` } : {}) }} onClick={() => togglePrimary(r)} aria-label={r.isPrimary ? "Unset as featured" : "Feature on Today's Intention"}>★</button>
+                <button style={S.tribeNameBtn} onClick={() => setEditing(r)}>
+                  <div style={S.prioTitle}>{relationshipLabel(r)}</div>
+                  <div style={S.prioSub}>{RELATIONSHIP_CATEGORY_LABEL[r.category]}{r.type && r.type !== r.category ? ` — ${r.type}` : ""}</div>
+                </button>
+              </div>
+              <TapError message={primaryTapError.get(r.id)} />
             </div>
           ))
         )}
@@ -911,9 +1178,14 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
       </div>
 
       <div style={S.logRow}>
-        <input style={S.logInput} value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => e.key === "Enter" && add()} placeholder="Log a commitment you made..." />
+        <input
+          style={S.logInput} value={val}
+          onChange={e => { setVal(e.target.value); if (addSave.status === "error") addSave.reset(); }}
+          onKeyDown={e => e.key === "Enter" && add()} placeholder="Log a commitment you made..."
+        />
         <button style={S.logBtn} onClick={add}>Log</button>
       </div>
+      <SaveStatus status={addSave.status} onRetry={add} />
       {relationships.length > 0 && (
         <select style={S.tribeTagSelect} value={tagId} onChange={e => setTagId(e.target.value)}>
           <option value="">General (not tagged to anyone)</option>
@@ -924,28 +1196,63 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
         <div style={S.card}>
           <div style={S.eyebrow}><span style={S.eyeText}>OPEN</span></div>
           {open.map(c => (
-            <div key={c.id} style={S.commitRow}>
-              <button style={S.dot} onClick={() => toggle(c)} />
-              <div><div style={S.prioTitle}>{c.text}</div><div style={S.prioSub}>Said {c.madeDate}{c.relationshipId && byId.has(c.relationshipId) ? ` — for ${relationshipLabel(byId.get(c.relationshipId)!)}` : ""}</div></div>
+            <div key={c.id}>
+              <div style={S.commitRow}>
+                <button style={S.dot} onClick={() => toggle(c)} />
+                <div><div style={S.prioTitle}>{c.text}</div><div style={S.prioSub}>Said {c.madeDate}{c.relationshipId && byId.has(c.relationshipId) ? ` — for ${relationshipLabel(byId.get(c.relationshipId)!)}` : ""}</div></div>
+              </div>
+              <TapError message={commitTapError.get(c.id)} />
             </div>
           ))}
         </div>
       )}
       {done.length > 0 && (
         <div style={{ ...S.card, opacity: 0.5 }}>
-          <div style={S.eyebrow}><span style={S.eyeText}>KEPT</span></div>
-          {done.map(c => (
-            <div key={c.id} style={S.commitRow}>
-              <button style={{ ...S.dot, ...S.dotDone }} onClick={() => toggle(c)}>✓</button>
-              <div style={{ ...S.prioTitle, textDecoration: "line-through" }}>{c.text}</div>
+          <div style={S.prioHeadRow}>
+            <div style={S.eyebrow}><span style={S.eyeText}>KEPT</span></div>
+            {done.length > KEPT_VISIBLE_CAP && <button style={S.prioLogLink} onClick={() => setKeptHistoryOpen(true)}>History ›</button>}
+          </div>
+          {done.slice(0, KEPT_VISIBLE_CAP).map(c => (
+            <div key={c.id}>
+              <div style={S.commitRow}>
+                <button style={{ ...S.dot, ...S.dotDone }} onClick={() => toggle(c)}>✓</button>
+                <div style={{ ...S.prioTitle, textDecoration: "line-through" }}>{c.text}</div>
+              </div>
+              <TapError message={commitTapError.get(c.id)} />
             </div>
           ))}
         </div>
       )}
       {addOpen && <RelationshipModal onClose={() => setAddOpen(false)} onSaved={refreshRelationships} />}
       {editing && <RelationshipModal relationship={editing} onClose={() => setEditing(null)} onSaved={refreshRelationships} onDeleted={() => { refreshRelationships(); refreshCommits(); }} />}
+      {keptHistoryOpen && <KeptHistoryModal commits={done} byId={byId} onClose={() => setKeptHistoryOpen(false)} />}
       {commits.length === 0 && <div style={{ ...S.card }}><div style={S.empty}>No commitments logged yet.</div></div>}
       <div style={{ height: 32 }} />
+    </div>
+  );
+}
+
+// ── Kept commitments history modal ──────────────────────────────────────────
+function KeptHistoryModal({ commits, byId, onClose }: { commits: Commit[]; byId: Map<number, Relationship>; onClose: () => void }) {
+  return (
+    <div style={M.overlay}>
+      <div style={M.sheet}>
+        <div style={M.strip} />
+        <div style={M.head}><div style={M.title}>Kept Commitments</div></div>
+        <div>
+          {commits.map(c => (
+            <div key={c.id} style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 14 }}>
+              <span style={{ color: "#A8C888", fontSize: 14, lineHeight: 1.4 }}>✓</span>
+              <div>
+                <div style={{ ...S.prioTitle, textDecoration: "line-through" }}>{c.text}</div>
+                <div style={S.prioSub}>Said {c.madeDate}{c.relationshipId && byId.has(c.relationshipId) ? ` — for ${relationshipLabel(byId.get(c.relationshipId)!)}` : ""}</div>
+              </div>
+            </div>
+          ))}
+          {commits.length === 0 && <div style={S.empty}>Nothing kept yet.</div>}
+        </div>
+        <button style={M.cancel} onClick={onClose}>Close</button>
+      </div>
     </div>
   );
 }
@@ -960,20 +1267,19 @@ function RelationshipModal({ relationship, onClose, onSaved, onDeleted }: {
   const [notes, setNotes] = useState(relationship?.notes ?? "");
   const [commitments, setCommitments] = useState(relationship?.commitments ?? "");
   const [biggestChallenge, setBiggestChallenge] = useState(relationship?.biggestChallenge ?? "");
-  const [saving, setSaving] = useState(false);
+  const saveStatus = useSaveStatus();
   const [deleting, setDeleting] = useState(false);
-  const [err, setErr] = useState("");
+  const [delErr, setDelErr] = useState("");
 
   async function save() {
-    setSaving(true); setErr("");
     const body = { name: name.trim() || null, category, type: type.trim(), notes: notes.trim(), commitments: commitments.trim(), biggestChallenge: biggestChallenge.trim() };
-    try {
+    await saveStatus.save(async () => {
       const r = relationship
         ? await fetch(`${API}/relationships/${relationship.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
         : await fetch(`${API}/relationships`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      if (r.ok) { onSaved(); onClose(); }
-      else { setErr("Couldn't save. Try again."); setSaving(false); }
-    } catch { setErr("Couldn't reach the server."); setSaving(false); }
+      if (r.ok) { onSaved(); onClose(); return true; }
+      return false;
+    });
   }
 
   async function del() {
@@ -982,8 +1288,8 @@ function RelationshipModal({ relationship, onClose, onSaved, onDeleted }: {
     try {
       const r = await fetch(`${API}/relationships/${relationship.id}`, { method: "DELETE" });
       if (r.ok) { onDeleted?.(); onClose(); }
-      else { setErr("Couldn't delete. Try again."); setDeleting(false); }
-    } catch { setErr("Couldn't reach the server."); setDeleting(false); }
+      else { setDelErr("Couldn't delete. Try again."); setDeleting(false); }
+    } catch { setDelErr("Couldn't reach the server."); setDeleting(false); }
   }
 
   return (
@@ -1021,8 +1327,9 @@ function RelationshipModal({ relationship, onClose, onSaved, onDeleted }: {
           <input style={M.input} value={biggestChallenge} onChange={e => setBiggestChallenge(e.target.value)} placeholder="Where it's hardest right now" />
         </div>
 
-        {err && <div style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{err}</div>}
-        <button style={M.next} disabled={saving} onClick={save}>{saving ? "Saving…" : "Save"}</button>
+        <SaveStatus status={saveStatus.status} onRetry={save} />
+        <button style={M.next} disabled={saveStatus.status === "saving"} onClick={save}>{saveStatus.status === "saving" ? "Saving…" : "Save"}</button>
+        <TapError message={delErr || null} />
         {relationship && <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete Person"}</button>}
         <button style={M.cancel} onClick={onClose}>Cancel</button>
       </div>
@@ -1111,7 +1418,7 @@ function StewardChat({ messages, input, setInput, send, sending, tasks, onOpenPr
     <div style={S.chatWrap}>
       <div style={{ padding: "4px 18px 0" }}>
         <div style={S.pageTitle}>Steward</div>
-        <div style={S.pageSub}>Your partner. Straight talk only.</div>
+        <div style={S.pageSub}>Your partner, bringing just the truth.</div>
         <div style={S.toneRow}>
           {(["straight_talk", "middle_of_the_road", "take_it_easy"] as const).map(t => (
             <button key={t} style={{ ...S.toneOpt, ...(tone === t ? S.toneOptOn : {}) }} onClick={() => onSetTone(t)}>{TONE_LABEL[t]}</button>
@@ -1221,8 +1528,7 @@ function JobModal({ pursuits, onClose, onCreated }: { pursuits: Pursuit[]; onClo
   const [step, setStep] = useState(0);
   const [val, setVal] = useState("");
   const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState("");
+  const saveStatus = useSaveStatus();
   const q = Qs[step];
 
   function choosePursuit(id: number | null) {
@@ -1231,15 +1537,14 @@ function JobModal({ pursuits, onClose, onCreated }: { pursuits: Pursuit[]; onClo
   }
 
   async function submit(final: Record<string, string>) {
-    setSaving(true); setErr("");
-    try {
+    await saveStatus.save(async () => {
       const r = await fetch(`${API}/jobs`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: final.name || "Untitled job", due: final.due || "", stage: "New", pct: 0, pursuitId }),
       });
-      if (r.ok) { onCreated(); onClose(); }
-      else { setErr("Couldn't save the job. Try again."); setSaving(false); }
-    } catch { setErr("Couldn't reach the server. Try again."); setSaving(false); }
+      if (r.ok) { onCreated(); onClose(); return true; }
+      return false;
+    });
   }
   function advance(answer: string) {
     const next = { ...answers, [q.key]: answer };
@@ -1276,9 +1581,9 @@ function JobModal({ pursuits, onClose, onCreated }: { pursuits: Pursuit[]; onClo
         <div style={M.q}>{q.q}</div>
         <>
           <input style={M.input} value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => e.key === "Enter" && val.trim() && advance(val)} placeholder={q.ph} autoFocus />
-          <button style={M.next} disabled={saving} onClick={() => advance(val)}>{step < Qs.length - 1 ? "Next →" : saving ? "Saving…" : "Add Job ✓"}</button>
+          <button style={M.next} disabled={saveStatus.status === "saving"} onClick={() => advance(val)}>{step < Qs.length - 1 ? "Next →" : saveStatus.status === "saving" ? "Saving…" : "Add Job ✓"}</button>
         </>
-        {err && <div style={{ ...S.empty, color: "#D4A090", marginTop: 4 }}>{err}</div>}
+        <SaveStatus status={saveStatus.status} onRetry={() => submit(answers)} />
         <button style={M.cancel} onClick={onClose}>Cancel</button>
       </div>
     </div>
@@ -1292,21 +1597,22 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
   const [stage, setStage] = useState(job.stage);
   const [due, setDue] = useState(job.due);
   const [pct, setPct] = useState(job.pct);
-  const [saving, setSaving] = useState(false);
+  const saveStatus = useSaveStatus();
+  const [validationErr, setValidationErr] = useState("");
   const [deleting, setDeleting] = useState(false);
-  const [err, setErr] = useState("");
+  const [delErr, setDelErr] = useState("");
 
   async function save() {
-    if (!name.trim()) { setErr("Name is required."); return; }
-    setSaving(true); setErr("");
-    try {
+    if (!name.trim()) { setValidationErr("Name is required."); return; }
+    setValidationErr("");
+    await saveStatus.save(async () => {
       const r = await fetch(`${API}/jobs/${job.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: name.trim(), pursuitId, stage: stage.trim(), due: due.trim(), pct }),
       });
-      if (r.ok) { onSaved(); onClose(); }
-      else { setErr("Couldn't save. Try again."); setSaving(false); }
-    } catch { setErr("Couldn't reach the server."); setSaving(false); }
+      if (r.ok) { onSaved(); onClose(); return true; }
+      return false;
+    });
   }
 
   async function del() {
@@ -1314,8 +1620,8 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
     try {
       const r = await fetch(`${API}/jobs/${job.id}`, { method: "DELETE" });
       if (r.ok) { onDeleted(); onClose(); }
-      else { setErr("Couldn't delete. Try again."); setDeleting(false); }
-    } catch { setErr("Couldn't reach the server."); setDeleting(false); }
+      else { setDelErr("Couldn't delete. Try again."); setDeleting(false); }
+    } catch { setDelErr("Couldn't reach the server."); setDeleting(false); }
   }
 
   return (
@@ -1350,8 +1656,10 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
           <input type="range" min={0} max={100} value={pct} onChange={e => setPct(Number(e.target.value))} style={E.slider} />
         </div>
 
-        {err && <div style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{err}</div>}
-        <button style={M.next} disabled={saving} onClick={save}>{saving ? "Saving…" : "Save Changes"}</button>
+        <TapError message={validationErr || null} />
+        <SaveStatus status={saveStatus.status} onRetry={save} />
+        <button style={M.next} disabled={saveStatus.status === "saving"} onClick={save}>{saveStatus.status === "saving" ? "Saving…" : "Save Changes"}</button>
+        <TapError message={delErr || null} />
         <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete Job"}</button>
         <button style={M.cancel} onClick={onClose}>Cancel</button>
       </div>
@@ -1366,21 +1674,22 @@ function PursuitModal({ pursuit, onClose, onSaved, onDeleted }: {
   const [name, setName] = useState(pursuit?.name ?? "");
   const [category, setCategory] = useState<PursuitCategory>(pursuit?.category ?? "job");
   const [notes, setNotes] = useState(pursuit?.notes ?? "");
-  const [saving, setSaving] = useState(false);
+  const saveStatus = useSaveStatus();
+  const [validationErr, setValidationErr] = useState("");
   const [deleting, setDeleting] = useState(false);
-  const [err, setErr] = useState("");
+  const [delErr, setDelErr] = useState("");
 
   async function save() {
-    if (!name.trim()) { setErr("Name is required."); return; }
-    setSaving(true); setErr("");
+    if (!name.trim()) { setValidationErr("Name is required."); return; }
+    setValidationErr("");
     const body = { name: name.trim(), category, notes: notes.trim() };
-    try {
+    await saveStatus.save(async () => {
       const r = pursuit
         ? await fetch(`${API}/pursuits/${pursuit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
         : await fetch(`${API}/pursuits`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      if (r.ok) { onSaved(); onClose(); }
-      else { setErr("Couldn't save. Try again."); setSaving(false); }
-    } catch { setErr("Couldn't reach the server."); setSaving(false); }
+      if (r.ok) { onSaved(); onClose(); return true; }
+      return false;
+    });
   }
 
   async function del() {
@@ -1389,8 +1698,8 @@ function PursuitModal({ pursuit, onClose, onSaved, onDeleted }: {
     try {
       const r = await fetch(`${API}/pursuits/${pursuit.id}`, { method: "DELETE" });
       if (r.ok) { onDeleted?.(); onClose(); }
-      else { setErr("Couldn't delete. Try again."); setDeleting(false); }
-    } catch { setErr("Couldn't reach the server."); setDeleting(false); }
+      else { setDelErr("Couldn't delete. Try again."); setDeleting(false); }
+    } catch { setDelErr("Couldn't reach the server."); setDeleting(false); }
   }
 
   return (
@@ -1416,8 +1725,10 @@ function PursuitModal({ pursuit, onClose, onSaved, onDeleted }: {
           <input style={M.input} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Role, rhythm, what you track" />
         </div>
 
-        {err && <div style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{err}</div>}
-        <button style={M.next} disabled={saving} onClick={save}>{saving ? "Saving…" : "Save"}</button>
+        <TapError message={validationErr || null} />
+        <SaveStatus status={saveStatus.status} onRetry={save} />
+        <button style={M.next} disabled={saveStatus.status === "saving"} onClick={save}>{saveStatus.status === "saving" ? "Saving…" : "Save"}</button>
+        <TapError message={delErr || null} />
         {pursuit && <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete Pursuit"}</button>}
         <button style={M.cancel} onClick={onClose}>Cancel</button>
       </div>
@@ -1431,8 +1742,13 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
   const [period, setPeriod] = useState<"daily" | "weekly" | "monthly">(task.recurrencePeriod ?? "weekly");
   const [target, setTarget] = useState(task.recurrenceTarget ?? 1);
   const [status, setStatusState] = useState<"open" | "stuck">(task.partial ? "stuck" : "open");
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState("");
+  const [notesDraft, setNotesDraft] = useState(task.notes);
+  const notesBaselineRef = useRef(task.notes);
+  const recurrenceSave = useSaveStatus();
+  const notesSave = useSaveStatus();
+  const { error: actionError, flash: flashActionError } = useTapError();
+  const [removing, setRemoving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(() => {
     fetch(`${API}/tasks/${task.id}/history?today=${ymd(new Date())}`)
@@ -1442,58 +1758,79 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
   useEffect(() => { load(); }, [load]);
 
   async function saveRecurrence() {
-    setSaving(true); setErr("");
-    try {
+    await recurrenceSave.save(async () => {
       const r = await fetch(`${API}/tasks/${task.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ recurrencePeriod: period, recurrenceTarget: period === "daily" ? 1 : target }),
       });
-      if (r.ok) { onChanged(); load(); } else setErr("Couldn't save. Try again.");
-    } catch { setErr("Couldn't reach the server."); }
-    setSaving(false);
+      if (r.ok) { onChanged(); load(); return true; }
+      return false;
+    });
   }
   async function removeRecurrence() {
-    setSaving(true);
+    setRemoving(true);
     try {
       const r = await fetch(`${API}/tasks/${task.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ recurrencePeriod: null, recurrenceTarget: null }),
       });
-      if (r.ok) { onChanged(); onClose(); }
-    } catch { /* ignore */ }
-    setSaving(false);
+      if (r.ok) { onChanged(); onClose(); return; }
+    } catch { /* fall through */ }
+    setRemoving(false);
+    flashActionError("Couldn't save — try again");
   }
   async function logToday() {
-    const r = await fetch(`${API}/tasks/${task.id}/complete`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date: ymd(new Date()) }),
-    });
-    if (r.ok) { onChanged(); load(); }
+    try {
+      const r = await fetch(`${API}/tasks/${task.id}/complete`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date: ymd(new Date()) }),
+      });
+      if (r.ok) { onChanged(); load(); return; }
+    } catch { /* fall through */ }
+    flashActionError("Couldn't save — try again");
   }
   async function del() {
-    const r = await fetch(`${API}/tasks/${task.id}`, { method: "DELETE" });
-    if (r.ok) { onChanged(); onClose(); }
+    setDeleting(true);
+    try {
+      const r = await fetch(`${API}/tasks/${task.id}`, { method: "DELETE" });
+      if (r.ok) { onChanged(); onClose(); return; }
+    } catch { /* fall through */ }
+    setDeleting(false);
+    flashActionError("Couldn't delete — try again");
   }
   async function setStatusValue(next: "open" | "stuck" | "done") {
     if (next === "done") {
-      const r = await fetch(`${API}/tasks/${task.id}`, {
-        method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ done: true, partial: false }),
-      });
-      if (r.ok) { onChanged(); onClose(); }
+      try {
+        const r = await fetch(`${API}/tasks/${task.id}`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ done: true, partial: false }),
+        });
+        if (r.ok) { onChanged(); onClose(); return; }
+      } catch { /* fall through */ }
+      flashActionError("Couldn't save — try again");
       return;
     }
+    const prevStatus = status;
     setStatusState(next);
-    await fetch(`${API}/tasks/${task.id}`, {
-      method: "PATCH", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ partial: next === "stuck" }),
-    });
-    onChanged();
+    try {
+      const r = await fetch(`${API}/tasks/${task.id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ partial: next === "stuck" }),
+      });
+      if (r.ok) { onChanged(); return; }
+    } catch { /* fall through */ }
+    setStatusState(prevStatus);
+    flashActionError("Couldn't save — try again");
   }
   async function saveNotes(value: string) {
-    await fetch(`${API}/tasks/${task.id}`, {
-      method: "PATCH", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ notes: value }),
+    if (value === notesBaselineRef.current) return;
+    const ok = await notesSave.save(async () => {
+      const r = await fetch(`${API}/tasks/${task.id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notes: value }),
+      });
+      return r.ok;
     });
+    if (ok) notesBaselineRef.current = value;
   }
 
   const periodNoun = task.recurrencePeriod === "daily" ? "day" : task.recurrencePeriod === "monthly" ? "month" : "week";
@@ -1501,7 +1838,13 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
   const notesSection = (
     <div style={E.fieldGroup}>
       <div style={E.label}>NOTES</div>
-      <textarea defaultValue={task.notes} onBlur={e => saveNotes(e.target.value)} placeholder="Add detail on what's blocking this, or anything worth remembering." style={M.notesArea} />
+      <textarea
+        value={notesDraft}
+        onChange={e => { setNotesDraft(e.target.value); if (notesSave.status === "error") notesSave.reset(); }}
+        onBlur={() => saveNotes(notesDraft)}
+        placeholder="Add detail on what's blocking this, or anything worth remembering." style={M.notesArea}
+      />
+      <SaveStatus status={notesSave.status} onRetry={() => saveNotes(notesDraft)} />
     </div>
   );
 
@@ -1521,7 +1864,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
             <div style={{ ...S.prioSub, marginBottom: 16 }}>
               {history?.currentPeriod?.completedCount ?? 0} / {history?.currentPeriod?.target ?? task.recurrenceTarget} this {periodNoun}
             </div>
-            <button style={M.next} disabled={saving || history?.completedToday} onClick={logToday}>
+            <button style={M.next} disabled={history?.completedToday} onClick={logToday}>
               {history?.completedToday ? "Completed today ✓" : "Complete for today"}
             </button>
             {notesSection}
@@ -1530,7 +1873,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
               {(history?.completions ?? []).length === 0 && <div style={S.prioSub}>Nothing logged yet.</div>}
               {(history?.completions ?? []).slice(0, 30).map(d => <div key={d} style={S.prioSub}>{d}</div>)}
             </div>
-            <button style={{ ...M.cancel, color: C.brassSoft }} disabled={saving} onClick={removeRecurrence}>Remove recurring</button>
+            <button style={{ ...M.cancel, color: C.brassSoft }} disabled={removing} onClick={removeRecurrence}>{removing ? "Removing…" : "Remove recurring"}</button>
           </>
         ) : (
           <>
@@ -1560,7 +1903,8 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
                 <input type="number" min={1} style={M.input} value={target} onChange={e => setTarget(Math.max(1, Number(e.target.value)))} placeholder="Times per period" />
               )}
             </div>
-            <button style={M.next} disabled={saving} onClick={saveRecurrence}>{saving ? "Saving…" : "Save"}</button>
+            <SaveStatus status={recurrenceSave.status} onRetry={saveRecurrence} />
+            <button style={M.next} disabled={recurrenceSave.status === "saving"} onClick={saveRecurrence}>{recurrenceSave.status === "saving" ? "Saving…" : "Save"}</button>
             {history && history.completions.length > 0 && (
               <div style={E.fieldGroup}>
                 <div style={E.label}>PAST HISTORY (from before recurrence was removed)</div>
@@ -1569,8 +1913,8 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
             )}
           </>
         )}
-        {err && <div style={{ ...S.empty, color: "#D4A090" }}>{err}</div>}
-        <button style={{ ...M.cancel, color: "#C87060" }} onClick={del}>Delete priority</button>
+        <TapError message={actionError} />
+        <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete priority"}</button>
         <button style={M.cancel} onClick={onClose}>Close</button>
       </div>
     </div>
@@ -1578,11 +1922,35 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
 }
 
 // ── Completed priorities log modal ────────────────────────────────────────────
-function CompletedLogModal({ onClose }: { onClose: () => void }) {
+function CompletedLogModal({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
   const [data, setData] = useState<{ items: Task[]; doneCount: number; totalCount: number; pct: number } | null>(null);
-  useEffect(() => {
+  const [deleted, setDeleted] = useState<Task[] | null>(null);
+  const [reopeningIds, setReopeningIds] = useState<number[]>([]);
+  const reopenError = useKeyedTapError<number>();
+
+  const load = useCallback(() => {
     fetch(`${API}/tasks/completed`).then(r => r.ok ? r.json() : null).then(setData);
+    fetch(`${API}/tasks/deleted`).then(r => r.ok ? r.json() : null).then(d => setDeleted(d?.items ?? []));
   }, []);
+  useEffect(() => { load(); }, [load]);
+
+  // Shared by both lists — "done: false" reopens a completed priority,
+  // "deleted: false" restores a deleted one back to the open list.
+  async function reopen(id: number, body: { done: boolean } | { deleted: boolean }) {
+    setReopeningIds(prev => [...prev, id]);
+    try {
+      const r = await fetch(`${API}/tasks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (r.ok) {
+        setData(prev => prev && "done" in body ? { ...prev, items: prev.items.filter(t => t.id !== id), doneCount: prev.doneCount - 1 } : prev);
+        setDeleted(prev => prev && "deleted" in body ? prev.filter(t => t.id !== id) : prev);
+        onChanged();
+        return;
+      }
+    } catch { /* fall through */ }
+    setReopeningIds(prev => prev.filter(item => item !== id));
+    reopenError.flash(id, "Couldn't reopen — try again");
+  }
+
   return (
     <div style={M.overlay}>
       <div style={M.sheet}>
@@ -1590,18 +1958,45 @@ function CompletedLogModal({ onClose }: { onClose: () => void }) {
         <div style={M.head}><div style={M.title}>Completed Priorities</div></div>
         <div style={M.track}><div style={{ ...M.fill, width: `${data?.pct ?? 0}%` }} /></div>
         <div style={{ ...S.prioSub, marginBottom: 14 }}>{data?.doneCount ?? 0} of {data?.totalCount ?? 0} priorities completed ({data?.pct ?? 0}%)</div>
-        <div>
+        <div style={S.scrollCap5}>
           {(data?.items ?? []).map(t => (
-            <div key={t.id} style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 14 }}>
-              <span style={{ color: "#A8C888", fontSize: 14, lineHeight: 1.4 }}>✓</span>
-              <div>
-                <div style={{ ...S.prioTitle, textDecoration: "line-through" }}>{t.text}</div>
-                {t.category && <div style={S.prioSub}>{t.category}</div>}
+            <div key={t.id} style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                <span style={{ color: "#A8C888", fontSize: 14, lineHeight: 1.4 }}>✓</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ ...S.prioTitle, textDecoration: "line-through" }}>{t.text}</div>
+                  {t.category && <div style={S.prioSub}>{t.category}</div>}
+                </div>
+                <button style={S.prioLogLink} disabled={reopeningIds.includes(t.id)} onClick={() => reopen(t.id, { done: false })}>
+                  {reopeningIds.includes(t.id) ? "Reopening…" : "Reopen"}
+                </button>
               </div>
+              <TapError message={reopenError.get(t.id)} />
             </div>
           ))}
           {data && data.items.length === 0 && <div style={S.empty}>Nothing completed yet.</div>}
         </div>
+
+        <div style={{ ...E.label, marginTop: 22, marginBottom: 8 }}>DELETED</div>
+        <div style={S.scrollCap5}>
+          {(deleted ?? []).map(t => (
+            <div key={t.id} style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                <span style={{ color: "#C87060", fontSize: 14, lineHeight: 1.4 }}>✕</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ ...S.prioTitle, textDecoration: "line-through" }}>{t.text}</div>
+                  {t.category && <div style={S.prioSub}>{t.category}</div>}
+                </div>
+                <button style={S.prioLogLink} disabled={reopeningIds.includes(t.id)} onClick={() => reopen(t.id, { deleted: false })}>
+                  {reopeningIds.includes(t.id) ? "Reopening…" : "Reopen"}
+                </button>
+              </div>
+              <TapError message={reopenError.get(t.id)} />
+            </div>
+          ))}
+          {deleted && deleted.length === 0 && <div style={S.empty}>Nothing deleted.</div>}
+        </div>
+
         <button style={M.cancel} onClick={onClose}>Close</button>
       </div>
     </div>
@@ -1616,7 +2011,7 @@ function JournalHistoryModal({ onClose, onSaved }: { onClose: () => void; onSave
   const [editingDate, setEditingDate] = useState<string | null>(null);
   const [intentDraft, setIntentDraft] = useState("");
   const [reflectDraft, setReflectDraft] = useState("");
-  const [saving, setSaving] = useState(false);
+  const saveStatus = useKeyedSaveStatus<string>();
 
   const load = useCallback(() => {
     getList<JournalHistoryEntry>(`${API}/journal/history`).then(setEntries);
@@ -1630,14 +2025,14 @@ function JournalHistoryModal({ onClose, onSaved }: { onClose: () => void; onSave
   }
 
   async function save(date: string) {
-    setSaving(true);
-    try {
+    await saveStatus.save(date, async () => {
       const r = await fetch(`${API}/journal`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ date, commit_text: intentDraft, reflect: reflectDraft }),
       });
       if (r.ok) { setEditingDate(null); load(); onSaved(); }
-    } finally { setSaving(false); }
+      return r.ok;
+    });
   }
 
   return (
@@ -1653,13 +2048,14 @@ function JournalHistoryModal({ onClose, onSaved }: { onClose: () => void; onSave
                 <>
                   <div style={{ ...E.fieldGroup, marginTop: 8 }}>
                     <div style={E.label}>Intention</div>
-                    <input style={M.input} value={intentDraft} onChange={e => setIntentDraft(e.target.value)} placeholder="—" />
+                    <input style={M.input} value={intentDraft} onChange={e => { setIntentDraft(e.target.value); if (saveStatus.get(entry.date) === "error") saveStatus.reset(entry.date); }} placeholder="—" />
                   </div>
                   <div style={E.fieldGroup}>
                     <div style={E.label}>Reflection</div>
-                    <textarea style={{ ...M.input, resize: "none" }} rows={3} value={reflectDraft} onChange={e => setReflectDraft(e.target.value)} placeholder="—" />
+                    <textarea style={{ ...M.input, resize: "none" }} rows={3} value={reflectDraft} onChange={e => { setReflectDraft(e.target.value); if (saveStatus.get(entry.date) === "error") saveStatus.reset(entry.date); }} placeholder="—" />
                   </div>
-                  <button style={M.next} disabled={saving} onClick={() => save(entry.date)}>{saving ? "Saving…" : "Save"}</button>
+                  <SaveStatus status={saveStatus.get(entry.date)} onRetry={() => save(entry.date)} />
+                  <button style={M.next} disabled={saveStatus.get(entry.date) === "saving"} onClick={() => save(entry.date)}>{saveStatus.get(entry.date) === "saving" ? "Saving…" : "Save"}</button>
                   <button style={M.cancel} onClick={() => setEditingDate(null)}>Cancel</button>
                 </>
               ) : (
@@ -1930,12 +2326,15 @@ const S: Record<string, CSSProperties> = {
   prioRowGreen: { boxShadow: "inset 3px 0 0 0 #8FAE6E" },
   prioSubRed: { fontSize: 12, color: "#C87060", lineHeight: 1.4 },
   prioSubGreen: { fontSize: 12, color: "#8FAE6E", lineHeight: 1.4 },
-  prioDetailBtn: { flexShrink: 0, alignSelf: "center", background: "none", border: "none", color: C.parchmentDim, fontSize: 18, padding: "6px 4px", cursor: "pointer", fontFamily: F },
+  prioEditBtn: { flexShrink: 0, alignSelf: "center", background: "none", border: "none", color: C.brassSoft, fontSize: 12.5, fontWeight: 600, padding: "6px 4px", cursor: "pointer", fontFamily: F },
   prioTitle: { fontSize: 15, color: C.parchment, lineHeight: 1.4, marginBottom: 3 },
   prioSub: { fontSize: 12, color: C.parchmentDim, lineHeight: 1.4 },
+  // Caps a list to roughly 5 rows tall, scrolling for the rest (Completed / Deleted logs).
+  scrollCap5: { maxHeight: 300, overflowY: "auto" as const, paddingRight: 4 },
   swipeWrap: { position: "relative", overflow: "hidden", borderRadius: 12, touchAction: "pan-y" },
   swipeFront: { background: "transparent", width: "100%" },
-  deleteCue: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: 18, background: "rgba(200,112,96,0.2)", color: "#D4A090", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" },
+  deleteCue: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: 22, border: "none", background: "#C87060", color: "#fff", fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", cursor: "pointer", fontFamily: F },
+  completeCue: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "flex-start", paddingLeft: 22, border: "none", background: "#8FAE6E", color: "#fff", fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", cursor: "pointer", fontFamily: F },
   upRow: { display: "flex" },
   upCol: { flex: 1, paddingRight: 12 },
   upBorder: { borderRight: "1px solid rgba(210,190,130,0.14)", marginRight: 12 },

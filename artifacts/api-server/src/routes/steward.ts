@@ -41,7 +41,7 @@ function getOpenAIMessage(data: OpenAIResponsesApiResponse): string | undefined 
 const TONE_DELIVERY: Record<ToneVoice, string> = {
   straight_talk: "",
   middle_of_the_road: "Lead with a brief, genuine acknowledgment before the direct point — don't overdo it. Still point straight at the truth without sugarcoating; just less blunt in how you get there.",
-  take_it_easy: "Invite reflection rather than confronting immediately, but don't take long to get to the truth — this isn't a license to stall. Honesty still outranks empathy; empathy has its place but never becomes flattery or avoidance.",
+  take_it_easy: "Lead with real warmth and room to reflect — noticeably more give than Middle of the Road, and slower to pivot to the direct point. Draw the truth out with questions rather than stating it outright up front. Still gets to honesty before the exchange is over, and never drifts into flattery or avoidance — but this should read as clearly the gentlest of the three, not tougher than Middle of the Road.",
 };
 
 function buildStewardSystemPrompt(profileData: ProfileData | null, relationshipRows: Relationship[], pursuitRows: Pursuit[], fallbackName: string): string {
@@ -110,6 +110,7 @@ Guidelines:
 - Use memory: call back to what they said before, name patterns, notice when a commitment hasn't moved.
 - If an open task is marked stuck, or has sat open several days without being flagged, ask about it directly by name rather than letting it pass unmentioned.
 - If a recurring priority is flagged slipping (its streak just broke), mention it directly when relevant — but only when it's genuinely notable, not as routine commentary on ordinary progress.
+- If today's Pulse Check shows a category clearly down, ask about it directly rather than letting it pass unmentioned — name which one (physical, mental, or spiritual) and what they noted, if anything. A category that's notably strong is worth acknowledging too. Don't force commentary on every check-in — only when it's genuinely notable, the same restraint as the slipping-priority guideline above.
 - Hold them accountable to commitments they've made to the people who matter most to them, by name where you know it — the same way you'd hold a brother to a promise.
 - Encourage real relationships and real action, never foster dependence on the app.${doNotSuggest}${alwaysRemind}${toneDelivery}
 - If ${name}'s current message clearly signals they want your delivery adjusted right now (e.g. "can you ease up" or "just give it to me straight"), say so in your reply, then end it with a tag on its own line: [SUGGEST_TONE:straight_talk], [SUGGEST_TONE:middle_of_the_road], or [SUGGEST_TONE:take_it_easy] — whichever they're asking for. Only include this tag when the signal is clear and it differs from their current setting; never include it as routine commentary.
@@ -137,7 +138,7 @@ router.get('/tasks', async (req: Request, res: Response) => {
     const rows = await db
       .select()
       .from(tasks)
-      .where(and(eq(tasks.userId, req.user!.id), eq(tasks.done, false)))
+      .where(and(eq(tasks.userId, req.user!.id), eq(tasks.done, false), eq(tasks.deleted, false)))
       .orderBy(desc(tasks.createdAt))
       .limit(50);
     const todayKey = typeof req.query.today === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.today)
@@ -175,10 +176,10 @@ router.get('/tasks/completed', async (req: Request, res: Response) => {
   try {
     const uid = req.user!.id;
     const [items, [{ count: openCount }]] = await Promise.all([
-      db.select().from(tasks).where(and(eq(tasks.userId, uid), eq(tasks.done, true), isNull(tasks.recurrencePeriod)))
+      db.select().from(tasks).where(and(eq(tasks.userId, uid), eq(tasks.done, true), eq(tasks.deleted, false), isNull(tasks.recurrencePeriod)))
         .orderBy(desc(tasks.doneAt)).limit(200),
       db.select({ count: sql<number>`count(*)::int` }).from(tasks)
-        .where(and(eq(tasks.userId, uid), eq(tasks.done, false), isNull(tasks.recurrencePeriod))),
+        .where(and(eq(tasks.userId, uid), eq(tasks.done, false), eq(tasks.deleted, false), isNull(tasks.recurrencePeriod))),
     ]);
     const doneCount = items.length;
     const total = doneCount + Number(openCount);
@@ -187,6 +188,19 @@ router.get('/tasks/completed', async (req: Request, res: Response) => {
   } catch (err) {
     req.log?.error({ err }, 'Error fetching completed tasks');
     res.status(500).json({ error: 'Failed to fetch completed tasks' });
+  }
+});
+
+// GET /api/tasks/deleted
+router.get('/tasks/deleted', async (req: Request, res: Response) => {
+  try {
+    const items = await db.select().from(tasks)
+      .where(and(eq(tasks.userId, req.user!.id), eq(tasks.deleted, true)))
+      .orderBy(desc(tasks.deletedAt)).limit(200);
+    res.json({ items });
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching deleted tasks');
+    res.status(500).json({ error: 'Failed to fetch deleted tasks' });
   }
 });
 
@@ -216,9 +230,14 @@ router.patch('/tasks/:id', async (req: Request, res: Response) => {
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid task id' }); return; }
     const [existing] = await db.select().from(tasks).where(and(eq(tasks.id, id), eq(tasks.userId, req.user!.id))).limit(1);
     if (!existing) { res.status(404).json({ error: 'Task not found' }); return; }
-    const { done, partial, notes, recurrencePeriod, recurrenceTarget } = req.body;
+    const { done, partial, notes, recurrencePeriod, recurrenceTarget, deleted } = req.body;
     const updates: Partial<{ done: boolean; doneAt: Date | null; partial: boolean; notes: string;
-      recurrencePeriod: string | null; recurrenceTarget: number | null }> = {};
+      recurrencePeriod: string | null; recurrenceTarget: number | null; deleted: boolean; deletedAt: Date | null }> = {};
+
+    if (typeof deleted === 'boolean') {
+      updates.deleted = deleted;
+      updates.deletedAt = deleted ? new Date() : null;
+    }
 
     if (recurrencePeriod !== undefined) {
       if (recurrencePeriod === null) {
@@ -260,11 +279,14 @@ router.patch('/tasks/:id', async (req: Request, res: Response) => {
 });
 
 // DELETE /api/tasks/:id
+// Soft-delete: the row moves to the Deleted list (GET /tasks/deleted) and can
+// be restored via PATCH { deleted: false } instead of being gone for good.
 router.delete('/tasks/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid task id' }); return; }
-    await db.delete(tasks).where(and(eq(tasks.id, id), eq(tasks.userId, req.user!.id)));
+    await db.update(tasks).set({ deleted: true, deletedAt: new Date() })
+      .where(and(eq(tasks.id, id), eq(tasks.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
     req.log?.error({ err }, 'Error deleting task');

@@ -76,6 +76,8 @@ async function ensureAuthTables(): Promise<void> {
     "CREATE INDEX IF NOT EXISTS \"IDX_email_login_codes_email\" ON email_login_codes (email)",
     "CREATE TABLE IF NOT EXISTS journal_entries (id serial PRIMARY KEY, date text NOT NULL UNIQUE, reflect text NOT NULL DEFAULT \x27\x27, commit_text text NOT NULL DEFAULT \x27\x27, created_at timestamp NOT NULL DEFAULT now())",
     "CREATE TABLE IF NOT EXISTS tasks (id serial PRIMARY KEY, text text NOT NULL, category text NOT NULL DEFAULT \x27\x27, notes text NOT NULL DEFAULT \x27\x27, partial boolean NOT NULL DEFAULT false, done boolean NOT NULL DEFAULT false, created_at timestamp NOT NULL DEFAULT now())",
+    "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS deleted boolean NOT NULL DEFAULT false",
+    "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS deleted_at timestamp",
     "CREATE TABLE IF NOT EXISTS chat_messages (id serial PRIMARY KEY, role text NOT NULL, content text NOT NULL, date text NOT NULL, created_at timestamp NOT NULL DEFAULT now())",
     "CREATE TABLE IF NOT EXISTS commits (id serial PRIMARY KEY, text text NOT NULL, made_date text NOT NULL, done boolean NOT NULL DEFAULT false, created_at timestamp NOT NULL DEFAULT now())",
     "CREATE TABLE IF NOT EXISTS jobs (id serial PRIMARY KEY, biz text NOT NULL, name text NOT NULL, stage text NOT NULL DEFAULT \x27\x27, due text NOT NULL DEFAULT \x27\x27, pct integer NOT NULL DEFAULT 0, created_at timestamp NOT NULL DEFAULT now())",
