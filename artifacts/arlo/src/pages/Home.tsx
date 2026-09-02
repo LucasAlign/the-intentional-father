@@ -903,6 +903,9 @@ function PulseCheckCard({ pulseChecks, onSave }: {
   );
 }
 
+const SWIPE_REVEAL_WIDTH = 104;
+const SWIPE_REVEAL_THRESHOLD = 56;
+
 function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, onOpenDetail }: {
   task: Task; index: number; isLast: boolean;
   onComplete: (id: number) => Promise<boolean>;
@@ -916,9 +919,16 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
   const [crossedOff, setCrossedOff] = useState(false);
   const [pulsed, setPulsed] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [completing, setCompleting] = useState(false);
   const { error, flash } = useTapError();
   const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const baseOffset = useRef(0);
+  const lastMove = useRef<{ x: number; t: number } | null>(null);
+  const velocity = useRef(0); // px/ms — drives how quickly the swipe cue snaps/fades on release
   useEffect(() => () => { if (confirmTimer.current) clearTimeout(confirmTimer.current); }, []);
+
+  const canSwipeComplete = !crossedOff && !completing && (task.recurrencePeriod ? !task.completedToday : true);
 
   async function tapNumber() {
     if (task.recurrencePeriod) {
@@ -943,24 +953,69 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
     }
   }
 
+  // Swipe-revealed actions require a deliberate tap on the button — swiping
+  // alone never deletes or completes anything, it only reveals the control.
+  async function runDelete() {
+    if (deleting) return;
+    setDeleting(true);
+    const ok = await onDelete(task.id);
+    if (!ok) { setDeleting(false); setOffset(0); flash("Couldn't delete — try again"); }
+  }
+  async function runComplete() {
+    if (!canSwipeComplete) return;
+    setCompleting(true);
+    setOffset(0);
+    if (task.recurrencePeriod) {
+      setPulsed(true);
+      const ok = await onLogToday(task.id);
+      setCompleting(false);
+      if (!ok) { setPulsed(false); flash("Couldn't save — try again"); }
+    } else {
+      setCrossedOff(true);
+      setTimeout(async () => {
+        const ok = await onComplete(task.id);
+        setCompleting(false);
+        if (!ok) { setCrossedOff(false); flash("Couldn't save — try again"); }
+      }, 260);
+    }
+  }
+
   function down(e: PointerEvent<HTMLDivElement>) {
+    if (deleting || completing || crossedOff) return;
     setStartX(e.clientX);
+    baseOffset.current = offset;
+    lastMove.current = { x: e.clientX, t: e.timeStamp };
+    velocity.current = 0;
     setDragging(true);
     e.currentTarget.setPointerCapture(e.pointerId);
   }
   function move(e: PointerEvent<HTMLDivElement>) {
     if (startX === null) return;
-    setOffset(Math.min(0, Math.max(-104, e.clientX - startX)));
-  }
-  async function up() {
-    if (offset <= -72) {
-      const ok = await onDelete(task.id);
-      if (!ok) flash("Couldn't delete — try again");
+    const maxRight = canSwipeComplete ? SWIPE_REVEAL_WIDTH : 0;
+    const next = Math.min(maxRight, Math.max(-SWIPE_REVEAL_WIDTH, baseOffset.current + (e.clientX - startX)));
+    setOffset(next);
+    if (lastMove.current) {
+      const dt = Math.max(1, e.timeStamp - lastMove.current.t);
+      const dx = Math.abs(e.clientX - lastMove.current.x);
+      velocity.current = Math.min(3, dx / dt);
     }
+    lastMove.current = { x: e.clientX, t: e.timeStamp };
+  }
+  function up() {
+    if (startX === null) return;
+    if (offset <= -SWIPE_REVEAL_THRESHOLD) setOffset(-SWIPE_REVEAL_WIDTH);
+    else if (offset >= SWIPE_REVEAL_THRESHOLD) setOffset(SWIPE_REVEAL_WIDTH);
+    else setOffset(0);
     setStartX(null);
-    setOffset(0);
     setDragging(false);
   }
+
+  // A fast flick settles/fades in almost instantly; a slow drag eases in —
+  // the fade speed tracks how fast the row was actually swiped.
+  const fadeMs = Math.round(Math.max(70, 260 - velocity.current * 90));
+  const cueTransition = dragging ? "none" : `opacity ${fadeMs}ms ease`;
+  const deleteOpacity = Math.min(1, Math.max(0, -offset) / SWIPE_REVEAL_WIDTH);
+  const completeOpacity = Math.min(1, Math.max(0, offset) / SWIPE_REVEAL_WIDTH);
 
   const numDone = task.recurrencePeriod ? (task.completedToday || pulsed) : crossedOff;
 
@@ -991,7 +1046,18 @@ function SwipePriority({ task, index, isLast, onComplete, onDelete, onLogToday, 
 
   return (
     <div style={{ ...S.swipeWrap, marginBottom: isLast ? 0 : 20 }}>
-      <div style={S.deleteCue}>Delete</div>
+      <button
+        style={{ ...S.deleteCue, opacity: deleteOpacity, transition: cueTransition, pointerEvents: offset < 0 ? "auto" : "none" }}
+        disabled={deleting} onClick={runDelete}
+      >
+        {deleting ? "Deleting…" : "Delete"}
+      </button>
+      <button
+        style={{ ...S.completeCue, opacity: completeOpacity, transition: cueTransition, pointerEvents: offset > 0 ? "auto" : "none" }}
+        disabled={completing} onClick={runComplete}
+      >
+        {completing ? "…" : "Complete"}
+      </button>
       <div
         style={{ ...S.prioRow, ...S.swipeFront, ...rowStyle, transform: "translateX(" + offset + "px)", transition: dragging ? "none" : "transform 0.18s ease" }}
         onPointerDown={down}
@@ -1858,19 +1924,25 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
 // ── Completed priorities log modal ────────────────────────────────────────────
 function CompletedLogModal({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
   const [data, setData] = useState<{ items: Task[]; doneCount: number; totalCount: number; pct: number } | null>(null);
+  const [deleted, setDeleted] = useState<Task[] | null>(null);
   const [reopeningIds, setReopeningIds] = useState<number[]>([]);
   const reopenError = useKeyedTapError<number>();
 
-  useEffect(() => {
+  const load = useCallback(() => {
     fetch(`${API}/tasks/completed`).then(r => r.ok ? r.json() : null).then(setData);
+    fetch(`${API}/tasks/deleted`).then(r => r.ok ? r.json() : null).then(d => setDeleted(d?.items ?? []));
   }, []);
+  useEffect(() => { load(); }, [load]);
 
-  async function reopen(id: number) {
+  // Shared by both lists — "done: false" reopens a completed priority,
+  // "deleted: false" restores a deleted one back to the open list.
+  async function reopen(id: number, body: { done: boolean } | { deleted: boolean }) {
     setReopeningIds(prev => [...prev, id]);
     try {
-      const r = await fetch(`${API}/tasks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: false }) });
+      const r = await fetch(`${API}/tasks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (r.ok) {
-        setData(prev => prev ? { ...prev, items: prev.items.filter(t => t.id !== id), doneCount: prev.doneCount - 1 } : prev);
+        setData(prev => prev && "done" in body ? { ...prev, items: prev.items.filter(t => t.id !== id), doneCount: prev.doneCount - 1 } : prev);
+        setDeleted(prev => prev && "deleted" in body ? prev.filter(t => t.id !== id) : prev);
         onChanged();
         return;
       }
@@ -1886,7 +1958,7 @@ function CompletedLogModal({ onClose, onChanged }: { onClose: () => void; onChan
         <div style={M.head}><div style={M.title}>Completed Priorities</div></div>
         <div style={M.track}><div style={{ ...M.fill, width: `${data?.pct ?? 0}%` }} /></div>
         <div style={{ ...S.prioSub, marginBottom: 14 }}>{data?.doneCount ?? 0} of {data?.totalCount ?? 0} priorities completed ({data?.pct ?? 0}%)</div>
-        <div>
+        <div style={S.scrollCap5}>
           {(data?.items ?? []).map(t => (
             <div key={t.id} style={{ marginBottom: 14 }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
@@ -1895,7 +1967,7 @@ function CompletedLogModal({ onClose, onChanged }: { onClose: () => void; onChan
                   <div style={{ ...S.prioTitle, textDecoration: "line-through" }}>{t.text}</div>
                   {t.category && <div style={S.prioSub}>{t.category}</div>}
                 </div>
-                <button style={S.prioLogLink} disabled={reopeningIds.includes(t.id)} onClick={() => reopen(t.id)}>
+                <button style={S.prioLogLink} disabled={reopeningIds.includes(t.id)} onClick={() => reopen(t.id, { done: false })}>
                   {reopeningIds.includes(t.id) ? "Reopening…" : "Reopen"}
                 </button>
               </div>
@@ -1904,6 +1976,27 @@ function CompletedLogModal({ onClose, onChanged }: { onClose: () => void; onChan
           ))}
           {data && data.items.length === 0 && <div style={S.empty}>Nothing completed yet.</div>}
         </div>
+
+        <div style={{ ...E.label, marginTop: 22, marginBottom: 8 }}>DELETED</div>
+        <div style={S.scrollCap5}>
+          {(deleted ?? []).map(t => (
+            <div key={t.id} style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                <span style={{ color: "#C87060", fontSize: 14, lineHeight: 1.4 }}>✕</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ ...S.prioTitle, textDecoration: "line-through" }}>{t.text}</div>
+                  {t.category && <div style={S.prioSub}>{t.category}</div>}
+                </div>
+                <button style={S.prioLogLink} disabled={reopeningIds.includes(t.id)} onClick={() => reopen(t.id, { deleted: false })}>
+                  {reopeningIds.includes(t.id) ? "Reopening…" : "Reopen"}
+                </button>
+              </div>
+              <TapError message={reopenError.get(t.id)} />
+            </div>
+          ))}
+          {deleted && deleted.length === 0 && <div style={S.empty}>Nothing deleted.</div>}
+        </div>
+
         <button style={M.cancel} onClick={onClose}>Close</button>
       </div>
     </div>
@@ -2236,9 +2329,12 @@ const S: Record<string, CSSProperties> = {
   prioEditBtn: { flexShrink: 0, alignSelf: "center", background: "none", border: "none", color: C.brassSoft, fontSize: 12.5, fontWeight: 600, padding: "6px 4px", cursor: "pointer", fontFamily: F },
   prioTitle: { fontSize: 15, color: C.parchment, lineHeight: 1.4, marginBottom: 3 },
   prioSub: { fontSize: 12, color: C.parchmentDim, lineHeight: 1.4 },
+  // Caps a list to roughly 5 rows tall, scrolling for the rest (Completed / Deleted logs).
+  scrollCap5: { maxHeight: 300, overflowY: "auto" as const, paddingRight: 4 },
   swipeWrap: { position: "relative", overflow: "hidden", borderRadius: 12, touchAction: "pan-y" },
   swipeFront: { background: "transparent", width: "100%" },
-  deleteCue: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: 18, background: "rgba(200,112,96,0.2)", color: "#D4A090", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" },
+  deleteCue: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: 22, border: "none", background: "#C87060", color: "#fff", fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", cursor: "pointer", fontFamily: F },
+  completeCue: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "flex-start", paddingLeft: 22, border: "none", background: "#8FAE6E", color: "#fff", fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", cursor: "pointer", fontFamily: F },
   upRow: { display: "flex" },
   upCol: { flex: 1, paddingRight: 12 },
   upBorder: { borderRight: "1px solid rgba(210,190,130,0.14)", marginRight: 12 },

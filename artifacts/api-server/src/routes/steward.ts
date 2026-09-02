@@ -138,7 +138,7 @@ router.get('/tasks', async (req: Request, res: Response) => {
     const rows = await db
       .select()
       .from(tasks)
-      .where(and(eq(tasks.userId, req.user!.id), eq(tasks.done, false)))
+      .where(and(eq(tasks.userId, req.user!.id), eq(tasks.done, false), eq(tasks.deleted, false)))
       .orderBy(desc(tasks.createdAt))
       .limit(50);
     const todayKey = typeof req.query.today === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.today)
@@ -176,10 +176,10 @@ router.get('/tasks/completed', async (req: Request, res: Response) => {
   try {
     const uid = req.user!.id;
     const [items, [{ count: openCount }]] = await Promise.all([
-      db.select().from(tasks).where(and(eq(tasks.userId, uid), eq(tasks.done, true), isNull(tasks.recurrencePeriod)))
+      db.select().from(tasks).where(and(eq(tasks.userId, uid), eq(tasks.done, true), eq(tasks.deleted, false), isNull(tasks.recurrencePeriod)))
         .orderBy(desc(tasks.doneAt)).limit(200),
       db.select({ count: sql<number>`count(*)::int` }).from(tasks)
-        .where(and(eq(tasks.userId, uid), eq(tasks.done, false), isNull(tasks.recurrencePeriod))),
+        .where(and(eq(tasks.userId, uid), eq(tasks.done, false), eq(tasks.deleted, false), isNull(tasks.recurrencePeriod))),
     ]);
     const doneCount = items.length;
     const total = doneCount + Number(openCount);
@@ -188,6 +188,19 @@ router.get('/tasks/completed', async (req: Request, res: Response) => {
   } catch (err) {
     req.log?.error({ err }, 'Error fetching completed tasks');
     res.status(500).json({ error: 'Failed to fetch completed tasks' });
+  }
+});
+
+// GET /api/tasks/deleted
+router.get('/tasks/deleted', async (req: Request, res: Response) => {
+  try {
+    const items = await db.select().from(tasks)
+      .where(and(eq(tasks.userId, req.user!.id), eq(tasks.deleted, true)))
+      .orderBy(desc(tasks.deletedAt)).limit(200);
+    res.json({ items });
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching deleted tasks');
+    res.status(500).json({ error: 'Failed to fetch deleted tasks' });
   }
 });
 
@@ -217,9 +230,14 @@ router.patch('/tasks/:id', async (req: Request, res: Response) => {
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid task id' }); return; }
     const [existing] = await db.select().from(tasks).where(and(eq(tasks.id, id), eq(tasks.userId, req.user!.id))).limit(1);
     if (!existing) { res.status(404).json({ error: 'Task not found' }); return; }
-    const { done, partial, notes, recurrencePeriod, recurrenceTarget } = req.body;
+    const { done, partial, notes, recurrencePeriod, recurrenceTarget, deleted } = req.body;
     const updates: Partial<{ done: boolean; doneAt: Date | null; partial: boolean; notes: string;
-      recurrencePeriod: string | null; recurrenceTarget: number | null }> = {};
+      recurrencePeriod: string | null; recurrenceTarget: number | null; deleted: boolean; deletedAt: Date | null }> = {};
+
+    if (typeof deleted === 'boolean') {
+      updates.deleted = deleted;
+      updates.deletedAt = deleted ? new Date() : null;
+    }
 
     if (recurrencePeriod !== undefined) {
       if (recurrencePeriod === null) {
@@ -261,11 +279,14 @@ router.patch('/tasks/:id', async (req: Request, res: Response) => {
 });
 
 // DELETE /api/tasks/:id
+// Soft-delete: the row moves to the Deleted list (GET /tasks/deleted) and can
+// be restored via PATCH { deleted: false } instead of being gone for good.
 router.delete('/tasks/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid task id' }); return; }
-    await db.delete(tasks).where(and(eq(tasks.id, id), eq(tasks.userId, req.user!.id)));
+    await db.update(tasks).set({ deleted: true, deletedAt: new Date() })
+      .where(and(eq(tasks.id, id), eq(tasks.userId, req.user!.id)));
     res.json({ success: true });
   } catch (err) {
     req.log?.error({ err }, 'Error deleting task');

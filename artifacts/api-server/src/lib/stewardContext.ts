@@ -11,7 +11,7 @@ import { PULSE_STATE_LABEL, type PulseState } from "./pulseCheck";
 export async function buildTodayContext(userId: string, today: string): Promise<string> {
   const [recentJournal, openTasks, todayPulse] = await Promise.all([
     db.select().from(journalEntries).where(eq(journalEntries.userId, userId)).orderBy(desc(journalEntries.date)).limit(3),
-    db.select().from(tasks).where(and(eq(tasks.userId, userId), eq(tasks.done, false))).orderBy(desc(tasks.createdAt)).limit(5),
+    db.select().from(tasks).where(and(eq(tasks.userId, userId), eq(tasks.done, false), eq(tasks.deleted, false))).orderBy(desc(tasks.createdAt)).limit(5),
     db.select().from(pulseChecks).where(and(eq(pulseChecks.userId, userId), eq(pulseChecks.date, today))),
   ]);
 
