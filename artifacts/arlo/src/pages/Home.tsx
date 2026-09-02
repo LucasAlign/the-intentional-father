@@ -59,7 +59,7 @@ interface Commit {
   id: number; text: string; notes: string; madeDate: string; dueDate: string | null; done: boolean;
   relationshipId: number | null; adHocName: string | null; adHocCategory: RelationshipCategory | null;
 }
-interface Job { id: number; biz: string; name: string; stage: string; due: string; pct: number; pursuitId: number | null; }
+interface Job { id: number; biz: string; name: string; stage: string; due: string; pct: number; pursuitId: number | null; materials: string; budget: string; risk: string; }
 type PursuitCategory = "job" | "business" | "volunteer" | "other";
 interface Pursuit { id: number; name: string; category: PursuitCategory; notes: string; }
 const PURSUIT_CATEGORIES: PursuitCategory[] = ["job", "business", "volunteer", "other"];
@@ -2226,7 +2226,10 @@ function JobModal({ pursuits, onClose, onCreated }: { pursuits: Pursuit[]; onClo
     await saveStatus.save(async () => {
       const r = await fetch(`${API}/jobs`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: final.name || "Untitled job", due: final.due || "", stage: "New", pct: 0, pursuitId }),
+        body: JSON.stringify({
+          name: final.name || "Untitled job", due: final.due || "", stage: "New", pct: 0, pursuitId,
+          materials: final.materials || "", budget: final.budget || "", risk: final.risk || "",
+        }),
       });
       if (r.ok) { onCreated(); onClose(); return true; }
       return false;
@@ -2283,6 +2286,9 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
   const [stage, setStage] = useState(job.stage);
   const [due, setDue] = useState(job.due);
   const [pct, setPct] = useState(job.pct);
+  const [materials, setMaterials] = useState(job.materials);
+  const [budget, setBudget] = useState(job.budget);
+  const [risk, setRisk] = useState(job.risk);
   const saveStatus = useSaveStatus();
   const [validationErr, setValidationErr] = useState("");
   const [deleting, setDeleting] = useState(false);
@@ -2294,7 +2300,7 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
     await saveStatus.save(async () => {
       const r = await fetch(`${API}/jobs/${job.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), pursuitId, stage: stage.trim(), due: due.trim(), pct }),
+        body: JSON.stringify({ name: name.trim(), pursuitId, stage: stage.trim(), due: due.trim(), pct, materials: materials.trim(), budget: budget.trim(), risk: risk.trim() }),
       });
       if (r.ok) { onSaved(); onClose(); return true; }
       return false;
@@ -2340,6 +2346,18 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
         <div style={E.fieldGroup}>
           <div style={E.label}>Progress — {pct}%</div>
           <input type="range" min={0} max={100} value={pct} onChange={e => setPct(Number(e.target.value))} style={E.slider} />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Materials needed</div>
+          <input style={M.input} value={materials} onChange={e => setMaterials(e.target.value)} placeholder="e.g. 4×8 aluminum, vinyl" />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Budget or quote</div>
+          <input style={M.input} value={budget} onChange={e => setBudget(e.target.value)} placeholder="e.g. $2,400 or not sure" />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Could slow this down</div>
+          <input style={M.input} value={risk} onChange={e => setRisk(e.target.value)} placeholder="e.g. approval, weather" />
         </div>
 
         <TapError message={validationErr || null} />
@@ -3108,7 +3126,10 @@ const M: Record<string, CSSProperties> = {
   // low-alpha walnut tint (matching the app's own palette) instead of flat
   // black is what actually reads as "dimmed," not "blacked out."
   overlay: { position: "fixed", inset: 0, background: "rgba(90,58,32,0.28)", display: "flex", alignItems: "flex-end", zIndex: 200, backdropFilter: "blur(3px)" },
-  sheet: { width: "100%", maxWidth: 440, margin: "0 auto", position: "relative", overflow: "hidden", background: "linear-gradient(160deg,rgba(34,30,18,0.98),rgba(16,14,8,0.98))", backdropFilter: "blur(24px)", borderRadius: "22px 22px 0 0", padding: "24px 24px 48px", border: "1px solid rgba(210,190,130,0.18)", borderBottom: "none", boxShadow: "0 -10px 50px rgba(0,0,0,0.7)" },
+  // maxHeight + overflowY (not a blanket `overflow: hidden`) so content
+  // taller than the viewport scrolls instead of clipping inaccessibly —
+  // every modal in the app shares this one sheet style (#66).
+  sheet: { width: "100%", maxWidth: 440, margin: "0 auto", maxHeight: "88vh", position: "relative", overflowY: "auto", overflowX: "hidden", background: "linear-gradient(160deg,rgba(34,30,18,0.98),rgba(16,14,8,0.98))", backdropFilter: "blur(24px)", borderRadius: "22px 22px 0 0", padding: "24px 24px 48px", border: "1px solid rgba(210,190,130,0.18)", borderBottom: "none", boxShadow: "0 -10px 50px rgba(0,0,0,0.7)" },
   strip: { position: "absolute", top: 0, left: 0, right: 0, height: 2, background: `linear-gradient(90deg,transparent,${C.brass},transparent)`, boxShadow: `0 0 14px ${C.brassGlow}` },
   head: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
   title: { fontSize: 23, color: C.parchment, fontWeight: 400 },

@@ -147,6 +147,11 @@ export const jobs = pgTable("jobs", {
   due: text("due").notNull().default(""),
   pct: integer("pct").notNull().default(0),
   pursuitId: integer("pursuit_id").references(() => pursuits.id, { onDelete: "set null" }),
+  // The add-job wizard asks all three of these but used to throw the
+  // answers away — nothing on the backend had anywhere to put them (#30).
+  materials: text("materials").notNull().default(""),
+  budget: text("budget").notNull().default(""),
+  risk: text("risk").notNull().default(""),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

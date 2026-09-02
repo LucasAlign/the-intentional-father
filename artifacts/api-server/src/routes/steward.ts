@@ -879,11 +879,16 @@ router.get('/jobs', async (req: Request, res: Response) => {
 // POST /api/jobs
 router.post('/jobs', async (req: Request, res: Response) => {
   try {
-    const { name, stage, due, pct, pursuitId } = req.body;
+    const { name, stage, due, pct, pursuitId, materials, budget, risk } = req.body;
     if (!name) { res.status(400).json({ error: 'name is required' }); return; }
     const resolved = await resolvePursuitId(req.user!.id, pursuitId, res);
     if (!resolved.ok) return; // resolvePursuitId already responded
-    const [row] = await db.insert(jobs).values({ userId: req.user!.id, name, stage: stage || '', due: due || '', pct: pct ?? 0, pursuitId: resolved.value }).returning();
+    const [row] = await db.insert(jobs).values({
+      userId: req.user!.id, name, stage: stage || '', due: due || '', pct: pct ?? 0, pursuitId: resolved.value,
+      materials: typeof materials === 'string' ? materials : '',
+      budget: typeof budget === 'string' ? budget : '',
+      risk: typeof risk === 'string' ? risk : '',
+    }).returning();
     res.json(row);
   } catch (err) {
     req.log?.error({ err }, 'Error creating job');
@@ -896,12 +901,15 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    const { name, stage, due, pct, pursuitId } = req.body;
+    const { name, stage, due, pct, pursuitId, materials, budget, risk } = req.body;
     const updates: Partial<typeof jobs.$inferInsert> = {};
     if (name !== undefined) updates.name = name;
     if (stage !== undefined) updates.stage = stage;
     if (due !== undefined) updates.due = due;
     if (typeof pct === 'number') updates.pct = pct;
+    if (typeof materials === 'string') updates.materials = materials;
+    if (typeof budget === 'string') updates.budget = budget;
+    if (typeof risk === 'string') updates.risk = risk;
     if (pursuitId !== undefined) {
       const resolved = await resolvePursuitId(req.user!.id, pursuitId, res);
       if (!resolved.ok) return; // resolvePursuitId already responded
