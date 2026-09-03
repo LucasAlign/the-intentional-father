@@ -699,6 +699,10 @@ function ProfileMenu({ name, email, onClose, onLogout }: { name?: string | null;
       <ModalSheet title={name || email || "Profile"} onClose={onClose} sheetOnClick={e => e.stopPropagation()}>
         <a style={{ ...M.next, textDecoration: "none", display: "block", textAlign: "center" }} href="mailto:admin@lucasalign.com?subject=Steward%20feedback">Contact Support / Feedback</a>
         <button style={{ ...M.next, background: "none", border: "1px solid rgba(210,190,130,0.18)", color: C.parchmentDim, boxShadow: "none" }} onClick={onLogout}>Log Out</button>
+        {/* Moved here from the signed-out gate (#35) — offered once someone's
+            actually using Steward and looking for it, not pushed on every
+            visitor before they've seen the product. */}
+        <AddToHomeScreen />
         <button style={M.cancel} onClick={onClose}>Cancel</button>
       </ModalSheet>
     </div>
@@ -2985,11 +2989,11 @@ function AuthGate({
           <div style={G.welcome}>Thanks for signing up — you're on the list. We'll let you in soon.</div>
         ) : step === "providers" ? (
           <>
-            <div style={G.welcome}>Welcome back.</div>
+            <div style={G.welcome}>Sign in to Steward</div>
             <button style={G.googleBtn} onClick={() => onLogin("google")}>Continue with Google</button>
             <button style={{ ...G.googleBtn, marginTop: 10 }} onClick={() => onLogin("microsoft")}>Continue with Microsoft</button>
             <button style={{ ...G.googleBtn, marginTop: 10 }} onClick={() => { setError(""); setStep("email"); }}>Continue with Email</button>
-            <div style={G.notice}>New here? Sign in above to request access.</div>
+            <div style={G.notice}>First time here? Use any option above — we'll review your access and let you know.</div>
           </>
         ) : step === "email" ? (
           <>
@@ -3048,7 +3052,6 @@ function AuthGate({
             <button style={{ ...G.addHomeToggle, marginTop: 10 }} onClick={() => { setError(""); setCode(""); setStep("email"); }}>Use a different email</button>
           </>
         )}
-        <AddToHomeScreen />
       </div>
     </div>
   );
