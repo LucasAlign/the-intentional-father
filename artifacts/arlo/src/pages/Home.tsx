@@ -270,11 +270,15 @@ function Icon({ name, size = 15, color = C.brassSoft, stroke = 1.6 }: { name: Ic
   return <svg {...p} aria-hidden="true">{m[name]}</svg>;
 }
 
+// #39: label is "Chat", not "Steward" — the app itself is already called
+// Steward (header logo, sign-in screen), so a nav tab with the same name
+// didn't clearly read as "this opens the AI chat." The tab id stays
+// "steward" internally, matching the existing "her"/"Tribe" precedent (#28).
 const NAV: { id: TabId; icon: IconName | "stewardIcon"; label: string }[] = [
   { id: "today", icon: "sun", label: "Today" },
   { id: "her", icon: "heart", label: "Tribe" },
   { id: "work", icon: "work", label: "Work" },
-  { id: "steward", icon: "stewardIcon", label: "Steward" },
+  { id: "steward", icon: "stewardIcon", label: "Chat" },
   { id: "week", icon: "cal", label: "Week" },
 ];
 type TabId = "today" | "her" | "work" | "steward" | "week";
@@ -2228,7 +2232,10 @@ function StewardChat({ messages, input, setInput, send, sending, tasks, onOpenPr
   return (
     <div style={S.chatWrap}>
       <div style={{ padding: "4px 18px 0" }}>
-        <div style={S.pageTitle}>Steward</div>
+        {/* #39: matches the "Chat" nav label — Steward is the assistant's
+            name (chat bubbles already label its replies "STEWARD"), not
+            this screen's own title. */}
+        <div style={S.pageTitle}>Chat</div>
         <div style={S.pageSub}>Your partner, bringing just the truth.</div>
         <div style={S.toneRow}>
           {(["straight_talk", "middle_of_the_road", "take_it_easy"] as const).map(t => (
