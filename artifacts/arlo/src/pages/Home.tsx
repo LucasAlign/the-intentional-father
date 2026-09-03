@@ -1690,13 +1690,16 @@ function CommitLogModal({ relationships, onClose, onSaved, onRelationshipAdded }
   const [notes, setNotes] = useState("");
   const [dueDate, setDueDate] = useState("");
   const saveStatus = useSaveStatus();
+  const [validationErr, setValidationErr] = useState("");
 
   const hasExisting = relationshipId !== "";
   const hasNew = newCategory !== "" && newName.trim() !== "";
-  const canSave = text.trim() !== "" && (hasExisting || hasNew);
+  const canSave = text.trim() !== "";
 
   async function save() {
     if (!canSave) return;
+    if (!hasExisting && !hasNew) { setValidationErr("Select who this commitment is for."); return; }
+    setValidationErr("");
     await saveStatus.save(async () => {
       let targetRelationshipId: number | null = hasExisting ? Number(relationshipId) : null;
       if (!hasExisting && hasNew && addToTribe) {
@@ -1726,6 +1729,7 @@ function CommitLogModal({ relationships, onClose, onSaved, onRelationshipAdded }
           newName={newName} setNewName={setNewName}
           addToTribe={addToTribe} setAddToTribe={setAddToTribe}
         />
+        <TapError message={validationErr || null} />
 
         <div style={E.fieldGroup}>
           <div style={E.label}>WHAT DID YOU COMMIT TO?</div>
@@ -1765,13 +1769,16 @@ function CommitEditModal({ commit, relationships, onClose, onSaved, onDeleted, o
   const saveStatus = useSaveStatus();
   const [deleting, setDeleting] = useState(false);
   const [delErr, setDelErr] = useState("");
+  const [validationErr, setValidationErr] = useState("");
 
   const hasExisting = relationshipId !== "";
   const hasNew = newCategory !== "" && newName.trim() !== "";
-  const canSave = text.trim() !== "" && (hasExisting || hasNew);
+  const canSave = text.trim() !== "";
 
   async function save() {
     if (!canSave) return;
+    if (!hasExisting && !hasNew) { setValidationErr("Select who this commitment is for."); return; }
+    setValidationErr("");
     await saveStatus.save(async () => {
       let targetRelationshipId: number | null = hasExisting ? Number(relationshipId) : null;
       if (!hasExisting && hasNew && addToTribe) {
@@ -1810,6 +1817,7 @@ function CommitEditModal({ commit, relationships, onClose, onSaved, onDeleted, o
           newName={newName} setNewName={setNewName}
           addToTribe={addToTribe} setAddToTribe={setAddToTribe}
         />
+        <TapError message={validationErr || null} />
 
         <div style={E.fieldGroup}>
           <div style={E.label}>WHAT DID YOU COMMIT TO?</div>
