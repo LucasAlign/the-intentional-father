@@ -364,6 +364,28 @@ function useBottomScrollFade<T extends HTMLElement>() {
   return { ref, showFade };
 }
 
+// One-time first-visit orientation tip (#40) — dismissed state persists
+// per-device via localStorage, since there's no per-user "seen this"
+// tracking anywhere in the schema; a tip can reappear on a new device,
+// an accepted tradeoff rather than a bug.
+function FirstVisitTip({ id, children }: { id: string; children: ReactNode }) {
+  const storageKey = `steward:tip-seen:${id}`;
+  const [dismissed, setDismissed] = useState(() => {
+    try { return localStorage.getItem(storageKey) === "1"; } catch { return false; }
+  });
+  function dismiss() {
+    setDismissed(true);
+    try { localStorage.setItem(storageKey, "1"); } catch { /* private browsing, etc. — dismiss still works for this session */ }
+  }
+  if (dismissed) return null;
+  return (
+    <div style={S.tip}>
+      <div style={S.tipText}>{children}</div>
+      <button style={S.tipClose} onClick={dismiss} aria-label="Dismiss tip">✕</button>
+    </div>
+  );
+}
+
 // ── Date helpers ───────────────────────────────────────────────────────────────
 const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 function weekDays() {
@@ -843,6 +865,8 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
         <div style={S.dateChip}><Icon name="cal" size={13} color={C.parchmentMid} /><span style={{ marginLeft: 6 }}>{new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</span></div>
       </div>
 
+      <FirstVisitTip id="today">This is your daily home base — set today's intention, check your top priorities, log a Pulse Check, and reflect before you're done.</FirstVisitTip>
+
       {/* #38: plain card, not the brass-glow hero border this used to have
           — Verse of the Day is read-only, non-actionable content, so it
           shouldn't outrank the actionable cards below it. */}
@@ -1004,6 +1028,7 @@ function PulseCheckCard({ pulseChecks, onSave }: {
     <div style={S.card}>
       <div style={S.eyebrow}><Icon name="sun" /><span style={S.eyeText}>PULSE CHECK</span></div>
       <div style={S.pulseSub}>How are you holding up?</div>
+      <FirstVisitTip id="pulse-check">A quick daily check on how work, family, and faith are actually going — not a task list, just an honest read.</FirstVisitTip>
       {PULSE_CATEGORIES.map(({ id, label }) => {
         const entry = byCategory.get(id);
         const displayState = pendingState[id] ?? entry?.state;
@@ -1562,6 +1587,7 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
       {scrollFade.showFade && <div style={S.scrollFadeCue} />}
       <div style={S.pageTitle}>Tribe</div>
       <div style={S.pageSub}>The people you're prioritizing.</div>
+      <FirstVisitTip id="tribe">Track the people you're prioritizing — spouse, kids, family, friends — and the commitments you've made to them.</FirstVisitTip>
       <div style={S.card}><div style={S.eyebrow}><Icon name="heart" /><span style={S.eyeText}>TODAY'S INTENTION</span></div><div style={S.intent}>{intentionText}</div></div>
 
       <div style={S.card}>
@@ -1574,7 +1600,7 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
         </div>
         <TapError message={orderError} />
         {relationships.length === 0 ? (
-          <div style={S.empty}>No one added yet.</div>
+          <div style={S.empty}>No one added yet. Start with the person you want to prioritize most.</div>
         ) : (
           <>
             {starredPeople.length > 0 && (
@@ -2180,6 +2206,7 @@ function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit, onOp
       {scrollFade.showFade && <div style={S.scrollFadeCue} />}
       <div style={S.pageTitle}>Work</div>
       <div style={S.pageSub}>Active jobs by pursuit. Tap a row to edit.</div>
+      <FirstVisitTip id="work">Group your jobs under pursuits — a job, a business, a volunteer role — to see progress at a glance.</FirstVisitTip>
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 2 }}>
         <button style={S.prioLogLink} onClick={onOpenClosed}>Closed ›</button>
       </div>
@@ -2237,6 +2264,7 @@ function StewardChat({ messages, input, setInput, send, sending, tasks, onOpenPr
             this screen's own title. */}
         <div style={S.pageTitle}>Chat</div>
         <div style={S.pageSub}>Your partner, bringing just the truth.</div>
+        <FirstVisitTip id="chat">Talk it through with Steward — brain dump, ask for a plan, or just think out loud.</FirstVisitTip>
         <div style={S.toneRow}>
           {(["straight_talk", "middle_of_the_road", "take_it_easy"] as const).map(t => (
             <button key={t} style={{ ...S.toneOpt, ...(tone === t ? S.toneOptOn : {}) }} onClick={() => onSetTone(t)}>{TONE_LABEL[t]}</button>
@@ -2302,6 +2330,7 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onConnectCalendar,
       {scrollFade.showFade && <div style={S.scrollFadeCue} />}
       <div style={S.pageTitle}>This Week</div>
       <div style={S.pageSub}>Work, commitments, and calendar events in one pass.</div>
+      <FirstVisitTip id="week">See what's ahead — work, commitments, and calendar events together, one week at a time.</FirstVisitTip>
       {days.map(d => {
         const items = calendarEvents.filter(e => e.date === d.key);
         const isToday = d.key === todayKey;
@@ -2993,7 +3022,7 @@ function JournalHistoryModal({ onClose, onSaved }: { onClose: () => void; onSave
               )}
             </div>
           ))}
-          {entries && entries.length === 0 && <div style={S.empty}>No journal entries yet.</div>}
+          {entries && entries.length === 0 && <div style={S.empty}>No journal entries yet. Write today's reflection from the Today tab and it'll show up here.</div>}
         </div>
         <button style={M.cancel} onClick={onClose}>Close</button>
       </ModalSheet>
@@ -3238,6 +3267,11 @@ const S: Record<string, CSSProperties> = {
   greetSub: { fontSize: 14, color: C.parchmentDim, marginTop: 5 },
   dateChip: { display: "flex", alignItems: "center", background: "rgba(30,26,16,0.5)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 22, padding: "7px 13px", fontSize: 14, color: C.parchmentMid, flexShrink: 0, whiteSpace: "nowrap", boxShadow: "0 2px 8px rgba(0,0,0,0.3)" },
   card: { ...glass, padding: "18px 20px", marginBottom: 14 },
+  // #40: quiet, not a "content card" — a dismissible orientation note.
+  tip: { display: "flex", alignItems: "flex-start", gap: 4, background: "rgba(30,26,16,0.5)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, padding: "12px 4px 12px 14px", marginBottom: 14 },
+  tipText: { flex: 1, fontSize: 14, color: C.parchmentMid, lineHeight: 1.5 },
+  // 44x44 hit area (#37) via padding/negative margins, not a blown-up glyph.
+  tipClose: { flexShrink: 0, width: 44, height: 44, marginTop: -10, marginBottom: -10, background: "none", border: "none", color: C.parchmentDim, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: F },
   cardCentered: { ...glass, padding: "22px 20px", marginBottom: 14, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" },
   eyebrow: { display: "flex", alignItems: "center", gap: 7, marginBottom: 12 },
   prioHeadRow: { display: "flex", justifyContent: "space-between", alignItems: "center" },
