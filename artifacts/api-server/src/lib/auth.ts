@@ -61,6 +61,16 @@ export interface SessionData {
 
 const oidcConfigs = new Map<Provider, client.Configuration>();
 
+// Bounds every HTTP request this Configuration makes — discovery and every
+// later token-endpoint call (including the refresh grant authMiddleware
+// runs on each request once the access token expires). Without this, a
+// stalled connection to the provider hangs the request that triggered it
+// forever: no error, no timeout, just a client stuck reading "Saving…".
+const OIDC_FETCH_TIMEOUT_MS = 10_000;
+function timeoutFetch(...args: Parameters<typeof fetch>): ReturnType<typeof fetch> {
+  return fetch(args[0], { ...args[1], signal: AbortSignal.timeout(OIDC_FETCH_TIMEOUT_MS) });
+}
+
 export async function getOidcConfig(provider: OidcProvider): Promise<client.Configuration> {
   const cached = oidcConfigs.get(provider);
   if (cached) return cached;
@@ -72,7 +82,9 @@ export async function getOidcConfig(provider: OidcProvider): Promise<client.Conf
     throw new Error(`${clientIdEnv} and ${clientSecretEnv} must be configured`);
   }
 
-  const config = await client.discovery(new URL(issuer), clientId, clientSecret);
+  const config = await client.discovery(new URL(issuer), clientId, clientSecret, undefined, {
+    [client.customFetch]: timeoutFetch,
+  });
   oidcConfigs.set(provider, config);
   return config;
 }

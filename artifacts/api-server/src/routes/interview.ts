@@ -12,6 +12,11 @@ const router = Router();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
 const TOTAL_INTERVIEW_QUESTIONS = 10;
 const MAX_INTERVIEW_MESSAGE_LENGTH = 4000;
+// Without this, a slow OpenAI response has no server-side bound — same gap
+// steward.ts's /chat route closed for the same reason (#68/#76): the
+// request just hangs, and POST /interview can chain two of these calls
+// back to back (reply, then profile extraction) on the completion turn.
+const OPENAI_TIMEOUT_MS = 30_000;
 
 type OpenAIResponsesApiResponse = {
   output_text?: string;
@@ -98,19 +103,27 @@ async function callOpenAI(
   messages: Array<{ role: string; content: string }>,
   maxTokens = 700,
 ): Promise<string> {
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: OPENAI_MODEL,
-      instructions: systemPrompt,
-      input: messages,
-      max_output_tokens: maxTokens,
-    }),
-  });
+  const timeoutController = new AbortController();
+  const timeoutTimer = setTimeout(() => timeoutController.abort(), OPENAI_TIMEOUT_MS);
+  let response: globalThis.Response;
+  try {
+    response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        instructions: systemPrompt,
+        input: messages,
+        max_output_tokens: maxTokens,
+      }),
+      signal: timeoutController.signal,
+    });
+  } finally {
+    clearTimeout(timeoutTimer);
+  }
 
   if (!response.ok) {
     const err = await response.text();

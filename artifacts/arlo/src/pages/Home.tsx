@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useId } from "react";
 import type { CSSProperties, ReactElement, ReactNode, PointerEvent } from "react";
 import { useAuth } from "@workspace/replit-auth-web";
 import { useLocation } from "wouter";
+import { apiFetch } from "../lib/apiFetch";
 
 declare global {
   interface Window {
@@ -101,7 +102,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 async function getJson(url: string, fallback: unknown) {
   try {
-    const response = await fetch(url, { credentials: "include" });
+    const response = await apiFetch(url, { credentials: "include" });
     if (!response.ok) return fallback;
     return await response.json();
   } catch {
@@ -525,7 +526,7 @@ export default function Home() {
     setProfile(p => ({ ...(p ?? {}), voice }));
     setSuggestedTone(null);
     try {
-      await fetch(`${API}/profile`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voice }) });
+      await apiFetch(`${API}/profile`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voice }) });
     } catch { /* optimistic update already applied; a stale read on next load self-corrects */ }
   }
 
@@ -571,7 +572,7 @@ export default function Home() {
 
   async function savePulseCheck(category: PulseCategory, state: PulseState, note: string): Promise<boolean> {
     try {
-      const r = await fetch(`${API}/pulse-checks`, {
+      const r = await apiFetch(`${API}/pulse-checks`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ date: ymd(new Date()), category, state, note }),
       });
@@ -588,7 +589,7 @@ export default function Home() {
   useEffect(() => {
     if (!isAuthenticated) return;
     // Check onboarding before loading data
-    fetch(`${API}/interview/status`, { credentials: "include" })
+    apiFetch(`${API}/interview/status`, { credentials: "include" })
       .then(r => r.ok ? r.json() : null)
       .then((d: { onboarded?: boolean } | null) => {
         if (d && d.onboarded === false) { setLocation("/interview"); }
@@ -597,7 +598,7 @@ export default function Home() {
 
     const days = weekDays();
     const start = days[0].key, end = days[6].key;
-    fetch(`${API}/verse`).then(r => r.ok ? r.text() : "").then(v => v && setVerse(v)).catch(() => {});
+    apiFetch(`${API}/verse`).then(r => r.ok ? r.text() : "").then(v => v && setVerse(v)).catch(() => {});
     refreshJournal();
     getList<Event>(`${API}/coming-up`).then(setToday);
     getList<Event>(`${API}/coming-up?start=${start}&end=${end}`).then(setWeek);
@@ -609,7 +610,7 @@ export default function Home() {
 
   async function saveJournal(next: Journal): Promise<boolean> {
     try {
-      const r = await fetch(`${API}/journal`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next) });
+      const r = await apiFetch(`${API}/journal`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next) });
       if (r.ok) { setJournal(next); return true; }
       return false;
     } catch {
@@ -626,7 +627,11 @@ export default function Home() {
     setSending(true);
     setSuggestedTone(null);
     try {
-      const r = await fetch(`${API}/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: text }) });
+      // The server bounds its own OpenAI call at 30s and replies with a
+      // friendly 504 if it's exceeded (#68) — this timeout must stay above
+      // that so the server's graceful message always wins the race instead
+      // of the client aborting first with a raw network error.
+      const r = await apiFetch(`${API}/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: text }) }, 35_000);
       if (r.ok) {
         const d = await r.json();
         setChat(p => [...p, { role: "assistant", content: d.message }]);
@@ -682,7 +687,7 @@ export default function Home() {
         {tab === "her" && <Relationships relationships={relationships} refreshRelationships={refreshRelationships} commits={commits} refreshCommits={refreshCommits} />}
         {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} onOpenClosed={() => setClosedPursuitsOpen(true)} />}
         {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} />}
-        {tab === "week" && <WeekView events={week} jobs={jobs} pursuits={pursuits} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await fetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
+        {tab === "week" && <WeekView events={week} jobs={jobs} pursuits={pursuits} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await apiFetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
       </div>
 
       <div style={R.navWrap}>
@@ -778,7 +783,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
     const t = newTask.trim();
     if (!t) return;
     const ok = await addTaskSave.save(async () => {
-      const r = await fetch(`${API}/tasks`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: t }) });
+      const r = await apiFetch(`${API}/tasks`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: t }) });
       if (r.ok) refreshTasks();
       return r.ok;
     });
@@ -786,7 +791,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   }
   async function complete(id: number): Promise<boolean> {
     try {
-      const r = await fetch(`${API}/tasks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: true }) });
+      const r = await apiFetch(`${API}/tasks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: true }) });
       if (r.ok) refreshTasks();
       return r.ok;
     } catch {
@@ -796,7 +801,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   async function deleteTask(id: number): Promise<boolean> {
     setDeletingIds(prev => prev.includes(id) ? prev : [...prev, id]);
     try {
-      const r = await fetch(`${API}/tasks/${id}`, { method: "DELETE" });
+      const r = await apiFetch(`${API}/tasks/${id}`, { method: "DELETE" });
       if (r.ok) {
         await refreshTasks();
         // Deletes are soft now (#54) — the id must be un-hidden once the
@@ -814,7 +819,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   }
   async function logToday(id: number): Promise<boolean> {
     try {
-      const r = await fetch(`${API}/tasks/${id}/complete`, {
+      const r = await apiFetch(`${API}/tasks/${id}/complete`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ date: ymd(new Date()) }),
       });
@@ -1497,7 +1502,7 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
 
   async function setCommitDone(id: number, doneVal: boolean): Promise<boolean> {
     try {
-      const r = await fetch(`${API}/commits/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: doneVal }) });
+      const r = await apiFetch(`${API}/commits/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: doneVal }) });
       if (r.ok) { refreshCommits(); return true; }
     } catch { /* fall through */ }
     return false;
@@ -1505,7 +1510,7 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
   async function deleteCommit(id: number): Promise<boolean> {
     setDeletingIds(prev => prev.includes(id) ? prev : [...prev, id]);
     try {
-      const r = await fetch(`${API}/commits/${id}`, { method: "DELETE" });
+      const r = await apiFetch(`${API}/commits/${id}`, { method: "DELETE" });
       if (r.ok) {
         await refreshCommits();
         setDeletingIds(prev => prev.filter(item => item !== id));
@@ -1520,14 +1525,14 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
   }
   async function toggleStarred(r: Relationship) {
     try {
-      const res = await fetch(`${API}/relationships/${r.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ starred: !r.starred }) });
+      const res = await apiFetch(`${API}/relationships/${r.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ starred: !r.starred }) });
       if (res.ok) { refreshRelationships(); return; }
     } catch { /* fall through */ }
     primaryTapError.flash(r.id, "Couldn't save — try again");
   }
   async function reorderGroup(starred: boolean, orderedIds: number[]) {
     try {
-      const res = await fetch(`${API}/relationships/reorder`, {
+      const res = await apiFetch(`${API}/relationships/reorder`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ starred, orderedIds }),
       });
@@ -1537,7 +1542,7 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
   }
   async function resetPeopleOrder() {
     await resetSave.save(async () => {
-      const r = await fetch(`${API}/relationships/reset`, { method: "POST" });
+      const r = await apiFetch(`${API}/relationships/reset`, { method: "POST" });
       if (r.ok) { refreshRelationships(); setResetConfirmOpen(false); return true; }
       return false;
     });
@@ -1701,7 +1706,7 @@ function CommitTargetPicker({ relationships, relationshipId, setRelationshipId, 
 }
 
 async function createAdHocRelationship(name: string, category: RelationshipCategory): Promise<number | null> {
-  const r = await fetch(`${API}/relationships`, {
+  const r = await apiFetch(`${API}/relationships`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, category, type: "", notes: "", commitments: "", biggestChallenge: "" }),
   });
@@ -1741,7 +1746,7 @@ function CommitLogModal({ relationships, onClose, onSaved, onRelationshipAdded }
       const body: Record<string, unknown> = { text: text.trim(), notes: notes.trim(), dueDate: dueDate || null };
       if (targetRelationshipId) body.relationshipId = targetRelationshipId;
       else { body.adHocName = newName.trim(); body.adHocCategory = newCategory; }
-      const r = await fetch(`${API}/commits`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const r = await apiFetch(`${API}/commits`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (r.ok) {
         if (targetRelationshipId && addToTribe) onRelationshipAdded();
         onSaved(); onClose();
@@ -1820,7 +1825,7 @@ function CommitEditModal({ commit, relationships, onClose, onSaved, onDeleted, o
       const body: Record<string, unknown> = { text: text.trim(), notes: notes.trim(), dueDate: dueDate || null };
       if (targetRelationshipId) body.relationshipId = targetRelationshipId;
       else { body.adHocName = newName.trim(); body.adHocCategory = newCategory; }
-      const r = await fetch(`${API}/commits/${commit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const r = await apiFetch(`${API}/commits/${commit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (r.ok) {
         if (targetRelationshipId && addToTribe) onRelationshipAdded();
         onSaved(); onClose();
@@ -1833,7 +1838,7 @@ function CommitEditModal({ commit, relationships, onClose, onSaved, onDeleted, o
   async function del() {
     setDeleting(true);
     try {
-      const r = await fetch(`${API}/commits/${commit.id}`, { method: "DELETE" });
+      const r = await apiFetch(`${API}/commits/${commit.id}`, { method: "DELETE" });
       if (r.ok) { onDeleted(); onClose(); }
       else { setDelErr("Couldn't delete. Try again."); setDeleting(false); }
     } catch { setDelErr("Couldn't reach the server."); setDeleting(false); }
@@ -1887,7 +1892,7 @@ function CommitHistoryModal({ commits, byId, onClose, onChanged }: {
   const deletedFade = useBottomScrollFade<HTMLDivElement>();
 
   const load = useCallback(() => {
-    fetch(`${API}/commits/deleted`).then(r => r.ok ? r.json() : null).then(d => setDeleted(d?.items ?? []));
+    apiFetch(`${API}/commits/deleted`).then(r => r.ok ? r.json() : null).then(d => setDeleted(d?.items ?? []));
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -1896,7 +1901,7 @@ function CommitHistoryModal({ commits, byId, onClose, onChanged }: {
   async function reopen(id: number, body: { done: boolean } | { deleted: boolean }) {
     setReopeningIds(prev => [...prev, id]);
     try {
-      const r = await fetch(`${API}/commits/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const r = await apiFetch(`${API}/commits/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (r.ok) {
         setDeleted(prev => prev && "deleted" in body ? prev.filter(c => c.id !== id) : prev);
         onChanged();
@@ -1976,8 +1981,8 @@ function RelationshipModal({ relationship, onClose, onSaved, onDeleted }: {
     const body = { name: name.trim() || null, category, type: type.trim(), notes: notes.trim(), commitments: commitments.trim(), biggestChallenge: biggestChallenge.trim() };
     await saveStatus.save(async () => {
       const r = relationship
-        ? await fetch(`${API}/relationships/${relationship.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
-        : await fetch(`${API}/relationships`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        ? await apiFetch(`${API}/relationships/${relationship.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+        : await apiFetch(`${API}/relationships`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (r.ok) { onSaved(); onClose(); return true; }
       return false;
     });
@@ -1987,7 +1992,7 @@ function RelationshipModal({ relationship, onClose, onSaved, onDeleted }: {
     if (!relationship) return;
     setDeleting(true);
     try {
-      const r = await fetch(`${API}/relationships/${relationship.id}`, { method: "DELETE" });
+      const r = await apiFetch(`${API}/relationships/${relationship.id}`, { method: "DELETE" });
       if (r.ok) { onDeleted?.(); onClose(); }
       else { setDelErr("Couldn't delete. Try again."); setDeleting(false); }
     } catch { setDelErr("Couldn't reach the server."); setDeleting(false); }
@@ -2060,14 +2065,14 @@ function PeopleDeletedModal({ onClose, onChanged }: { onClose: () => void; onCha
   const scrollFade = useBottomScrollFade<HTMLDivElement>();
 
   const load = useCallback(() => {
-    fetch(`${API}/relationships/deleted`).then(r => r.ok ? r.json() : null).then(d => setDeleted(d?.items ?? []));
+    apiFetch(`${API}/relationships/deleted`).then(r => r.ok ? r.json() : null).then(d => setDeleted(d?.items ?? []));
   }, []);
   useEffect(() => { load(); }, [load]);
 
   async function reactivate(id: number) {
     setBusyIds(prev => [...prev, id]);
     try {
-      const r = await fetch(`${API}/relationships/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: false }) });
+      const r = await apiFetch(`${API}/relationships/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: false }) });
       if (r.ok) {
         setDeleted(prev => prev ? prev.filter(p => p.id !== id) : prev);
         onChanged();
@@ -2081,7 +2086,7 @@ function PeopleDeletedModal({ onClose, onChanged }: { onClose: () => void; onCha
   async function permanentlyDelete(id: number) {
     setBusyIds(prev => [...prev, id]);
     try {
-      const r = await fetch(`${API}/relationships/${id}/permanent`, { method: "DELETE" });
+      const r = await apiFetch(`${API}/relationships/${id}/permanent`, { method: "DELETE" });
       if (r.ok) {
         setDeleted(prev => prev ? prev.filter(p => p.id !== id) : prev);
         setConfirmPermanentId(null);
@@ -2344,7 +2349,7 @@ function JobModal({ pursuits, onClose, onCreated }: { pursuits: Pursuit[]; onClo
 
   async function submit(final: Record<string, string>) {
     await saveStatus.save(async () => {
-      const r = await fetch(`${API}/jobs`, {
+      const r = await apiFetch(`${API}/jobs`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: final.name || "Untitled job", due: final.due || "", stage: "New", pct: 0, pursuitId,
@@ -2414,7 +2419,7 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
     if (!name.trim()) { setValidationErr("Name is required."); return; }
     setValidationErr("");
     await saveStatus.save(async () => {
-      const r = await fetch(`${API}/jobs/${job.id}`, {
+      const r = await apiFetch(`${API}/jobs/${job.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: name.trim(), pursuitId, stage: stage.trim(), due: due.trim(), pct, materials: materials.trim(), budget: budget.trim(), risk: risk.trim() }),
       });
@@ -2426,7 +2431,7 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
   async function del() {
     setDeleting(true);
     try {
-      const r = await fetch(`${API}/jobs/${job.id}`, { method: "DELETE" });
+      const r = await apiFetch(`${API}/jobs/${job.id}`, { method: "DELETE" });
       if (r.ok) { onDeleted(); onClose(); }
       else { setDelErr("Couldn't delete. Try again."); setDeleting(false); }
     } catch { setDelErr("Couldn't reach the server."); setDeleting(false); }
@@ -2504,8 +2509,8 @@ function PursuitModal({ pursuit, onClose, onSaved, onDeleted, onClosed }: {
     const body = { name: name.trim(), category, notes: notes.trim() };
     await saveStatus.save(async () => {
       const r = pursuit
-        ? await fetch(`${API}/pursuits/${pursuit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
-        : await fetch(`${API}/pursuits`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        ? await apiFetch(`${API}/pursuits/${pursuit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+        : await apiFetch(`${API}/pursuits`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (r.ok) { onSaved(); onClose(); return true; }
       return false;
     });
@@ -2515,7 +2520,7 @@ function PursuitModal({ pursuit, onClose, onSaved, onDeleted, onClosed }: {
     if (!pursuit) return;
     setDeleting(true);
     try {
-      const r = await fetch(`${API}/pursuits/${pursuit.id}`, { method: "DELETE" });
+      const r = await apiFetch(`${API}/pursuits/${pursuit.id}`, { method: "DELETE" });
       if (r.ok) { onDeleted?.(); onClose(); }
       else { setDelErr("Couldn't delete. Try again."); setDeleting(false); }
     } catch { setDelErr("Couldn't reach the server."); setDeleting(false); }
@@ -2528,7 +2533,7 @@ function PursuitModal({ pursuit, onClose, onSaved, onDeleted, onClosed }: {
     if (!pursuit) return;
     setClosing(true);
     try {
-      const r = await fetch(`${API}/pursuits/${pursuit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: true }) });
+      const r = await apiFetch(`${API}/pursuits/${pursuit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: true }) });
       if (r.ok) { onClosed?.(); onClose(); }
       else { setCloseErr("Couldn't close. Try again."); setClosing(false); }
     } catch { setCloseErr("Couldn't reach the server."); setClosing(false); }
@@ -2577,14 +2582,14 @@ function PursuitsClosedModal({ onClose, onChanged }: { onClose: () => void; onCh
   const scrollFade = useBottomScrollFade<HTMLDivElement>();
 
   const load = useCallback(() => {
-    fetch(`${API}/pursuits/deleted`).then(r => r.ok ? r.json() : null).then(d => setClosed(d?.items ?? []));
+    apiFetch(`${API}/pursuits/deleted`).then(r => r.ok ? r.json() : null).then(d => setClosed(d?.items ?? []));
   }, []);
   useEffect(() => { load(); }, [load]);
 
   async function reopen(id: number) {
     setReopeningIds(prev => [...prev, id]);
     try {
-      const r = await fetch(`${API}/pursuits/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: false }) });
+      const r = await apiFetch(`${API}/pursuits/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: false }) });
       if (r.ok) {
         setClosed(prev => prev ? prev.filter(p => p.id !== id) : prev);
         onChanged();
@@ -2632,7 +2637,7 @@ function PursuitCloseFinishedPrompt({ pursuit, onClose, onClosed }: { pursuit: P
   async function close() {
     setClosing(true);
     try {
-      const r = await fetch(`${API}/pursuits/${pursuit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: true }) });
+      const r = await apiFetch(`${API}/pursuits/${pursuit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: true }) });
       if (r.ok) { onClosed(); return; }
       setErr("Couldn't close. Try again.");
       setClosing(false);
@@ -2666,7 +2671,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
   const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(() => {
-    fetch(`${API}/tasks/${task.id}/history?today=${ymd(new Date())}`)
+    apiFetch(`${API}/tasks/${task.id}/history?today=${ymd(new Date())}`)
       .then(r => r.ok ? r.json() : null)
       .then(setHistory);
   }, [task.id]);
@@ -2674,7 +2679,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
 
   async function saveRecurrence() {
     await recurrenceSave.save(async () => {
-      const r = await fetch(`${API}/tasks/${task.id}`, {
+      const r = await apiFetch(`${API}/tasks/${task.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ recurrencePeriod: period, recurrenceTarget: period === "daily" ? 1 : target }),
       });
@@ -2685,7 +2690,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
   async function removeRecurrence() {
     setRemoving(true);
     try {
-      const r = await fetch(`${API}/tasks/${task.id}`, {
+      const r = await apiFetch(`${API}/tasks/${task.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ recurrencePeriod: null, recurrenceTarget: null }),
       });
@@ -2696,7 +2701,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
   }
   async function logToday() {
     try {
-      const r = await fetch(`${API}/tasks/${task.id}/complete`, {
+      const r = await apiFetch(`${API}/tasks/${task.id}/complete`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date: ymd(new Date()) }),
       });
       if (r.ok) { onChanged(); load(); return; }
@@ -2706,7 +2711,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
   async function del() {
     setDeleting(true);
     try {
-      const r = await fetch(`${API}/tasks/${task.id}`, { method: "DELETE" });
+      const r = await apiFetch(`${API}/tasks/${task.id}`, { method: "DELETE" });
       if (r.ok) { onChanged(); onClose(); return; }
     } catch { /* fall through */ }
     setDeleting(false);
@@ -2715,7 +2720,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
   async function setStatusValue(next: "open" | "stuck" | "done") {
     if (next === "done") {
       try {
-        const r = await fetch(`${API}/tasks/${task.id}`, {
+        const r = await apiFetch(`${API}/tasks/${task.id}`, {
           method: "PATCH", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ done: true, partial: false }),
         });
@@ -2727,7 +2732,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
     const prevStatus = status;
     setStatusState(next);
     try {
-      const r = await fetch(`${API}/tasks/${task.id}`, {
+      const r = await apiFetch(`${API}/tasks/${task.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ partial: next === "stuck" }),
       });
@@ -2739,7 +2744,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
   async function saveNotes(value: string) {
     if (value === notesBaselineRef.current) return;
     const ok = await notesSave.save(async () => {
-      const r = await fetch(`${API}/tasks/${task.id}`, {
+      const r = await apiFetch(`${API}/tasks/${task.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ notes: value }),
       });
@@ -2843,8 +2848,8 @@ function CompletedLogModal({ onClose, onChanged }: { onClose: () => void; onChan
   const deletedFade = useBottomScrollFade<HTMLDivElement>();
 
   const load = useCallback(() => {
-    fetch(`${API}/tasks/completed`).then(r => r.ok ? r.json() : null).then(setData);
-    fetch(`${API}/tasks/deleted`).then(r => r.ok ? r.json() : null).then(d => setDeleted(d?.items ?? []));
+    apiFetch(`${API}/tasks/completed`).then(r => r.ok ? r.json() : null).then(setData);
+    apiFetch(`${API}/tasks/deleted`).then(r => r.ok ? r.json() : null).then(d => setDeleted(d?.items ?? []));
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -2853,7 +2858,7 @@ function CompletedLogModal({ onClose, onChanged }: { onClose: () => void; onChan
   async function reopen(id: number, body: { done: boolean } | { deleted: boolean }) {
     setReopeningIds(prev => [...prev, id]);
     try {
-      const r = await fetch(`${API}/tasks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const r = await apiFetch(`${API}/tasks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (r.ok) {
         setData(prev => prev && "done" in body ? { ...prev, items: prev.items.filter(t => t.id !== id), doneCount: prev.doneCount - 1 } : prev);
         setDeleted(prev => prev && "deleted" in body ? prev.filter(t => t.id !== id) : prev);
@@ -2940,7 +2945,7 @@ function JournalHistoryModal({ onClose, onSaved }: { onClose: () => void; onSave
 
   async function save(date: string) {
     await saveStatus.save(date, async () => {
-      const r = await fetch(`${API}/journal`, {
+      const r = await apiFetch(`${API}/journal`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ date, commit_text: intentDraft, reflect: reflectDraft }),
       });
