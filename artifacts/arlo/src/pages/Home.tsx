@@ -839,7 +839,10 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
         <div style={S.dateChip}><Icon name="cal" size={13} color={C.parchmentMid} /><span style={{ marginLeft: 6 }}>{new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</span></div>
       </div>
 
-      <div style={S.verseCard}>
+      {/* #38: plain card, not the brass-glow hero border this used to have
+          — Verse of the Day is read-only, non-actionable content, so it
+          shouldn't outrank the actionable cards below it. */}
+      <div style={S.cardCentered}>
         <div style={S.eyebrow}><Icon name="book" /><span style={S.eyeText}>VERSE OF THE DAY</span></div>
         <div style={S.verseText}>{vText || "…"}</div>
         {vRef && <div style={S.verseRef}>{vRef.toUpperCase()}</div>}
@@ -857,8 +860,6 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
         />
         <SaveStatus status={introSave.status} onRetry={() => introSave.save(() => onSaveJournal({ ...journal, commit_text: intent }))} />
       </div>
-
-      <PulseCheckCard pulseChecks={pulseChecks} onSave={onSavePulseCheck} />
 
       <div style={S.card}>
         <div style={S.prioHeadRow}>
@@ -898,6 +899,8 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
           <button style={{ ...S.intakeBtn, marginTop: 14 }} onClick={() => setAdding(true)}>＋  Add a priority</button>
         )}
       </div>
+
+      <PulseCheckCard pulseChecks={pulseChecks} onSave={onSavePulseCheck} />
 
       <div style={S.card}>
         <div style={S.eyebrow}><Icon name="cal" /><span style={S.eyeText}>COMING UP</span></div>
@@ -3227,7 +3230,6 @@ const S: Record<string, CSSProperties> = {
   greet: { fontSize: 27, fontWeight: 400, color: C.parchment, lineHeight: 1.15, textShadow: "0 2px 6px rgba(0,0,0,0.5)" },
   greetSub: { fontSize: 14, color: C.parchmentDim, marginTop: 5 },
   dateChip: { display: "flex", alignItems: "center", background: "rgba(30,26,16,0.5)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 22, padding: "7px 13px", fontSize: 14, color: C.parchmentMid, flexShrink: 0, whiteSpace: "nowrap", boxShadow: "0 2px 8px rgba(0,0,0,0.3)" },
-  verseCard: { ...glass, padding: "22px 20px", marginBottom: 14, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", border: `1.5px solid ${C.brass}`, boxShadow: `0 0 28px ${C.brassGlow},0 6px 22px rgba(0,0,0,0.55),inset 0 1px 0 rgba(255,240,200,0.08),-4px 0 20px ${C.brassGlow}` },
   card: { ...glass, padding: "18px 20px", marginBottom: 14 },
   cardCentered: { ...glass, padding: "22px 20px", marginBottom: 14, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" },
   eyebrow: { display: "flex", alignItems: "center", gap: 7, marginBottom: 12 },
@@ -3279,7 +3281,10 @@ const S: Record<string, CSSProperties> = {
   journalCard: { ...glass, padding: "16px 20px", marginBottom: 14, display: "flex", alignItems: "center", gap: 12 },
   journalText: { fontSize: 14, color: C.parchmentMid, marginTop: 2 },
   journalInput: { width: "100%", marginTop: 10, background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: "10px 12px", outline: "none", resize: "vertical", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
-  writeBtn: { flexShrink: 0, alignSelf: "flex-start", background: "transparent", border: `1.5px solid ${C.brass}`, borderRadius: 24, color: C.brass, fontSize: 13, fontWeight: 600, padding: "10px 18px", cursor: "pointer", boxShadow: `0 0 16px ${C.brassGlow},inset 0 0 8px rgba(216,170,62,0.1)` },
+  // #38: quiet secondary-button treatment — writing a reflection is
+  // optional, not the primary daily action, so this no longer competes
+  // with genuinely primary buttons for attention.
+  writeBtn: { flexShrink: 0, alignSelf: "flex-start", background: "transparent", border: "1.5px solid rgba(210,190,130,0.3)", borderRadius: 24, color: C.parchmentDim, fontSize: 14, fontWeight: 600, padding: "10px 18px", cursor: "pointer" },
   msgBar: { display: "flex", alignItems: "center", gap: 11, background: "rgba(8,10,5,0.55)", backdropFilter: "blur(8px)", borderRadius: 30, padding: "11px 11px 11px 17px", marginBottom: 14, border: "1px solid rgba(210,190,130,0.16)", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.5),0 2px 8px rgba(0,0,0,0.3)" },
   msgInput: { flex: 1, background: "none", border: "none", color: C.parchment, fontSize: 14, outline: "none", fontFamily: F },
   // 44x44 (#37) — minimum comfortable tap target; msgSend was 36x36, micBtn 32x32.
