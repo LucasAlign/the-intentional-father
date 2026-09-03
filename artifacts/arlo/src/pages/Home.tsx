@@ -222,8 +222,8 @@ function useKeyedTapError<K extends string | number>() {
   return { get, flash };
 }
 
-const saveStatusText: CSSProperties = { fontSize: 11.5, color: "#9C9272", marginTop: 5, fontFamily: F };
-const saveStatusRetry: CSSProperties = { background: "none", border: "none", padding: 0, color: "#C89A34", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: F, textDecoration: "underline" };
+const saveStatusText: CSSProperties = { fontSize: 14, color: "#9C9272", marginTop: 5, fontFamily: F };
+const saveStatusRetry: CSSProperties = { background: "none", border: "none", padding: 0, color: "#C89A34", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: F, textDecoration: "underline" };
 
 function SaveStatus({ status, onRetry }: { status: SaveState; onRetry?: () => void }) {
   if (status === "idle") return null;
@@ -242,7 +242,7 @@ function SaveStatus({ status, onRetry }: { status: SaveState; onRetry?: () => vo
 // shared by every TapError call site in the app.
 function TapError({ message }: { message: string | null }) {
   if (!message) return null;
-  return <div role="alert" style={{ fontSize: 11.5, color: "#C87060", marginTop: 4, fontFamily: F }}>{message}</div>;
+  return <div role="alert" style={{ fontSize: 14, color: "#C87060", marginTop: 4, fontFamily: F }}>{message}</div>;
 }
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
@@ -331,6 +331,32 @@ function ModalSheet({ title, headExtra, onClose, sheetOnClick, children }: {
       {children}
     </div>
   );
+}
+
+// Tracks whether a scrollable element has more content below its visible
+// area — drives the fade-cue hint (#37) so it's only shown while there's
+// somewhere left to scroll, and disappears once the user reaches the end.
+// The element itself must be `position: relative` (S.scroll, S.scrollCap5,
+// S.chatMsgs all are) so the cue — an absolutely-positioned child pinned to
+// `bottom: 0` — stays fixed at the visible bottom edge of the scrollport
+// instead of scrolling away with the content.
+function useBottomScrollFade<T extends HTMLElement>() {
+  const ref = useRef<T>(null);
+  const [showFade, setShowFade] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    function update() {
+      if (!el) return;
+      setShowFade(el.scrollHeight - el.scrollTop - el.clientHeight > 4);
+    }
+    update();
+    el.addEventListener("scroll", update, { passive: true });
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => { el.removeEventListener("scroll", update); ro.disconnect(); };
+  }, []);
+  return { ref, showFade };
 }
 
 // ── Date helpers ───────────────────────────────────────────────────────────────
@@ -799,8 +825,10 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
     }
   }
 
+  const scrollFade = useBottomScrollFade<HTMLDivElement>();
   return (
-    <div style={S.scroll}>
+    <div ref={scrollFade.ref} style={S.scroll}>
+      {scrollFade.showFade && <div style={S.scrollFadeCue} />}
       <div style={S.greetRow}>
         <div><div style={S.greet}>{greeting}</div><div style={S.greetSub}>Let's build something that matters.</div></div>
         <div style={S.dateChip}><Icon name="cal" size={13} color={C.parchmentMid} /><span style={{ marginLeft: 6 }}>{new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</span></div>
@@ -1515,8 +1543,11 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
     });
   }
 
+  const scrollFade = useBottomScrollFade<HTMLDivElement>();
+  const openCommitsFade = useBottomScrollFade<HTMLDivElement>();
   return (
-    <div style={S.scroll}>
+    <div ref={scrollFade.ref} style={S.scroll}>
+      {scrollFade.showFade && <div style={S.scrollFadeCue} />}
       <div style={S.pageTitle}>Tribe</div>
       <div style={S.pageSub}>The people you're prioritizing.</div>
       <div style={S.card}><div style={S.eyebrow}><Icon name="heart" /><span style={S.eyeText}>TODAY'S INTENTION</span></div><div style={S.intent}>{intentionText}</div></div>
@@ -1578,7 +1609,8 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
       {open.length > 0 && (
         <div style={S.card}>
           <div style={S.eyebrow}><span style={S.eyeText}>OPEN</span></div>
-          <div style={S.scrollCap5}>
+          <div ref={openCommitsFade.ref} style={S.scrollCap5}>
+            {openCommitsFade.showFade && <div style={S.scrollFadeCue} />}
             {open.map(c => (
               <SwipeCommitment key={c.id} commit={c} byId={byId} onToggleDone={setCommitDone} onDelete={deleteCommit} onEdit={setEditingCommit} />
             ))}
@@ -1851,6 +1883,8 @@ function CommitHistoryModal({ commits, byId, onClose, onChanged }: {
   const [deleted, setDeleted] = useState<Commit[] | null>(null);
   const [reopeningIds, setReopeningIds] = useState<number[]>([]);
   const reopenError = useKeyedTapError<number>();
+  const keptFade = useBottomScrollFade<HTMLDivElement>();
+  const deletedFade = useBottomScrollFade<HTMLDivElement>();
 
   const load = useCallback(() => {
     fetch(`${API}/commits/deleted`).then(r => r.ok ? r.json() : null).then(d => setDeleted(d?.items ?? []));
@@ -1876,7 +1910,8 @@ function CommitHistoryModal({ commits, byId, onClose, onChanged }: {
   return (
     <div style={M.overlay}>
       <ModalSheet title="Kept Commitments" onClose={onClose}>
-        <div style={S.scrollCap5}>
+        <div ref={keptFade.ref} style={S.scrollCap5}>
+          {keptFade.showFade && <div style={S.scrollFadeCue} />}
           {commits.map(c => (
             <div key={c.id} style={{ marginBottom: 14 }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
@@ -1896,7 +1931,8 @@ function CommitHistoryModal({ commits, byId, onClose, onChanged }: {
         </div>
 
         <div style={{ ...E.label, marginTop: 22, marginBottom: 8 }}>DELETED</div>
-        <div style={S.scrollCap5}>
+        <div ref={deletedFade.ref} style={S.scrollCap5}>
+          {deletedFade.showFade && <div style={S.scrollFadeCue} />}
           {(deleted ?? []).map(c => (
             <div key={c.id} style={{ marginBottom: 14 }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
@@ -2021,6 +2057,7 @@ function PeopleDeletedModal({ onClose, onChanged }: { onClose: () => void; onCha
   const [busyIds, setBusyIds] = useState<number[]>([]);
   const [confirmPermanentId, setConfirmPermanentId] = useState<number | null>(null);
   const rowError = useKeyedTapError<number>();
+  const scrollFade = useBottomScrollFade<HTMLDivElement>();
 
   const load = useCallback(() => {
     fetch(`${API}/relationships/deleted`).then(r => r.ok ? r.json() : null).then(d => setDeleted(d?.items ?? []));
@@ -2060,7 +2097,8 @@ function PeopleDeletedModal({ onClose, onChanged }: { onClose: () => void; onCha
   return (
     <div style={M.overlay}>
       <ModalSheet title="Deleted People" onClose={onClose}>
-        <div style={S.scrollCap5}>
+        <div ref={scrollFade.ref} style={S.scrollCap5}>
+          {scrollFade.showFade && <div style={S.scrollFadeCue} />}
           {(deleted ?? []).map(p => (
             <div key={p.id} style={{ marginBottom: 14 }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
@@ -2124,8 +2162,10 @@ function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit, onOp
     );
   }
 
+  const scrollFade = useBottomScrollFade<HTMLDivElement>();
   return (
-    <div style={S.scroll}>
+    <div ref={scrollFade.ref} style={S.scroll}>
+      {scrollFade.showFade && <div style={S.scrollFadeCue} />}
       <div style={S.pageTitle}>Work</div>
       <div style={S.pageSub}>Active jobs by pursuit. Tap a row to edit.</div>
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 2 }}>
@@ -2176,6 +2216,7 @@ function StewardChat({ messages, input, setInput, send, sending, tasks, onOpenPr
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+  const scrollFade = useBottomScrollFade<HTMLDivElement>();
   return (
     <div style={S.chatWrap}>
       <div style={{ padding: "4px 18px 0" }}>
@@ -2187,7 +2228,8 @@ function StewardChat({ messages, input, setInput, send, sending, tasks, onOpenPr
           ))}
         </div>
       </div>
-      <div style={S.chatMsgs}>
+      <div ref={scrollFade.ref} style={S.chatMsgs}>
+        {scrollFade.showFade && <div style={S.scrollFadeCue} />}
         {messages.length === 0 && <div style={{ ...S.empty, marginTop: 24 }}>No messages yet. Brain dump anything.</div>}
         {messages.map((m, i) => {
           const mentioned = m.role === "assistant" ? tasksMentionedIn(m.content, tasks) : [];
@@ -2239,8 +2281,10 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onConnectCalendar,
     .map(j => jobCalendarEvent(j, (j.pursuitId !== null && pursuitNameById.get(j.pursuitId)) || ""))
     .filter((event): event is Event => Boolean(event));
   const calendarEvents = [...events, ...datedWork].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+  const scrollFade = useBottomScrollFade<HTMLDivElement>();
   return (
-    <div style={S.scroll}>
+    <div ref={scrollFade.ref} style={S.scroll}>
+      {scrollFade.showFade && <div style={S.scrollFadeCue} />}
       <div style={S.pageTitle}>This Week</div>
       <div style={S.pageSub}>Work, commitments, and calendar events in one pass.</div>
       {days.map(d => {
@@ -2530,6 +2574,7 @@ function PursuitsClosedModal({ onClose, onChanged }: { onClose: () => void; onCh
   const [closed, setClosed] = useState<Pursuit[] | null>(null);
   const [reopeningIds, setReopeningIds] = useState<number[]>([]);
   const reopenError = useKeyedTapError<number>();
+  const scrollFade = useBottomScrollFade<HTMLDivElement>();
 
   const load = useCallback(() => {
     fetch(`${API}/pursuits/deleted`).then(r => r.ok ? r.json() : null).then(d => setClosed(d?.items ?? []));
@@ -2553,7 +2598,8 @@ function PursuitsClosedModal({ onClose, onChanged }: { onClose: () => void; onCh
   return (
     <div style={M.overlay}>
       <ModalSheet title="Closed Pursuits" onClose={onClose}>
-        <div style={S.scrollCap5}>
+        <div ref={scrollFade.ref} style={S.scrollCap5}>
+          {scrollFade.showFade && <div style={S.scrollFadeCue} />}
           {(closed ?? []).map(p => (
             <div key={p.id} style={{ marginBottom: 14 }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
@@ -2793,6 +2839,8 @@ function CompletedLogModal({ onClose, onChanged }: { onClose: () => void; onChan
   const [deleted, setDeleted] = useState<Task[] | null>(null);
   const [reopeningIds, setReopeningIds] = useState<number[]>([]);
   const reopenError = useKeyedTapError<number>();
+  const completedFade = useBottomScrollFade<HTMLDivElement>();
+  const deletedFade = useBottomScrollFade<HTMLDivElement>();
 
   const load = useCallback(() => {
     fetch(`${API}/tasks/completed`).then(r => r.ok ? r.json() : null).then(setData);
@@ -2822,7 +2870,8 @@ function CompletedLogModal({ onClose, onChanged }: { onClose: () => void; onChan
       <ModalSheet title="Completed Priorities" onClose={onClose}>
         <div style={M.track}><div style={{ ...M.fill, width: `${data?.pct ?? 0}%` }} /></div>
         <div style={{ ...S.prioSub, marginBottom: 14 }}>{data?.doneCount ?? 0} of {data?.totalCount ?? 0} priorities completed ({data?.pct ?? 0}%)</div>
-        <div style={S.scrollCap5}>
+        <div ref={completedFade.ref} style={S.scrollCap5}>
+          {completedFade.showFade && <div style={S.scrollFadeCue} />}
           {(data?.items ?? []).map(t => (
             <div key={t.id} style={{ marginBottom: 14 }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
@@ -2842,7 +2891,8 @@ function CompletedLogModal({ onClose, onChanged }: { onClose: () => void; onChan
         </div>
 
         <div style={{ ...E.label, marginTop: 22, marginBottom: 8 }}>DELETED</div>
-        <div style={S.scrollCap5}>
+        <div ref={deletedFade.ref} style={S.scrollCap5}>
+          {deletedFade.showFade && <div style={S.scrollFadeCue} />}
           {(deleted ?? []).map(t => (
             <div key={t.id} style={{ marginBottom: 14 }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
@@ -3120,26 +3170,32 @@ function AddToHomeScreen() {
 
 const G: Record<string, CSSProperties> = {
   wrap: { position: "relative", zIndex: 10, flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px" },
-  loading: { color: C.parchmentLow, fontSize: 14, letterSpacing: "0.04em" },
+  // #37: parchmentLow measures ~3.4:1 against C.ink — fails WCAG AA (needs
+  // 4.5:1 for normal text). parchmentDim measures ~6.3:1, comfortably passes.
+  loading: { color: C.parchmentDim, fontSize: 14, letterSpacing: "0.04em" },
   welcome: { fontSize: 26, fontWeight: 400, color: C.parchment, textShadow: "0 2px 8px rgba(0,0,0,0.5)", marginBottom: 22, textAlign: "center" },
   googleBtn: { width: "100%", background: "rgba(30,26,16,0.62)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 12, color: C.parchmentMid, fontSize: 14, fontWeight: 700, padding: "13px 16px", cursor: "pointer", fontFamily: F },
-  notice: { fontSize: 12, color: C.parchmentLow, marginTop: 14, textAlign: "center" },
+  notice: { fontSize: 14, color: C.parchmentDim, marginTop: 14, textAlign: "center" },
   addHome: { marginTop: 18, width: "100%", textAlign: "center" },
-  addHomeToggle: { background: "none", border: "none", color: C.brassSoft, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: F, textDecoration: "underline", textUnderlineOffset: 3 },
+  addHomeToggle: { background: "none", border: "none", color: C.brassSoft, fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: F, textDecoration: "underline", textUnderlineOffset: 3 },
   addHomePanel: { marginTop: 12, background: "rgba(30,26,16,0.5)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, padding: "14px 16px", textAlign: "left" },
   addHomeTabs: { display: "flex", gap: 8, marginBottom: 12 },
-  addHomeTab: { flex: 1, background: "rgba(20,18,11,0.6)", border: "1px solid rgba(210,190,130,0.14)", borderRadius: 8, color: C.parchmentDim, fontSize: 12, fontWeight: 600, padding: "7px 10px", cursor: "pointer", fontFamily: F, textAlign: "center" },
+  addHomeTab: { flex: 1, background: "rgba(20,18,11,0.6)", border: "1px solid rgba(210,190,130,0.14)", borderRadius: 8, color: C.parchmentDim, fontSize: 14, fontWeight: 600, padding: "7px 10px", cursor: "pointer", fontFamily: F, textAlign: "center" },
   addHomeTabOn: { borderColor: C.brass, color: C.brass, boxShadow: `0 0 10px ${C.brassGlow}` },
-  addHomeStep: { fontSize: 12.5, color: C.parchmentMid, lineHeight: 1.5, marginBottom: 6, display: "flex", gap: 8 },
+  addHomeStep: { fontSize: 14, color: C.parchmentMid, lineHeight: 1.5, marginBottom: 6, display: "flex", gap: 8 },
   addHomeStepNum: { color: C.brassSoft, fontWeight: 700, flexShrink: 0 },
 };
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 const R: Record<string, CSSProperties> = {
-  root: { width: "100%", maxWidth: 440, margin: "0 auto", height: "100vh", display: "flex", flexDirection: "column", fontFamily: F, color: C.parchment, position: "relative", overflow: "hidden", background: C.ink },
+  // 100dvh (#37) — 100vh doesn't account for mobile browser toolbars
+  // showing/hiding, which clips or letterboxes the layout as they animate.
+  root: { width: "100%", maxWidth: 440, margin: "0 auto", height: "100dvh", display: "flex", flexDirection: "column", fontFamily: F, color: C.parchment, position: "relative", overflow: "hidden", background: C.ink },
   woodLayer: { position: "fixed", inset: 0, zIndex: 0, backgroundImage: `url(${WOOD})`, backgroundSize: "cover", backgroundPosition: "center", backgroundRepeat: "no-repeat" },
   ambient: { position: "fixed", inset: 0, zIndex: 1, background: "radial-gradient(120% 80% at 50% 0%, rgba(40,36,20,0.25) 0%, rgba(8,10,5,0.45) 70%, rgba(4,5,2,0.7) 100%)" },
-  header: { position: "relative", zIndex: 10, display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "54px 24px 14px" },
+  // Safe-area padding (#37) added on top of the existing baseline so the
+  // header never sits under the notch/Dynamic Island on devices that have one.
+  header: { position: "relative", zIndex: 10, display: "flex", justifyContent: "space-between", alignItems: "flex-start", paddingTop: "calc(54px + env(safe-area-inset-top, 0px))", paddingLeft: "calc(24px + env(safe-area-inset-left, 0px))", paddingRight: "calc(24px + env(safe-area-inset-right, 0px))", paddingBottom: 14 },
   logo: { display: "flex", alignItems: "baseline" },
   logoText: { fontSize: 42, fontWeight: 400, color: C.parchment, letterSpacing: "-0.02em", lineHeight: 1, textShadow: "0 2px 8px rgba(0,0,0,0.5)" },
   logoDot: { fontSize: 42, color: C.brass, textShadow: `0 0 20px ${C.brassGlow}` },
@@ -3148,84 +3204,92 @@ const R: Record<string, CSSProperties> = {
   screen: { flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", position: "relative", zIndex: 10 },
   navWrap: { position: "relative", zIndex: 10, background: "linear-gradient(0deg,rgba(8,10,5,0.95),rgba(8,10,5,0.8))", backdropFilter: "blur(20px)" },
   navLine: { height: 1, background: `linear-gradient(90deg,transparent,${C.brassDeep},${C.brass},${C.brassDeep},transparent)`, boxShadow: `0 0 10px ${C.brassGlow}` },
-  nav: { display: "flex", padding: "10px 0 20px" },
+  // Safe-area padding (#37) so the nav bar's bottom padding clears the
+  // home-indicator area instead of sitting right up against it.
+  nav: { display: "flex", paddingTop: 10, paddingBottom: "calc(20px + env(safe-area-inset-bottom, 0px))" },
   navBtn: { flex: 1, background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 5 },
   stewardIcon: { width: 20, height: 20, borderRadius: "50%", border: `1.6px solid ${C.parchmentLow}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: C.parchmentLow, fontFamily: F },
   stewardIconOn: { borderColor: C.brass, color: C.brass, boxShadow: `0 0 10px ${C.brassGlow}` },
-  navLabel: { fontSize: 11, color: C.parchmentLow },
+  navLabel: { fontSize: 14, color: C.parchmentDim },
   navLabelOn: { color: C.brass },
 };
 const S: Record<string, CSSProperties> = {
-  scroll: { flex: 1, overflowY: "auto", padding: "16px 18px 0" },
+  scroll: { flex: 1, overflowY: "auto", padding: "16px 18px 0", position: "relative" },
+  // Bottom fade cue (#37) — hints there's more to scroll without a visible
+  // scrollbar; ScrollFadeArea shows/hides it based on actual scroll position.
+  scrollFadeCue: { position: "absolute", left: 0, right: 0, bottom: 0, height: 28, background: "linear-gradient(to bottom, transparent, rgba(8,10,5,0.85))", pointerEvents: "none" },
   greetRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, gap: 10 },
   greet: { fontSize: 27, fontWeight: 400, color: C.parchment, lineHeight: 1.15, textShadow: "0 2px 6px rgba(0,0,0,0.5)" },
   greetSub: { fontSize: 14, color: C.parchmentDim, marginTop: 5 },
-  dateChip: { display: "flex", alignItems: "center", background: "rgba(30,26,16,0.5)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 22, padding: "7px 13px", fontSize: 12, color: C.parchmentMid, flexShrink: 0, whiteSpace: "nowrap", boxShadow: "0 2px 8px rgba(0,0,0,0.3)" },
+  dateChip: { display: "flex", alignItems: "center", background: "rgba(30,26,16,0.5)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 22, padding: "7px 13px", fontSize: 14, color: C.parchmentMid, flexShrink: 0, whiteSpace: "nowrap", boxShadow: "0 2px 8px rgba(0,0,0,0.3)" },
   verseCard: { ...glass, padding: "22px 20px", marginBottom: 14, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", border: `1.5px solid ${C.brass}`, boxShadow: `0 0 28px ${C.brassGlow},0 6px 22px rgba(0,0,0,0.55),inset 0 1px 0 rgba(255,240,200,0.08),-4px 0 20px ${C.brassGlow}` },
   card: { ...glass, padding: "18px 20px", marginBottom: 14 },
   cardCentered: { ...glass, padding: "22px 20px", marginBottom: 14, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" },
   eyebrow: { display: "flex", alignItems: "center", gap: 7, marginBottom: 12 },
   prioHeadRow: { display: "flex", justifyContent: "space-between", alignItems: "center" },
-  prioLogLink: { background: "none", border: "none", color: C.brassSoft, fontSize: 12, cursor: "pointer", fontFamily: F },
-  prioExpandBtn: { width: "100%", background: "none", border: "1px dashed rgba(210,190,130,0.22)", borderRadius: 12, color: C.brassSoft, fontSize: 12.5, fontWeight: 600, padding: "10px", cursor: "pointer", fontFamily: F, marginTop: 4 },
+  prioLogLink: { background: "none", border: "none", color: C.brassSoft, fontSize: 14, cursor: "pointer", fontFamily: F },
+  prioExpandBtn: { width: "100%", background: "none", border: "1px dashed rgba(210,190,130,0.22)", borderRadius: 12, color: C.brassSoft, fontSize: 14, fontWeight: 600, padding: "10px", cursor: "pointer", fontFamily: F, marginTop: 4 },
   eyeText: { fontSize: 11, letterSpacing: "0.16em", color: C.brassSoft, fontWeight: 600 },
   verseText: { fontSize: 18, lineHeight: 1.6, color: C.parchment, marginBottom: 14, textAlign: "center" },
   verseRef: { fontSize: 11, letterSpacing: "0.12em", color: C.brassSoft },
   intent: { fontSize: 15, lineHeight: 1.7, color: C.parchment, textAlign: "center" },
   intentInput: { width: "100%", background: "none", border: "none", outline: "none", resize: "none", fontFamily: F, fontSize: 15, lineHeight: 1.7, color: C.parchment, textAlign: "center" },
-  empty: { fontSize: 13, color: C.parchmentDim, textAlign: "center", padding: "6px 0" },
-  pulseSub: { fontSize: 12, color: C.parchmentDim, marginTop: -6, marginBottom: 14 },
+  empty: { fontSize: 14, color: C.parchmentDim, textAlign: "center", padding: "6px 0" },
+  pulseSub: { fontSize: 14, color: C.parchmentDim, marginTop: -6, marginBottom: 14 },
   pulseRow: { marginBottom: 10 },
   pulseRowTop: { display: "flex", justifyContent: "space-between", alignItems: "center" },
   pulseLabel: { fontSize: 14, color: C.parchment },
   pulseBtns: { display: "flex", gap: 8 },
-  pulseBtn: { width: 30, height: 30, borderRadius: "50%", border: "1px solid rgba(210,190,130,0.22)", background: "rgba(30,26,16,0.5)", color: C.parchmentDim, fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: F, display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1 },
+  // 44x44 (#37) — minimum comfortable tap target; was 30x30.
+  pulseBtn: { width: 44, height: 44, borderRadius: "50%", border: "1px solid rgba(210,190,130,0.22)", background: "rgba(30,26,16,0.5)", color: C.parchmentDim, fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: F, display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1 },
   pulseNoteInput: { width: "100%", background: "none", border: "none", borderBottom: "1px solid rgba(210,190,130,0.16)", outline: "none", fontFamily: F, fontSize: 12, color: C.parchmentMid, padding: "4px 0", marginTop: 6 },
   prioLine: { position: "absolute", left: 19, top: 18, bottom: 20, width: 2, background: `linear-gradient(180deg,${C.walnutLite},${C.walnut})`, boxShadow: "0 0 4px rgba(0,0,0,0.5)" },
   prioRow: { display: "flex", gap: 14, alignItems: "flex-start", position: "relative" },
-  prioNum: { width: 40, height: 40, borderRadius: "50%", flexShrink: 0, background: `radial-gradient(circle at 35% 28%,${C.walnutMid},${C.walnut} 70%,#3E2814)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, color: C.parchment, boxShadow: `0 3px 10px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,220,160,0.25),inset 0 -2px 4px rgba(0,0,0,0.4),0 0 0 5px rgba(20,18,11,0.85)`, zIndex: 1, textShadow: "0 1px 2px rgba(0,0,0,0.5)", border: "none", cursor: "pointer" },
+  // 44x44 (#37) — minimum comfortable tap target for the priority-done toggle; was 40x40.
+  prioNum: { width: 44, height: 44, borderRadius: "50%", flexShrink: 0, background: `radial-gradient(circle at 35% 28%,${C.walnutMid},${C.walnut} 70%,#3E2814)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, color: C.parchment, boxShadow: `0 3px 10px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,220,160,0.25),inset 0 -2px 4px rgba(0,0,0,0.4),0 0 0 5px rgba(20,18,11,0.85)`, zIndex: 1, textShadow: "0 1px 2px rgba(0,0,0,0.5)", border: "none", cursor: "pointer" },
   prioNumDone: { background: `radial-gradient(circle at 35% 28%,#7A9860,#4E6838 70%,#26361A)`, opacity: 0.85 },
   prioRowYellow: { boxShadow: `inset 3px 0 0 0 ${C.brass}` },
   prioRowRed: { boxShadow: "inset 3px 0 0 0 #C87060" },
   prioRowGreen: { boxShadow: "inset 3px 0 0 0 #8FAE6E" },
-  prioSubRed: { fontSize: 12, color: "#C87060", lineHeight: 1.4 },
-  prioSubGreen: { fontSize: 12, color: "#8FAE6E", lineHeight: 1.4 },
-  prioEditBtn: { flexShrink: 0, alignSelf: "center", background: "none", border: "none", color: C.brassSoft, fontSize: 12.5, fontWeight: 600, padding: "6px 4px", cursor: "pointer", fontFamily: F },
+  prioSubRed: { fontSize: 14, color: "#C87060", lineHeight: 1.4 },
+  prioSubGreen: { fontSize: 14, color: "#8FAE6E", lineHeight: 1.4 },
+  prioEditBtn: { flexShrink: 0, alignSelf: "center", background: "none", border: "none", color: C.brassSoft, fontSize: 14, fontWeight: 600, padding: "6px 4px", cursor: "pointer", fontFamily: F },
   prioTitle: { fontSize: 15, color: C.parchment, lineHeight: 1.4, marginBottom: 3 },
-  prioSub: { fontSize: 12, color: C.parchmentDim, lineHeight: 1.4 },
+  prioSub: { fontSize: 14, color: C.parchmentDim, lineHeight: 1.4 },
   // Caps a list to roughly 5 rows tall, scrolling for the rest (Completed / Deleted logs).
-  scrollCap5: { maxHeight: 300, overflowY: "auto" as const, paddingRight: 4 },
+  scrollCap5: { maxHeight: 300, overflowY: "auto" as const, paddingRight: 4, position: "relative" },
   swipeWrap: { position: "relative", overflow: "hidden", borderRadius: 12, touchAction: "pan-y" },
   swipeFront: { background: "transparent", width: "100%" },
-  deleteCue: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: 22, border: "none", background: "#C87060", color: "#fff", fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", cursor: "pointer", fontFamily: F },
-  completeCue: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "flex-start", paddingLeft: 22, border: "none", background: "#8FAE6E", color: "#fff", fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", cursor: "pointer", fontFamily: F },
+  deleteCue: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: 22, border: "none", background: "#C87060", color: "#fff", fontSize: 14, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", cursor: "pointer", fontFamily: F },
+  completeCue: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "flex-start", paddingLeft: 22, border: "none", background: "#8FAE6E", color: "#fff", fontSize: 14, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", cursor: "pointer", fontFamily: F },
   upRow: { display: "flex" },
   upCol: { flex: 1, paddingRight: 12 },
   upBorder: { borderRight: "1px solid rgba(210,190,130,0.14)", marginRight: 12 },
-  upTime: { display: "flex", alignItems: "center", fontSize: 12, color: C.brassSoft, marginBottom: 6, fontWeight: 600 },
+  upTime: { display: "flex", alignItems: "center", fontSize: 14, color: C.brassSoft, marginBottom: 6, fontWeight: 600 },
   upTitle: { fontSize: 14, color: C.parchment, marginBottom: 2, fontWeight: 600 },
-  upSub: { fontSize: 11, color: C.parchmentDim, marginBottom: 8 },
+  upSub: { fontSize: 14, color: C.parchmentDim, marginBottom: 8 },
   upTag: { display: "inline-block", fontSize: 9, letterSpacing: "0.1em", borderRadius: 5, padding: "3px 8px", fontWeight: 600, border: "1px solid" },
   tagWork: { color: "#A8C888", background: "rgba(120,150,90,0.18)", borderColor: "rgba(150,180,110,0.4)" },
   tagHer: { color: "#D4A090", background: "rgba(160,90,70,0.18)", borderColor: "rgba(190,120,100,0.4)" },
   journalCard: { ...glass, padding: "16px 20px", marginBottom: 14, display: "flex", alignItems: "center", gap: 12 },
-  journalText: { fontSize: 13, color: C.parchmentMid, marginTop: 2 },
+  journalText: { fontSize: 14, color: C.parchmentMid, marginTop: 2 },
   journalInput: { width: "100%", marginTop: 10, background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: "10px 12px", outline: "none", resize: "vertical", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
   writeBtn: { flexShrink: 0, alignSelf: "flex-start", background: "transparent", border: `1.5px solid ${C.brass}`, borderRadius: 24, color: C.brass, fontSize: 13, fontWeight: 600, padding: "10px 18px", cursor: "pointer", boxShadow: `0 0 16px ${C.brassGlow},inset 0 0 8px rgba(216,170,62,0.1)` },
   msgBar: { display: "flex", alignItems: "center", gap: 11, background: "rgba(8,10,5,0.55)", backdropFilter: "blur(8px)", borderRadius: 30, padding: "11px 11px 11px 17px", marginBottom: 14, border: "1px solid rgba(210,190,130,0.16)", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.5),0 2px 8px rgba(0,0,0,0.3)" },
   msgInput: { flex: 1, background: "none", border: "none", color: C.parchment, fontSize: 14, outline: "none", fontFamily: F },
-  msgSend: { width: 36, height: 36, borderRadius: "50%", background: `radial-gradient(circle at 35% 28%,${C.brass},${C.brassDeep})`, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: `0 2px 12px ${C.brassGlow},inset 0 1px 0 rgba(255,240,200,0.3)` },
-  micBtn: { width: 32, height: 32, borderRadius: "50%", background: "rgba(30,26,16,0.6)", border: "1px solid rgba(210,190,130,0.16)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.2s" },
+  // 44x44 (#37) — minimum comfortable tap target; msgSend was 36x36, micBtn 32x32.
+  msgSend: { width: 44, height: 44, borderRadius: "50%", background: `radial-gradient(circle at 35% 28%,${C.brass},${C.brassDeep})`, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: `0 2px 12px ${C.brassGlow},inset 0 1px 0 rgba(255,240,200,0.3)` },
+  micBtn: { width: 44, height: 44, borderRadius: "50%", background: "rgba(30,26,16,0.6)", border: "1px solid rgba(210,190,130,0.16)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.2s" },
   micBtnOn: { background: `radial-gradient(circle at 35% 28%,${C.brass},${C.brassDeep})`, border: `1px solid ${C.brass}`, boxShadow: `0 0 14px ${C.brassGlow}`, animation: "micPulse 1s ease-in-out infinite" },
   bottomTag: { textAlign: "center", fontSize: 10, letterSpacing: "0.18em", color: C.brassSoft, opacity: 0.7, marginBottom: 8 },
   pageTitle: { fontSize: 28, fontWeight: 400, color: C.parchment, marginBottom: 4, textShadow: "0 2px 6px rgba(0,0,0,0.5)" },
-  pageSub: { fontSize: 13, color: C.parchmentDim, marginBottom: 18 },
+  pageSub: { fontSize: 14, color: C.parchmentDim, marginBottom: 18 },
   toneRow: { display: "flex", gap: 6, marginBottom: 14, marginTop: -4 },
-  toneOpt: { flex: 1, background: "rgba(24,20,12,0.55)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 14, color: C.parchmentDim, fontSize: 11.5, fontWeight: 600, padding: "7px 4px", cursor: "pointer", fontFamily: F },
+  toneOpt: { flex: 1, background: "rgba(24,20,12,0.55)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 14, color: C.parchmentDim, fontSize: 14, fontWeight: 600, padding: "7px 4px", cursor: "pointer", fontFamily: F },
   toneOptOn: { borderColor: C.brass, background: "rgba(216,170,62,0.16)", color: C.parchment },
   logRow: { display: "flex", gap: 8, marginBottom: 14 },
   logInput: { flex: 1, background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: "12px 14px", outline: "none", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
-  logBtn: { background: `linear-gradient(135deg,${C.walnutMid},${C.walnut})`, border: "none", borderRadius: 12, color: C.parchment, fontSize: 13, fontWeight: 700, padding: "12px 18px", cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,220,160,0.15)" },
+  logBtn: { background: `linear-gradient(135deg,${C.walnutMid},${C.walnut})`, border: "none", borderRadius: 12, color: C.parchment, fontSize: 14, fontWeight: 700, padding: "12px 18px", cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,220,160,0.15)" },
   commitRow: { display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 14 },
   commitCard: { display: "flex", flexDirection: "column", width: "100%", background: "transparent" },
   commitExpandBtn: { flexShrink: 0, alignSelf: "center", background: "none", border: "none", color: C.parchmentDim, fontSize: 14, padding: "6px 4px", cursor: "pointer", fontFamily: F },
@@ -3234,49 +3298,50 @@ const S: Record<string, CSSProperties> = {
   tribeNameBtn: { flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer", fontFamily: F, padding: 0 },
   dragHandle: { flexShrink: 0, width: 22, background: "none", border: "none", color: C.parchmentLow, fontSize: 16, cursor: "grab", padding: "6px 0", touchAction: "none", fontFamily: F },
   peopleDivider: { height: 1, background: "rgba(210,190,130,0.14)", margin: "4px 0 10px" },
-  tribeTagSelect: { width: "100%", background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchmentMid, fontSize: 13, fontFamily: F, padding: "10px 12px", outline: "none", marginBottom: 14 },
-  dot: { width: 22, height: 22, borderRadius: "50%", flexShrink: 0, marginTop: 1, background: "rgba(0,0,0,0.2)", border: `1.5px solid ${C.parchmentLow}`, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#7AB46A", boxShadow: "inset 0 1px 3px rgba(0,0,0,0.4)" },
+  tribeTagSelect: { width: "100%", background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchmentMid, fontSize: 14, fontFamily: F, padding: "10px 12px", outline: "none", marginBottom: 14 },
+  // 44x44 (#37) — minimum comfortable tap target for the kept/reopen toggle; was 22x22.
+  dot: { width: 44, height: 44, borderRadius: "50%", flexShrink: 0, marginTop: 1, background: "rgba(0,0,0,0.2)", border: `1.5px solid ${C.parchmentLow}`, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, color: "#7AB46A", boxShadow: "inset 0 1px 3px rgba(0,0,0,0.4)" },
   dotDone: { background: "rgba(120,180,106,0.25)", borderColor: "#7AB46A" },
   jobRow: { marginBottom: 14, paddingBottom: 14, borderBottom: "1px solid rgba(210,190,130,0.12)" },
   workList: { ...glass, padding: "10px 0", marginBottom: 12 },
-  workGroup: { fontSize: 10, fontWeight: 800, letterSpacing: "0.13em", padding: "8px 16px 5px" },
+  workGroup: { fontSize: 14, fontWeight: 800, letterSpacing: "0.13em", padding: "8px 16px 5px" },
   workRow: { width: "100%", display: "grid", gridTemplateColumns: "1fr auto", gap: "2px 10px", alignItems: "center", background: "transparent", border: "none", borderTop: "1px solid rgba(210,190,130,0.09)", color: C.parchment, textAlign: "left", padding: "9px 16px 10px", cursor: "pointer", fontFamily: F },
   workMain: { minWidth: 0 },
   workName: { fontSize: 14, color: C.parchment, lineHeight: 1.25, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
-  workMeta: { fontSize: 11, color: C.parchmentDim, lineHeight: 1.35, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
-  workPct: { fontSize: 12, color: C.brassSoft, fontWeight: 700, gridColumn: "2", gridRow: "1 / span 2" },
+  workMeta: { fontSize: 14, color: C.parchmentDim, lineHeight: 1.35, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  workPct: { fontSize: 14, color: C.brassSoft, fontWeight: 700, gridColumn: "2", gridRow: "1 / span 2" },
   workTrack: { gridColumn: "1 / -1", height: 3, background: "rgba(0,0,0,0.42)", borderRadius: 3, overflow: "hidden", marginTop: 6 },
   workTrackFill: { height: "100%", borderRadius: 3, transition: "width 0.3s" },
   jobTop: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 2 },
   trackRow: { display: "flex", alignItems: "center", gap: 8 },
   track: { flex: 1, height: 5, background: "rgba(0,0,0,0.45)", borderRadius: 3, overflow: "hidden", boxShadow: "inset 0 1px 3px rgba(0,0,0,0.5)" },
   trackFill: { height: "100%", borderRadius: 3, transition: "width 0.4s" },
-  intakeBtn: { width: "100%", borderRadius: 14, border: `1px dashed ${C.walnutLite}80`, background: "rgba(90,58,32,0.18)", color: C.parchmentMid, fontSize: 13, fontWeight: 600, padding: "15px", cursor: "pointer", fontFamily: F },
+  intakeBtn: { width: "100%", borderRadius: 14, border: `1px dashed ${C.walnutLite}80`, background: "rgba(90,58,32,0.18)", color: C.parchmentMid, fontSize: 14, fontWeight: 600, padding: "15px", cursor: "pointer", fontFamily: F },
   chatWrap: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", paddingTop: 12 },
-  chatMsgs: { flex: 1, overflowY: "auto", padding: "12px 18px" },
+  chatMsgs: { flex: 1, overflowY: "auto", padding: "12px 18px", position: "relative" },
   bubble: { marginBottom: 14, maxWidth: "86%" },
   bubbleA: { marginRight: "auto" },
   bubbleU: { marginLeft: "auto" },
   bubbleName: { fontSize: 9, letterSpacing: "0.14em", color: C.brassSoft, marginBottom: 5, fontWeight: 600 },
   bubbleText: { ...glass, padding: "13px 15px", fontSize: 14, lineHeight: 1.65, color: C.parchment, display: "inline-block", whiteSpace: "pre-wrap", borderTopLeftRadius: 5 },
-  chatPrioChip: { alignSelf: "flex-start", background: "rgba(216,170,62,0.14)", border: "1px solid rgba(216,170,62,0.4)", borderRadius: 16, color: C.brassSoft, fontSize: 12, fontWeight: 600, padding: "6px 12px", cursor: "pointer", fontFamily: F },
+  chatPrioChip: { alignSelf: "flex-start", background: "rgba(216,170,62,0.14)", border: "1px solid rgba(216,170,62,0.4)", borderRadius: 16, color: C.brassSoft, fontSize: 14, fontWeight: 600, padding: "6px 12px", cursor: "pointer", fontFamily: F },
   bubbleTextU: { background: `linear-gradient(135deg,${C.walnut},${C.walnutMid})`, border: `1px solid ${C.walnutLite}50`, borderTopLeftRadius: 18, borderTopRightRadius: 5 },
   chatBar: { display: "flex", gap: 8, padding: "10px 18px 16px", borderTop: "1px solid rgba(210,190,130,0.12)", alignItems: "center" },
   calendarCard: { ...glass, padding: "14px 16px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
   calendarTitle: { fontSize: 14, color: C.parchment, fontWeight: 700, marginBottom: 3 },
-  calendarBtn: { background: `linear-gradient(135deg,${C.walnutMid},${C.walnut})`, border: "none", borderRadius: 12, color: C.parchment, fontSize: 13, fontWeight: 700, padding: "10px 14px", cursor: "pointer", fontFamily: F, flexShrink: 0, boxShadow: "0 2px 8px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,220,160,0.15)" },
-  calendarRemoveBtn: { background: "none", border: `1px solid rgba(200,112,96,0.4)`, borderRadius: 8, color: "#C87060", fontSize: 11, fontWeight: 600, padding: "4px 10px", cursor: "pointer", fontFamily: F, flexShrink: 0 },
+  calendarBtn: { background: `linear-gradient(135deg,${C.walnutMid},${C.walnut})`, border: "none", borderRadius: 12, color: C.parchment, fontSize: 14, fontWeight: 700, padding: "10px 14px", cursor: "pointer", fontFamily: F, flexShrink: 0, boxShadow: "0 2px 8px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,220,160,0.15)" },
+  calendarRemoveBtn: { background: "none", border: `1px solid rgba(200,112,96,0.4)`, borderRadius: 8, color: "#C87060", fontSize: 14, fontWeight: 600, padding: "4px 10px", cursor: "pointer", fontFamily: F, flexShrink: 0 },
   weekRow: { display: "flex", gap: 14, alignItems: "flex-start", paddingBottom: 14, marginBottom: 14, borderBottom: "1px solid rgba(210,190,130,0.12)" },
   weekToday: { ...glass, padding: "14px", border: `1px solid ${C.brass}50`, boxShadow: `0 0 18px ${C.brassGlow}`, margin: "0 -2px 14px" },
   weekL: { width: 42, flexShrink: 0 },
-  weekDay: { fontSize: 12, fontWeight: 700, color: C.parchmentMid, textTransform: "uppercase" },
+  weekDay: { fontSize: 14, fontWeight: 700, color: C.parchmentMid, textTransform: "uppercase" },
   todayPill: { fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", background: `linear-gradient(135deg,${C.brass},${C.brassDeep})`, color: C.ink, borderRadius: 6, padding: "3px 9px", fontWeight: 700, alignSelf: "center", flexShrink: 0, boxShadow: `0 2px 8px ${C.brassGlow}` },
   weekItem: { marginBottom: 8 },
   weekItemTop: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 },
-  weekTime: { fontSize: 11, color: C.brassSoft, flexShrink: 0 },
+  weekTime: { fontSize: 14, color: C.brassSoft, flexShrink: 0 },
   calendarBottom: { borderTop: "1px solid rgba(210,190,130,0.12)", marginTop: 8, paddingTop: 14, display: "flex", flexDirection: "column", gap: 8, alignItems: "stretch" },
-  calendarAccount: { display: "flex", justifyContent: "space-between", alignItems: "center", color: C.parchmentDim, fontSize: 12 },
-  calendarSmallBtn: { alignSelf: "stretch", background: "rgba(30,26,16,0.62)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 10, color: C.parchmentMid, fontSize: 12, fontWeight: 700, padding: "10px 12px", cursor: "pointer", fontFamily: F },
+  calendarAccount: { display: "flex", justifyContent: "space-between", alignItems: "center", color: C.parchmentDim, fontSize: 14 },
+  calendarSmallBtn: { alignSelf: "stretch", background: "rgba(30,26,16,0.62)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 10, color: C.parchmentMid, fontSize: 14, fontWeight: 700, padding: "10px 12px", cursor: "pointer", fontFamily: F },
 };
 const M: Record<string, CSSProperties> = {
   // The page behind (R.root's `background: C.ink`, #0C0E07) is already
@@ -3303,12 +3368,12 @@ const M: Record<string, CSSProperties> = {
   statusOptOn: { borderColor: C.brass, background: "rgba(216,170,62,0.14)", color: C.parchment },
   notesArea: { width: "100%", minHeight: 80, background: "rgba(8,10,5,0.7)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: 14, outline: "none", marginBottom: 4, resize: "vertical" },
   next: { width: "100%", background: `linear-gradient(135deg,${C.brass},${C.brassDeep})`, border: "none", borderRadius: 12, color: C.ink, fontSize: 15, fontWeight: 700, padding: "15px", cursor: "pointer", marginBottom: 8, fontFamily: F, boxShadow: `0 4px 18px ${C.brassGlow}` },
-  cancel: { width: "100%", background: "none", border: "none", color: C.parchmentDim, fontSize: 13, cursor: "pointer", padding: "10px", fontFamily: F },
+  cancel: { width: "100%", background: "none", border: "none", color: C.parchmentDim, fontSize: 14, cursor: "pointer", padding: "10px", fontFamily: F },
 };
 const E: Record<string, CSSProperties> = {
   fieldGroup: { marginBottom: 12 },
-  label: { fontSize: 11, letterSpacing: "0.1em", color: C.brassSoft, fontWeight: 600, marginBottom: 6 },
+  label: { fontSize: 14, letterSpacing: "0.1em", color: C.brassSoft, fontWeight: 600, marginBottom: 6 },
   chipRow: { display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14, marginTop: -4 },
-  chip: { background: "rgba(34,30,18,0.9)", border: "1px solid rgba(210,190,130,0.22)", borderRadius: 20, color: C.parchmentMid, fontSize: 13, padding: "7px 14px", cursor: "pointer", fontFamily: F },
+  chip: { background: "rgba(34,30,18,0.9)", border: "1px solid rgba(210,190,130,0.22)", borderRadius: 20, color: C.parchmentMid, fontSize: 14, padding: "7px 14px", cursor: "pointer", fontFamily: F },
   slider: { width: "100%", accentColor: C.brass, marginBottom: 12 },
 };

@@ -2,7 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
+    <!-- maximum-scale dropped (#37) — it blocked pinch-zoom entirely, directly
+         contradicting the app's own "readable with enlarged text" requirement.
+         viewport-fit=cover lets the page extend under the notch/home-indicator
+         so env(safe-area-inset-*) padding in Home.tsx can compensate for it. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Steward</title>
     <meta name="description" content="Steward — built on Replit. Update this description to reflect the app." />
     <meta name="robots" content="index, follow" />
