@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import type { CSSProperties } from "react";
 import { useLocation } from "wouter";
 import { useAuth } from "@workspace/replit-auth-web";
+import { apiFetch } from "../lib/apiFetch";
 
 // ── Palette (matches Home.tsx) ────────────────────────────────────────────────
 const C = {
@@ -93,7 +94,7 @@ export default function Interview() {
     if (!isAuthenticated) return;
     (async () => {
       try {
-        const r = await fetch(`${API}/interview/history`, { credentials: "include" });
+        const r = await apiFetch(`${API}/interview/history`, { credentials: "include" });
         if (!r.ok) return;
         const d = await r.json() as { messages: Message[]; questionNumber: number; onboarded: boolean };
         if (d.onboarded) { setLocation("/"); return; }
@@ -115,12 +116,16 @@ export default function Interview() {
   async function triggerStart() {
     setSending(true);
     try {
-      const r = await fetch(`${API}/interview`, {
+      // Long timeout (#76): completing the interview chains up to two
+      // sequential OpenAI calls server-side (the reply, then profile
+      // extraction), each bounded at 30s there — this must clear that
+      // worst case comfortably instead of aborting mid-response.
+      const r = await apiFetch(`${API}/interview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ message: "" }),
-      });
+      }, 70_000);
       if (!r.ok) {
         const errorText = await r.text();
         setMessages([{ role: "assistant", content: "Steward is connected, but onboarding failed (" + r.status + "): " + (errorText || "No error details returned.") }]);
@@ -145,12 +150,14 @@ export default function Interview() {
     setMessages(prev => [...prev, { role: "user", content: text }]);
     setSending(true);
     try {
-      const r = await fetch(`${API}/interview`, {
+      // Same long timeout as triggerStart — the completion turn can chain
+      // two sequential OpenAI calls server-side (#76).
+      const r = await apiFetch(`${API}/interview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ message: text }),
-      });
+      }, 70_000);
       if (!r.ok) {
         const errorText = await r.text();
         setMessages(prev => [...prev, { role: "assistant", content: "Steward is connected, but onboarding failed (" + r.status + "): " + (errorText || "No error details returned.") }]);
@@ -174,7 +181,7 @@ export default function Interview() {
 
   async function skip() {
     try {
-      await fetch(`${API}/interview/skip`, { method: "POST", credentials: "include" });
+      await apiFetch(`${API}/interview/skip`, { method: "POST", credentials: "include" });
     } finally {
       setLocation("/");
     }

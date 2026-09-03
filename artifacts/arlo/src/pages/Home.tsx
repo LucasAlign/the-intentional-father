@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useId } from "react";
 import type { CSSProperties, ReactElement, ReactNode, PointerEvent } from "react";
 import { useAuth } from "@workspace/replit-auth-web";
 import { useLocation } from "wouter";
+import { apiFetch } from "../lib/apiFetch";
 
 declare global {
   interface Window {
@@ -101,7 +102,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 async function getJson(url: string, fallback: unknown) {
   try {
-    const response = await fetch(url, { credentials: "include" });
+    const response = await apiFetch(url, { credentials: "include" });
     if (!response.ok) return fallback;
     return await response.json();
   } catch {
@@ -222,8 +223,8 @@ function useKeyedTapError<K extends string | number>() {
   return { get, flash };
 }
 
-const saveStatusText: CSSProperties = { fontSize: 11.5, color: "#9C9272", marginTop: 5, fontFamily: F };
-const saveStatusRetry: CSSProperties = { background: "none", border: "none", padding: 0, color: "#C89A34", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: F, textDecoration: "underline" };
+const saveStatusText: CSSProperties = { fontSize: 14, color: "#9C9272", marginTop: 5, fontFamily: F };
+const saveStatusRetry: CSSProperties = { background: "none", border: "none", padding: 0, color: "#C89A34", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: F, textDecoration: "underline" };
 
 function SaveStatus({ status, onRetry }: { status: SaveState; onRetry?: () => void }) {
   if (status === "idle") return null;
@@ -242,7 +243,7 @@ function SaveStatus({ status, onRetry }: { status: SaveState; onRetry?: () => vo
 // shared by every TapError call site in the app.
 function TapError({ message }: { message: string | null }) {
   if (!message) return null;
-  return <div role="alert" style={{ fontSize: 11.5, color: "#C87060", marginTop: 4, fontFamily: F }}>{message}</div>;
+  return <div role="alert" style={{ fontSize: 14, color: "#C87060", marginTop: 4, fontFamily: F }}>{message}</div>;
 }
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
@@ -269,11 +270,15 @@ function Icon({ name, size = 15, color = C.brassSoft, stroke = 1.6 }: { name: Ic
   return <svg {...p} aria-hidden="true">{m[name]}</svg>;
 }
 
+// #39: label is "Chat", not "Steward" — the app itself is already called
+// Steward (header logo, sign-in screen), so a nav tab with the same name
+// didn't clearly read as "this opens the AI chat." The tab id stays
+// "steward" internally, matching the existing "her"/"Tribe" precedent (#28).
 const NAV: { id: TabId; icon: IconName | "stewardIcon"; label: string }[] = [
   { id: "today", icon: "sun", label: "Today" },
   { id: "her", icon: "heart", label: "Tribe" },
   { id: "work", icon: "work", label: "Work" },
-  { id: "steward", icon: "stewardIcon", label: "Steward" },
+  { id: "steward", icon: "stewardIcon", label: "Chat" },
   { id: "week", icon: "cal", label: "Week" },
 ];
 type TabId = "today" | "her" | "work" | "steward" | "week";
@@ -329,6 +334,54 @@ function ModalSheet({ title, headExtra, onClose, sheetOnClick, children }: {
       <div style={M.strip} />
       <div style={M.head}><div style={M.title} id={titleId}>{title}</div>{headExtra}</div>
       {children}
+    </div>
+  );
+}
+
+// Tracks whether a scrollable element has more content below its visible
+// area — drives the fade-cue hint (#37) so it's only shown while there's
+// somewhere left to scroll, and disappears once the user reaches the end.
+// The element itself must be `position: relative` (S.scroll, S.scrollCap5,
+// S.chatMsgs all are) so the cue — an absolutely-positioned child pinned to
+// `bottom: 0` — stays fixed at the visible bottom edge of the scrollport
+// instead of scrolling away with the content.
+function useBottomScrollFade<T extends HTMLElement>() {
+  const ref = useRef<T>(null);
+  const [showFade, setShowFade] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    function update() {
+      if (!el) return;
+      setShowFade(el.scrollHeight - el.scrollTop - el.clientHeight > 4);
+    }
+    update();
+    el.addEventListener("scroll", update, { passive: true });
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => { el.removeEventListener("scroll", update); ro.disconnect(); };
+  }, []);
+  return { ref, showFade };
+}
+
+// One-time first-visit orientation tip (#40) — dismissed state persists
+// per-device via localStorage, since there's no per-user "seen this"
+// tracking anywhere in the schema; a tip can reappear on a new device,
+// an accepted tradeoff rather than a bug.
+function FirstVisitTip({ id, children }: { id: string; children: ReactNode }) {
+  const storageKey = `steward:tip-seen:${id}`;
+  const [dismissed, setDismissed] = useState(() => {
+    try { return localStorage.getItem(storageKey) === "1"; } catch { return false; }
+  });
+  function dismiss() {
+    setDismissed(true);
+    try { localStorage.setItem(storageKey, "1"); } catch { /* private browsing, etc. — dismiss still works for this session */ }
+  }
+  if (dismissed) return null;
+  return (
+    <div style={S.tip}>
+      <div style={S.tipText}>{children}</div>
+      <button style={S.tipClose} onClick={dismiss} aria-label="Dismiss tip">✕</button>
     </div>
   );
 }
@@ -499,7 +552,7 @@ export default function Home() {
     setProfile(p => ({ ...(p ?? {}), voice }));
     setSuggestedTone(null);
     try {
-      await fetch(`${API}/profile`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voice }) });
+      await apiFetch(`${API}/profile`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voice }) });
     } catch { /* optimistic update already applied; a stale read on next load self-corrects */ }
   }
 
@@ -545,7 +598,7 @@ export default function Home() {
 
   async function savePulseCheck(category: PulseCategory, state: PulseState, note: string): Promise<boolean> {
     try {
-      const r = await fetch(`${API}/pulse-checks`, {
+      const r = await apiFetch(`${API}/pulse-checks`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ date: ymd(new Date()), category, state, note }),
       });
@@ -562,7 +615,7 @@ export default function Home() {
   useEffect(() => {
     if (!isAuthenticated) return;
     // Check onboarding before loading data
-    fetch(`${API}/interview/status`, { credentials: "include" })
+    apiFetch(`${API}/interview/status`, { credentials: "include" })
       .then(r => r.ok ? r.json() : null)
       .then((d: { onboarded?: boolean } | null) => {
         if (d && d.onboarded === false) { setLocation("/interview"); }
@@ -571,7 +624,7 @@ export default function Home() {
 
     const days = weekDays();
     const start = days[0].key, end = days[6].key;
-    fetch(`${API}/verse`).then(r => r.ok ? r.text() : "").then(v => v && setVerse(v)).catch(() => {});
+    apiFetch(`${API}/verse`).then(r => r.ok ? r.text() : "").then(v => v && setVerse(v)).catch(() => {});
     refreshJournal();
     getList<Event>(`${API}/coming-up`).then(setToday);
     getList<Event>(`${API}/coming-up?start=${start}&end=${end}`).then(setWeek);
@@ -583,7 +636,7 @@ export default function Home() {
 
   async function saveJournal(next: Journal): Promise<boolean> {
     try {
-      const r = await fetch(`${API}/journal`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next) });
+      const r = await apiFetch(`${API}/journal`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next) });
       if (r.ok) { setJournal(next); return true; }
       return false;
     } catch {
@@ -600,7 +653,11 @@ export default function Home() {
     setSending(true);
     setSuggestedTone(null);
     try {
-      const r = await fetch(`${API}/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: text }) });
+      // The server bounds its own OpenAI call at 30s and replies with a
+      // friendly 504 if it's exceeded (#68) — this timeout must stay above
+      // that so the server's graceful message always wins the race instead
+      // of the client aborting first with a raw network error.
+      const r = await apiFetch(`${API}/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: text }) }, 35_000);
       if (r.ok) {
         const d = await r.json();
         setChat(p => [...p, { role: "assistant", content: d.message }]);
@@ -656,7 +713,7 @@ export default function Home() {
         {tab === "her" && <Relationships relationships={relationships} refreshRelationships={refreshRelationships} commits={commits} refreshCommits={refreshCommits} />}
         {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} onOpenClosed={() => setClosedPursuitsOpen(true)} />}
         {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} />}
-        {tab === "week" && <WeekView events={week} jobs={jobs} pursuits={pursuits} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await fetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
+        {tab === "week" && <WeekView events={week} jobs={jobs} pursuits={pursuits} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await apiFetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
       </div>
 
       <div style={R.navWrap}>
@@ -699,6 +756,10 @@ function ProfileMenu({ name, email, onClose, onLogout }: { name?: string | null;
       <ModalSheet title={name || email || "Profile"} onClose={onClose} sheetOnClick={e => e.stopPropagation()}>
         <a style={{ ...M.next, textDecoration: "none", display: "block", textAlign: "center" }} href="mailto:admin@lucasalign.com?subject=Steward%20feedback">Contact Support / Feedback</a>
         <button style={{ ...M.next, background: "none", border: "1px solid rgba(210,190,130,0.18)", color: C.parchmentDim, boxShadow: "none" }} onClick={onLogout}>Log Out</button>
+        {/* Moved here from the signed-out gate (#35) — offered once someone's
+            actually using Steward and looking for it, not pushed on every
+            visitor before they've seen the product. */}
+        <AddToHomeScreen />
         <button style={M.cancel} onClick={onClose}>Cancel</button>
       </ModalSheet>
     </div>
@@ -748,7 +809,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
     const t = newTask.trim();
     if (!t) return;
     const ok = await addTaskSave.save(async () => {
-      const r = await fetch(`${API}/tasks`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: t }) });
+      const r = await apiFetch(`${API}/tasks`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: t }) });
       if (r.ok) refreshTasks();
       return r.ok;
     });
@@ -756,7 +817,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   }
   async function complete(id: number): Promise<boolean> {
     try {
-      const r = await fetch(`${API}/tasks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: true }) });
+      const r = await apiFetch(`${API}/tasks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: true }) });
       if (r.ok) refreshTasks();
       return r.ok;
     } catch {
@@ -766,7 +827,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   async function deleteTask(id: number): Promise<boolean> {
     setDeletingIds(prev => prev.includes(id) ? prev : [...prev, id]);
     try {
-      const r = await fetch(`${API}/tasks/${id}`, { method: "DELETE" });
+      const r = await apiFetch(`${API}/tasks/${id}`, { method: "DELETE" });
       if (r.ok) {
         await refreshTasks();
         // Deletes are soft now (#54) — the id must be un-hidden once the
@@ -784,7 +845,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   }
   async function logToday(id: number): Promise<boolean> {
     try {
-      const r = await fetch(`${API}/tasks/${id}/complete`, {
+      const r = await apiFetch(`${API}/tasks/${id}/complete`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ date: ymd(new Date()) }),
       });
@@ -795,14 +856,21 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
     }
   }
 
+  const scrollFade = useBottomScrollFade<HTMLDivElement>();
   return (
-    <div style={S.scroll}>
+    <div ref={scrollFade.ref} style={S.scroll}>
+      {scrollFade.showFade && <div style={S.scrollFadeCue} />}
       <div style={S.greetRow}>
         <div><div style={S.greet}>{greeting}</div><div style={S.greetSub}>Let's build something that matters.</div></div>
         <div style={S.dateChip}><Icon name="cal" size={13} color={C.parchmentMid} /><span style={{ marginLeft: 6 }}>{new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</span></div>
       </div>
 
-      <div style={S.verseCard}>
+      <FirstVisitTip id="today">This is your daily home base — set today's intention, check your top priorities, log a Pulse Check, and reflect before you're done.</FirstVisitTip>
+
+      {/* #38: plain card, not the brass-glow hero border this used to have
+          — Verse of the Day is read-only, non-actionable content, so it
+          shouldn't outrank the actionable cards below it. */}
+      <div style={S.cardCentered}>
         <div style={S.eyebrow}><Icon name="book" /><span style={S.eyeText}>VERSE OF THE DAY</span></div>
         <div style={S.verseText}>{vText || "…"}</div>
         {vRef && <div style={S.verseRef}>{vRef.toUpperCase()}</div>}
@@ -820,8 +888,6 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
         />
         <SaveStatus status={introSave.status} onRetry={() => introSave.save(() => onSaveJournal({ ...journal, commit_text: intent }))} />
       </div>
-
-      <PulseCheckCard pulseChecks={pulseChecks} onSave={onSavePulseCheck} />
 
       <div style={S.card}>
         <div style={S.prioHeadRow}>
@@ -861,6 +927,8 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
           <button style={{ ...S.intakeBtn, marginTop: 14 }} onClick={() => setAdding(true)}>＋  Add a priority</button>
         )}
       </div>
+
+      <PulseCheckCard pulseChecks={pulseChecks} onSave={onSavePulseCheck} />
 
       <div style={S.card}>
         <div style={S.eyebrow}><Icon name="cal" /><span style={S.eyeText}>COMING UP</span></div>
@@ -960,6 +1028,7 @@ function PulseCheckCard({ pulseChecks, onSave }: {
     <div style={S.card}>
       <div style={S.eyebrow}><Icon name="sun" /><span style={S.eyeText}>PULSE CHECK</span></div>
       <div style={S.pulseSub}>How are you holding up?</div>
+      <FirstVisitTip id="pulse-check">A quick daily check on how work, family, and faith are actually going — not a task list, just an honest read.</FirstVisitTip>
       {PULSE_CATEGORIES.map(({ id, label }) => {
         const entry = byCategory.get(id);
         const displayState = pendingState[id] ?? entry?.state;
@@ -1465,7 +1534,7 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
 
   async function setCommitDone(id: number, doneVal: boolean): Promise<boolean> {
     try {
-      const r = await fetch(`${API}/commits/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: doneVal }) });
+      const r = await apiFetch(`${API}/commits/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: doneVal }) });
       if (r.ok) { refreshCommits(); return true; }
     } catch { /* fall through */ }
     return false;
@@ -1473,7 +1542,7 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
   async function deleteCommit(id: number): Promise<boolean> {
     setDeletingIds(prev => prev.includes(id) ? prev : [...prev, id]);
     try {
-      const r = await fetch(`${API}/commits/${id}`, { method: "DELETE" });
+      const r = await apiFetch(`${API}/commits/${id}`, { method: "DELETE" });
       if (r.ok) {
         await refreshCommits();
         setDeletingIds(prev => prev.filter(item => item !== id));
@@ -1488,14 +1557,14 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
   }
   async function toggleStarred(r: Relationship) {
     try {
-      const res = await fetch(`${API}/relationships/${r.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ starred: !r.starred }) });
+      const res = await apiFetch(`${API}/relationships/${r.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ starred: !r.starred }) });
       if (res.ok) { refreshRelationships(); return; }
     } catch { /* fall through */ }
     primaryTapError.flash(r.id, "Couldn't save — try again");
   }
   async function reorderGroup(starred: boolean, orderedIds: number[]) {
     try {
-      const res = await fetch(`${API}/relationships/reorder`, {
+      const res = await apiFetch(`${API}/relationships/reorder`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ starred, orderedIds }),
       });
@@ -1505,16 +1574,20 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
   }
   async function resetPeopleOrder() {
     await resetSave.save(async () => {
-      const r = await fetch(`${API}/relationships/reset`, { method: "POST" });
+      const r = await apiFetch(`${API}/relationships/reset`, { method: "POST" });
       if (r.ok) { refreshRelationships(); setResetConfirmOpen(false); return true; }
       return false;
     });
   }
 
+  const scrollFade = useBottomScrollFade<HTMLDivElement>();
+  const openCommitsFade = useBottomScrollFade<HTMLDivElement>();
   return (
-    <div style={S.scroll}>
+    <div ref={scrollFade.ref} style={S.scroll}>
+      {scrollFade.showFade && <div style={S.scrollFadeCue} />}
       <div style={S.pageTitle}>Tribe</div>
       <div style={S.pageSub}>The people you're prioritizing.</div>
+      <FirstVisitTip id="tribe">Track the people you're prioritizing — spouse, kids, family, friends — and the commitments you've made to them.</FirstVisitTip>
       <div style={S.card}><div style={S.eyebrow}><Icon name="heart" /><span style={S.eyeText}>TODAY'S INTENTION</span></div><div style={S.intent}>{intentionText}</div></div>
 
       <div style={S.card}>
@@ -1527,7 +1600,7 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
         </div>
         <TapError message={orderError} />
         {relationships.length === 0 ? (
-          <div style={S.empty}>No one added yet.</div>
+          <div style={S.empty}>No one added yet. Start with the person you want to prioritize most.</div>
         ) : (
           <>
             {starredPeople.length > 0 && (
@@ -1574,7 +1647,8 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
       {open.length > 0 && (
         <div style={S.card}>
           <div style={S.eyebrow}><span style={S.eyeText}>OPEN</span></div>
-          <div style={S.scrollCap5}>
+          <div ref={openCommitsFade.ref} style={S.scrollCap5}>
+            {openCommitsFade.showFade && <div style={S.scrollFadeCue} />}
             {open.map(c => (
               <SwipeCommitment key={c.id} commit={c} byId={byId} onToggleDone={setCommitDone} onDelete={deleteCommit} onEdit={setEditingCommit} />
             ))}
@@ -1665,7 +1739,7 @@ function CommitTargetPicker({ relationships, relationshipId, setRelationshipId, 
 }
 
 async function createAdHocRelationship(name: string, category: RelationshipCategory): Promise<number | null> {
-  const r = await fetch(`${API}/relationships`, {
+  const r = await apiFetch(`${API}/relationships`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, category, type: "", notes: "", commitments: "", biggestChallenge: "" }),
   });
@@ -1686,13 +1760,16 @@ function CommitLogModal({ relationships, onClose, onSaved, onRelationshipAdded }
   const [notes, setNotes] = useState("");
   const [dueDate, setDueDate] = useState("");
   const saveStatus = useSaveStatus();
+  const [validationErr, setValidationErr] = useState("");
 
   const hasExisting = relationshipId !== "";
   const hasNew = newCategory !== "" && newName.trim() !== "";
-  const canSave = text.trim() !== "" && (hasExisting || hasNew);
+  const canSave = text.trim() !== "";
 
   async function save() {
     if (!canSave) return;
+    if (!hasExisting && !hasNew) { setValidationErr("Select who this commitment is for."); return; }
+    setValidationErr("");
     await saveStatus.save(async () => {
       let targetRelationshipId: number | null = hasExisting ? Number(relationshipId) : null;
       if (!hasExisting && hasNew && addToTribe) {
@@ -1702,7 +1779,7 @@ function CommitLogModal({ relationships, onClose, onSaved, onRelationshipAdded }
       const body: Record<string, unknown> = { text: text.trim(), notes: notes.trim(), dueDate: dueDate || null };
       if (targetRelationshipId) body.relationshipId = targetRelationshipId;
       else { body.adHocName = newName.trim(); body.adHocCategory = newCategory; }
-      const r = await fetch(`${API}/commits`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const r = await apiFetch(`${API}/commits`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (r.ok) {
         if (targetRelationshipId && addToTribe) onRelationshipAdded();
         onSaved(); onClose();
@@ -1722,6 +1799,7 @@ function CommitLogModal({ relationships, onClose, onSaved, onRelationshipAdded }
           newName={newName} setNewName={setNewName}
           addToTribe={addToTribe} setAddToTribe={setAddToTribe}
         />
+        <TapError message={validationErr || null} />
 
         <div style={E.fieldGroup}>
           <div style={E.label}>WHAT DID YOU COMMIT TO?</div>
@@ -1761,13 +1839,16 @@ function CommitEditModal({ commit, relationships, onClose, onSaved, onDeleted, o
   const saveStatus = useSaveStatus();
   const [deleting, setDeleting] = useState(false);
   const [delErr, setDelErr] = useState("");
+  const [validationErr, setValidationErr] = useState("");
 
   const hasExisting = relationshipId !== "";
   const hasNew = newCategory !== "" && newName.trim() !== "";
-  const canSave = text.trim() !== "" && (hasExisting || hasNew);
+  const canSave = text.trim() !== "";
 
   async function save() {
     if (!canSave) return;
+    if (!hasExisting && !hasNew) { setValidationErr("Select who this commitment is for."); return; }
+    setValidationErr("");
     await saveStatus.save(async () => {
       let targetRelationshipId: number | null = hasExisting ? Number(relationshipId) : null;
       if (!hasExisting && hasNew && addToTribe) {
@@ -1777,7 +1858,7 @@ function CommitEditModal({ commit, relationships, onClose, onSaved, onDeleted, o
       const body: Record<string, unknown> = { text: text.trim(), notes: notes.trim(), dueDate: dueDate || null };
       if (targetRelationshipId) body.relationshipId = targetRelationshipId;
       else { body.adHocName = newName.trim(); body.adHocCategory = newCategory; }
-      const r = await fetch(`${API}/commits/${commit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const r = await apiFetch(`${API}/commits/${commit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (r.ok) {
         if (targetRelationshipId && addToTribe) onRelationshipAdded();
         onSaved(); onClose();
@@ -1790,7 +1871,7 @@ function CommitEditModal({ commit, relationships, onClose, onSaved, onDeleted, o
   async function del() {
     setDeleting(true);
     try {
-      const r = await fetch(`${API}/commits/${commit.id}`, { method: "DELETE" });
+      const r = await apiFetch(`${API}/commits/${commit.id}`, { method: "DELETE" });
       if (r.ok) { onDeleted(); onClose(); }
       else { setDelErr("Couldn't delete. Try again."); setDeleting(false); }
     } catch { setDelErr("Couldn't reach the server."); setDeleting(false); }
@@ -1806,6 +1887,7 @@ function CommitEditModal({ commit, relationships, onClose, onSaved, onDeleted, o
           newName={newName} setNewName={setNewName}
           addToTribe={addToTribe} setAddToTribe={setAddToTribe}
         />
+        <TapError message={validationErr || null} />
 
         <div style={E.fieldGroup}>
           <div style={E.label}>WHAT DID YOU COMMIT TO?</div>
@@ -1839,9 +1921,11 @@ function CommitHistoryModal({ commits, byId, onClose, onChanged }: {
   const [deleted, setDeleted] = useState<Commit[] | null>(null);
   const [reopeningIds, setReopeningIds] = useState<number[]>([]);
   const reopenError = useKeyedTapError<number>();
+  const keptFade = useBottomScrollFade<HTMLDivElement>();
+  const deletedFade = useBottomScrollFade<HTMLDivElement>();
 
   const load = useCallback(() => {
-    fetch(`${API}/commits/deleted`).then(r => r.ok ? r.json() : null).then(d => setDeleted(d?.items ?? []));
+    apiFetch(`${API}/commits/deleted`).then(r => r.ok ? r.json() : null).then(d => setDeleted(d?.items ?? []));
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -1850,7 +1934,7 @@ function CommitHistoryModal({ commits, byId, onClose, onChanged }: {
   async function reopen(id: number, body: { done: boolean } | { deleted: boolean }) {
     setReopeningIds(prev => [...prev, id]);
     try {
-      const r = await fetch(`${API}/commits/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const r = await apiFetch(`${API}/commits/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (r.ok) {
         setDeleted(prev => prev && "deleted" in body ? prev.filter(c => c.id !== id) : prev);
         onChanged();
@@ -1864,7 +1948,8 @@ function CommitHistoryModal({ commits, byId, onClose, onChanged }: {
   return (
     <div style={M.overlay}>
       <ModalSheet title="Kept Commitments" onClose={onClose}>
-        <div style={S.scrollCap5}>
+        <div ref={keptFade.ref} style={S.scrollCap5}>
+          {keptFade.showFade && <div style={S.scrollFadeCue} />}
           {commits.map(c => (
             <div key={c.id} style={{ marginBottom: 14 }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
@@ -1884,7 +1969,8 @@ function CommitHistoryModal({ commits, byId, onClose, onChanged }: {
         </div>
 
         <div style={{ ...E.label, marginTop: 22, marginBottom: 8 }}>DELETED</div>
-        <div style={S.scrollCap5}>
+        <div ref={deletedFade.ref} style={S.scrollCap5}>
+          {deletedFade.showFade && <div style={S.scrollFadeCue} />}
           {(deleted ?? []).map(c => (
             <div key={c.id} style={{ marginBottom: 14 }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
@@ -1928,8 +2014,8 @@ function RelationshipModal({ relationship, onClose, onSaved, onDeleted }: {
     const body = { name: name.trim() || null, category, type: type.trim(), notes: notes.trim(), commitments: commitments.trim(), biggestChallenge: biggestChallenge.trim() };
     await saveStatus.save(async () => {
       const r = relationship
-        ? await fetch(`${API}/relationships/${relationship.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
-        : await fetch(`${API}/relationships`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        ? await apiFetch(`${API}/relationships/${relationship.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+        : await apiFetch(`${API}/relationships`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (r.ok) { onSaved(); onClose(); return true; }
       return false;
     });
@@ -1939,7 +2025,7 @@ function RelationshipModal({ relationship, onClose, onSaved, onDeleted }: {
     if (!relationship) return;
     setDeleting(true);
     try {
-      const r = await fetch(`${API}/relationships/${relationship.id}`, { method: "DELETE" });
+      const r = await apiFetch(`${API}/relationships/${relationship.id}`, { method: "DELETE" });
       if (r.ok) { onDeleted?.(); onClose(); }
       else { setDelErr("Couldn't delete. Try again."); setDeleting(false); }
     } catch { setDelErr("Couldn't reach the server."); setDeleting(false); }
@@ -2009,16 +2095,17 @@ function PeopleDeletedModal({ onClose, onChanged }: { onClose: () => void; onCha
   const [busyIds, setBusyIds] = useState<number[]>([]);
   const [confirmPermanentId, setConfirmPermanentId] = useState<number | null>(null);
   const rowError = useKeyedTapError<number>();
+  const scrollFade = useBottomScrollFade<HTMLDivElement>();
 
   const load = useCallback(() => {
-    fetch(`${API}/relationships/deleted`).then(r => r.ok ? r.json() : null).then(d => setDeleted(d?.items ?? []));
+    apiFetch(`${API}/relationships/deleted`).then(r => r.ok ? r.json() : null).then(d => setDeleted(d?.items ?? []));
   }, []);
   useEffect(() => { load(); }, [load]);
 
   async function reactivate(id: number) {
     setBusyIds(prev => [...prev, id]);
     try {
-      const r = await fetch(`${API}/relationships/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: false }) });
+      const r = await apiFetch(`${API}/relationships/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: false }) });
       if (r.ok) {
         setDeleted(prev => prev ? prev.filter(p => p.id !== id) : prev);
         onChanged();
@@ -2032,7 +2119,7 @@ function PeopleDeletedModal({ onClose, onChanged }: { onClose: () => void; onCha
   async function permanentlyDelete(id: number) {
     setBusyIds(prev => [...prev, id]);
     try {
-      const r = await fetch(`${API}/relationships/${id}/permanent`, { method: "DELETE" });
+      const r = await apiFetch(`${API}/relationships/${id}/permanent`, { method: "DELETE" });
       if (r.ok) {
         setDeleted(prev => prev ? prev.filter(p => p.id !== id) : prev);
         setConfirmPermanentId(null);
@@ -2048,7 +2135,8 @@ function PeopleDeletedModal({ onClose, onChanged }: { onClose: () => void; onCha
   return (
     <div style={M.overlay}>
       <ModalSheet title="Deleted People" onClose={onClose}>
-        <div style={S.scrollCap5}>
+        <div ref={scrollFade.ref} style={S.scrollCap5}>
+          {scrollFade.showFade && <div style={S.scrollFadeCue} />}
           {(deleted ?? []).map(p => (
             <div key={p.id} style={{ marginBottom: 14 }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
@@ -2112,10 +2200,13 @@ function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit, onOp
     );
   }
 
+  const scrollFade = useBottomScrollFade<HTMLDivElement>();
   return (
-    <div style={S.scroll}>
+    <div ref={scrollFade.ref} style={S.scroll}>
+      {scrollFade.showFade && <div style={S.scrollFadeCue} />}
       <div style={S.pageTitle}>Work</div>
       <div style={S.pageSub}>Active jobs by pursuit. Tap a row to edit.</div>
+      <FirstVisitTip id="work">Group your jobs under pursuits — a job, a business, a volunteer role — to see progress at a glance.</FirstVisitTip>
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 2 }}>
         <button style={S.prioLogLink} onClick={onOpenClosed}>Closed ›</button>
       </div>
@@ -2164,18 +2255,24 @@ function StewardChat({ messages, input, setInput, send, sending, tasks, onOpenPr
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+  const scrollFade = useBottomScrollFade<HTMLDivElement>();
   return (
     <div style={S.chatWrap}>
       <div style={{ padding: "4px 18px 0" }}>
-        <div style={S.pageTitle}>Steward</div>
+        {/* #39: matches the "Chat" nav label — Steward is the assistant's
+            name (chat bubbles already label its replies "STEWARD"), not
+            this screen's own title. */}
+        <div style={S.pageTitle}>Chat</div>
         <div style={S.pageSub}>Your partner, bringing just the truth.</div>
+        <FirstVisitTip id="chat">Talk it through with Steward — brain dump, ask for a plan, or just think out loud.</FirstVisitTip>
         <div style={S.toneRow}>
           {(["straight_talk", "middle_of_the_road", "take_it_easy"] as const).map(t => (
             <button key={t} style={{ ...S.toneOpt, ...(tone === t ? S.toneOptOn : {}) }} onClick={() => onSetTone(t)}>{TONE_LABEL[t]}</button>
           ))}
         </div>
       </div>
-      <div style={S.chatMsgs}>
+      <div ref={scrollFade.ref} style={S.chatMsgs}>
+        {scrollFade.showFade && <div style={S.scrollFadeCue} />}
         {messages.length === 0 && <div style={{ ...S.empty, marginTop: 24 }}>No messages yet. Brain dump anything.</div>}
         {messages.map((m, i) => {
           const mentioned = m.role === "assistant" ? tasksMentionedIn(m.content, tasks) : [];
@@ -2227,10 +2324,13 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onConnectCalendar,
     .map(j => jobCalendarEvent(j, (j.pursuitId !== null && pursuitNameById.get(j.pursuitId)) || ""))
     .filter((event): event is Event => Boolean(event));
   const calendarEvents = [...events, ...datedWork].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+  const scrollFade = useBottomScrollFade<HTMLDivElement>();
   return (
-    <div style={S.scroll}>
+    <div ref={scrollFade.ref} style={S.scroll}>
+      {scrollFade.showFade && <div style={S.scrollFadeCue} />}
       <div style={S.pageTitle}>This Week</div>
       <div style={S.pageSub}>Work, commitments, and calendar events in one pass.</div>
+      <FirstVisitTip id="week">See what's ahead — work, commitments, and calendar events together, one week at a time.</FirstVisitTip>
       {days.map(d => {
         const items = calendarEvents.filter(e => e.date === d.key);
         const isToday = d.key === todayKey;
@@ -2288,7 +2388,7 @@ function JobModal({ pursuits, onClose, onCreated }: { pursuits: Pursuit[]; onClo
 
   async function submit(final: Record<string, string>) {
     await saveStatus.save(async () => {
-      const r = await fetch(`${API}/jobs`, {
+      const r = await apiFetch(`${API}/jobs`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: final.name || "Untitled job", due: final.due || "", stage: "New", pct: 0, pursuitId,
@@ -2358,7 +2458,7 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
     if (!name.trim()) { setValidationErr("Name is required."); return; }
     setValidationErr("");
     await saveStatus.save(async () => {
-      const r = await fetch(`${API}/jobs/${job.id}`, {
+      const r = await apiFetch(`${API}/jobs/${job.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: name.trim(), pursuitId, stage: stage.trim(), due: due.trim(), pct, materials: materials.trim(), budget: budget.trim(), risk: risk.trim() }),
       });
@@ -2370,7 +2470,7 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
   async function del() {
     setDeleting(true);
     try {
-      const r = await fetch(`${API}/jobs/${job.id}`, { method: "DELETE" });
+      const r = await apiFetch(`${API}/jobs/${job.id}`, { method: "DELETE" });
       if (r.ok) { onDeleted(); onClose(); }
       else { setDelErr("Couldn't delete. Try again."); setDeleting(false); }
     } catch { setDelErr("Couldn't reach the server."); setDeleting(false); }
@@ -2448,8 +2548,8 @@ function PursuitModal({ pursuit, onClose, onSaved, onDeleted, onClosed }: {
     const body = { name: name.trim(), category, notes: notes.trim() };
     await saveStatus.save(async () => {
       const r = pursuit
-        ? await fetch(`${API}/pursuits/${pursuit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
-        : await fetch(`${API}/pursuits`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        ? await apiFetch(`${API}/pursuits/${pursuit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+        : await apiFetch(`${API}/pursuits`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (r.ok) { onSaved(); onClose(); return true; }
       return false;
     });
@@ -2459,7 +2559,7 @@ function PursuitModal({ pursuit, onClose, onSaved, onDeleted, onClosed }: {
     if (!pursuit) return;
     setDeleting(true);
     try {
-      const r = await fetch(`${API}/pursuits/${pursuit.id}`, { method: "DELETE" });
+      const r = await apiFetch(`${API}/pursuits/${pursuit.id}`, { method: "DELETE" });
       if (r.ok) { onDeleted?.(); onClose(); }
       else { setDelErr("Couldn't delete. Try again."); setDeleting(false); }
     } catch { setDelErr("Couldn't reach the server."); setDeleting(false); }
@@ -2472,7 +2572,7 @@ function PursuitModal({ pursuit, onClose, onSaved, onDeleted, onClosed }: {
     if (!pursuit) return;
     setClosing(true);
     try {
-      const r = await fetch(`${API}/pursuits/${pursuit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: true }) });
+      const r = await apiFetch(`${API}/pursuits/${pursuit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: true }) });
       if (r.ok) { onClosed?.(); onClose(); }
       else { setCloseErr("Couldn't close. Try again."); setClosing(false); }
     } catch { setCloseErr("Couldn't reach the server."); setClosing(false); }
@@ -2518,16 +2618,17 @@ function PursuitsClosedModal({ onClose, onChanged }: { onClose: () => void; onCh
   const [closed, setClosed] = useState<Pursuit[] | null>(null);
   const [reopeningIds, setReopeningIds] = useState<number[]>([]);
   const reopenError = useKeyedTapError<number>();
+  const scrollFade = useBottomScrollFade<HTMLDivElement>();
 
   const load = useCallback(() => {
-    fetch(`${API}/pursuits/deleted`).then(r => r.ok ? r.json() : null).then(d => setClosed(d?.items ?? []));
+    apiFetch(`${API}/pursuits/deleted`).then(r => r.ok ? r.json() : null).then(d => setClosed(d?.items ?? []));
   }, []);
   useEffect(() => { load(); }, [load]);
 
   async function reopen(id: number) {
     setReopeningIds(prev => [...prev, id]);
     try {
-      const r = await fetch(`${API}/pursuits/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: false }) });
+      const r = await apiFetch(`${API}/pursuits/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: false }) });
       if (r.ok) {
         setClosed(prev => prev ? prev.filter(p => p.id !== id) : prev);
         onChanged();
@@ -2541,7 +2642,8 @@ function PursuitsClosedModal({ onClose, onChanged }: { onClose: () => void; onCh
   return (
     <div style={M.overlay}>
       <ModalSheet title="Closed Pursuits" onClose={onClose}>
-        <div style={S.scrollCap5}>
+        <div ref={scrollFade.ref} style={S.scrollCap5}>
+          {scrollFade.showFade && <div style={S.scrollFadeCue} />}
           {(closed ?? []).map(p => (
             <div key={p.id} style={{ marginBottom: 14 }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
@@ -2574,7 +2676,7 @@ function PursuitCloseFinishedPrompt({ pursuit, onClose, onClosed }: { pursuit: P
   async function close() {
     setClosing(true);
     try {
-      const r = await fetch(`${API}/pursuits/${pursuit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: true }) });
+      const r = await apiFetch(`${API}/pursuits/${pursuit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: true }) });
       if (r.ok) { onClosed(); return; }
       setErr("Couldn't close. Try again.");
       setClosing(false);
@@ -2608,7 +2710,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
   const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(() => {
-    fetch(`${API}/tasks/${task.id}/history?today=${ymd(new Date())}`)
+    apiFetch(`${API}/tasks/${task.id}/history?today=${ymd(new Date())}`)
       .then(r => r.ok ? r.json() : null)
       .then(setHistory);
   }, [task.id]);
@@ -2616,7 +2718,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
 
   async function saveRecurrence() {
     await recurrenceSave.save(async () => {
-      const r = await fetch(`${API}/tasks/${task.id}`, {
+      const r = await apiFetch(`${API}/tasks/${task.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ recurrencePeriod: period, recurrenceTarget: period === "daily" ? 1 : target }),
       });
@@ -2627,7 +2729,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
   async function removeRecurrence() {
     setRemoving(true);
     try {
-      const r = await fetch(`${API}/tasks/${task.id}`, {
+      const r = await apiFetch(`${API}/tasks/${task.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ recurrencePeriod: null, recurrenceTarget: null }),
       });
@@ -2638,7 +2740,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
   }
   async function logToday() {
     try {
-      const r = await fetch(`${API}/tasks/${task.id}/complete`, {
+      const r = await apiFetch(`${API}/tasks/${task.id}/complete`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date: ymd(new Date()) }),
       });
       if (r.ok) { onChanged(); load(); return; }
@@ -2648,7 +2750,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
   async function del() {
     setDeleting(true);
     try {
-      const r = await fetch(`${API}/tasks/${task.id}`, { method: "DELETE" });
+      const r = await apiFetch(`${API}/tasks/${task.id}`, { method: "DELETE" });
       if (r.ok) { onChanged(); onClose(); return; }
     } catch { /* fall through */ }
     setDeleting(false);
@@ -2657,7 +2759,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
   async function setStatusValue(next: "open" | "stuck" | "done") {
     if (next === "done") {
       try {
-        const r = await fetch(`${API}/tasks/${task.id}`, {
+        const r = await apiFetch(`${API}/tasks/${task.id}`, {
           method: "PATCH", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ done: true, partial: false }),
         });
@@ -2669,7 +2771,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
     const prevStatus = status;
     setStatusState(next);
     try {
-      const r = await fetch(`${API}/tasks/${task.id}`, {
+      const r = await apiFetch(`${API}/tasks/${task.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ partial: next === "stuck" }),
       });
@@ -2681,7 +2783,7 @@ function PriorityDetailModal({ task, onClose, onChanged }: { task: Task; onClose
   async function saveNotes(value: string) {
     if (value === notesBaselineRef.current) return;
     const ok = await notesSave.save(async () => {
-      const r = await fetch(`${API}/tasks/${task.id}`, {
+      const r = await apiFetch(`${API}/tasks/${task.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ notes: value }),
       });
@@ -2781,10 +2883,12 @@ function CompletedLogModal({ onClose, onChanged }: { onClose: () => void; onChan
   const [deleted, setDeleted] = useState<Task[] | null>(null);
   const [reopeningIds, setReopeningIds] = useState<number[]>([]);
   const reopenError = useKeyedTapError<number>();
+  const completedFade = useBottomScrollFade<HTMLDivElement>();
+  const deletedFade = useBottomScrollFade<HTMLDivElement>();
 
   const load = useCallback(() => {
-    fetch(`${API}/tasks/completed`).then(r => r.ok ? r.json() : null).then(setData);
-    fetch(`${API}/tasks/deleted`).then(r => r.ok ? r.json() : null).then(d => setDeleted(d?.items ?? []));
+    apiFetch(`${API}/tasks/completed`).then(r => r.ok ? r.json() : null).then(setData);
+    apiFetch(`${API}/tasks/deleted`).then(r => r.ok ? r.json() : null).then(d => setDeleted(d?.items ?? []));
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -2793,7 +2897,7 @@ function CompletedLogModal({ onClose, onChanged }: { onClose: () => void; onChan
   async function reopen(id: number, body: { done: boolean } | { deleted: boolean }) {
     setReopeningIds(prev => [...prev, id]);
     try {
-      const r = await fetch(`${API}/tasks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const r = await apiFetch(`${API}/tasks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (r.ok) {
         setData(prev => prev && "done" in body ? { ...prev, items: prev.items.filter(t => t.id !== id), doneCount: prev.doneCount - 1 } : prev);
         setDeleted(prev => prev && "deleted" in body ? prev.filter(t => t.id !== id) : prev);
@@ -2810,7 +2914,8 @@ function CompletedLogModal({ onClose, onChanged }: { onClose: () => void; onChan
       <ModalSheet title="Completed Priorities" onClose={onClose}>
         <div style={M.track}><div style={{ ...M.fill, width: `${data?.pct ?? 0}%` }} /></div>
         <div style={{ ...S.prioSub, marginBottom: 14 }}>{data?.doneCount ?? 0} of {data?.totalCount ?? 0} priorities completed ({data?.pct ?? 0}%)</div>
-        <div style={S.scrollCap5}>
+        <div ref={completedFade.ref} style={S.scrollCap5}>
+          {completedFade.showFade && <div style={S.scrollFadeCue} />}
           {(data?.items ?? []).map(t => (
             <div key={t.id} style={{ marginBottom: 14 }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
@@ -2830,7 +2935,8 @@ function CompletedLogModal({ onClose, onChanged }: { onClose: () => void; onChan
         </div>
 
         <div style={{ ...E.label, marginTop: 22, marginBottom: 8 }}>DELETED</div>
-        <div style={S.scrollCap5}>
+        <div ref={deletedFade.ref} style={S.scrollCap5}>
+          {deletedFade.showFade && <div style={S.scrollFadeCue} />}
           {(deleted ?? []).map(t => (
             <div key={t.id} style={{ marginBottom: 14 }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
@@ -2878,7 +2984,7 @@ function JournalHistoryModal({ onClose, onSaved }: { onClose: () => void; onSave
 
   async function save(date: string) {
     await saveStatus.save(date, async () => {
-      const r = await fetch(`${API}/journal`, {
+      const r = await apiFetch(`${API}/journal`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ date, commit_text: intentDraft, reflect: reflectDraft }),
       });
@@ -2916,7 +3022,7 @@ function JournalHistoryModal({ onClose, onSaved }: { onClose: () => void; onSave
               )}
             </div>
           ))}
-          {entries && entries.length === 0 && <div style={S.empty}>No journal entries yet.</div>}
+          {entries && entries.length === 0 && <div style={S.empty}>No journal entries yet. Write today's reflection from the Today tab and it'll show up here.</div>}
         </div>
         <button style={M.cancel} onClick={onClose}>Close</button>
       </ModalSheet>
@@ -2985,11 +3091,11 @@ function AuthGate({
           <div style={G.welcome}>Thanks for signing up — you're on the list. We'll let you in soon.</div>
         ) : step === "providers" ? (
           <>
-            <div style={G.welcome}>Welcome back.</div>
+            <div style={G.welcome}>Sign in to Steward</div>
             <button style={G.googleBtn} onClick={() => onLogin("google")}>Continue with Google</button>
             <button style={{ ...G.googleBtn, marginTop: 10 }} onClick={() => onLogin("microsoft")}>Continue with Microsoft</button>
             <button style={{ ...G.googleBtn, marginTop: 10 }} onClick={() => { setError(""); setStep("email"); }}>Continue with Email</button>
-            <div style={G.notice}>New here? Sign in above to request access.</div>
+            <div style={G.notice}>First time here? Use any option above — we'll review your access and let you know.</div>
           </>
         ) : step === "email" ? (
           <>
@@ -3048,7 +3154,6 @@ function AuthGate({
             <button style={{ ...G.addHomeToggle, marginTop: 10 }} onClick={() => { setError(""); setCode(""); setStep("email"); }}>Use a different email</button>
           </>
         )}
-        <AddToHomeScreen />
       </div>
     </div>
   );
@@ -3109,26 +3214,32 @@ function AddToHomeScreen() {
 
 const G: Record<string, CSSProperties> = {
   wrap: { position: "relative", zIndex: 10, flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px" },
-  loading: { color: C.parchmentLow, fontSize: 14, letterSpacing: "0.04em" },
+  // #37: parchmentLow measures ~3.4:1 against C.ink — fails WCAG AA (needs
+  // 4.5:1 for normal text). parchmentDim measures ~6.3:1, comfortably passes.
+  loading: { color: C.parchmentDim, fontSize: 14, letterSpacing: "0.04em" },
   welcome: { fontSize: 26, fontWeight: 400, color: C.parchment, textShadow: "0 2px 8px rgba(0,0,0,0.5)", marginBottom: 22, textAlign: "center" },
   googleBtn: { width: "100%", background: "rgba(30,26,16,0.62)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 12, color: C.parchmentMid, fontSize: 14, fontWeight: 700, padding: "13px 16px", cursor: "pointer", fontFamily: F },
-  notice: { fontSize: 12, color: C.parchmentLow, marginTop: 14, textAlign: "center" },
+  notice: { fontSize: 14, color: C.parchmentDim, marginTop: 14, textAlign: "center" },
   addHome: { marginTop: 18, width: "100%", textAlign: "center" },
-  addHomeToggle: { background: "none", border: "none", color: C.brassSoft, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: F, textDecoration: "underline", textUnderlineOffset: 3 },
+  addHomeToggle: { background: "none", border: "none", color: C.brassSoft, fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: F, textDecoration: "underline", textUnderlineOffset: 3 },
   addHomePanel: { marginTop: 12, background: "rgba(30,26,16,0.5)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, padding: "14px 16px", textAlign: "left" },
   addHomeTabs: { display: "flex", gap: 8, marginBottom: 12 },
-  addHomeTab: { flex: 1, background: "rgba(20,18,11,0.6)", border: "1px solid rgba(210,190,130,0.14)", borderRadius: 8, color: C.parchmentDim, fontSize: 12, fontWeight: 600, padding: "7px 10px", cursor: "pointer", fontFamily: F, textAlign: "center" },
+  addHomeTab: { flex: 1, background: "rgba(20,18,11,0.6)", border: "1px solid rgba(210,190,130,0.14)", borderRadius: 8, color: C.parchmentDim, fontSize: 14, fontWeight: 600, padding: "7px 10px", cursor: "pointer", fontFamily: F, textAlign: "center" },
   addHomeTabOn: { borderColor: C.brass, color: C.brass, boxShadow: `0 0 10px ${C.brassGlow}` },
-  addHomeStep: { fontSize: 12.5, color: C.parchmentMid, lineHeight: 1.5, marginBottom: 6, display: "flex", gap: 8 },
+  addHomeStep: { fontSize: 14, color: C.parchmentMid, lineHeight: 1.5, marginBottom: 6, display: "flex", gap: 8 },
   addHomeStepNum: { color: C.brassSoft, fontWeight: 700, flexShrink: 0 },
 };
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 const R: Record<string, CSSProperties> = {
-  root: { width: "100%", maxWidth: 440, margin: "0 auto", height: "100vh", display: "flex", flexDirection: "column", fontFamily: F, color: C.parchment, position: "relative", overflow: "hidden", background: C.ink },
+  // 100dvh (#37) — 100vh doesn't account for mobile browser toolbars
+  // showing/hiding, which clips or letterboxes the layout as they animate.
+  root: { width: "100%", maxWidth: 440, margin: "0 auto", height: "100dvh", display: "flex", flexDirection: "column", fontFamily: F, color: C.parchment, position: "relative", overflow: "hidden", background: C.ink },
   woodLayer: { position: "fixed", inset: 0, zIndex: 0, backgroundImage: `url(${WOOD})`, backgroundSize: "cover", backgroundPosition: "center", backgroundRepeat: "no-repeat" },
   ambient: { position: "fixed", inset: 0, zIndex: 1, background: "radial-gradient(120% 80% at 50% 0%, rgba(40,36,20,0.25) 0%, rgba(8,10,5,0.45) 70%, rgba(4,5,2,0.7) 100%)" },
-  header: { position: "relative", zIndex: 10, display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "54px 24px 14px" },
+  // Safe-area padding (#37) added on top of the existing baseline so the
+  // header never sits under the notch/Dynamic Island on devices that have one.
+  header: { position: "relative", zIndex: 10, display: "flex", justifyContent: "space-between", alignItems: "flex-start", paddingTop: "calc(54px + env(safe-area-inset-top, 0px))", paddingLeft: "calc(24px + env(safe-area-inset-left, 0px))", paddingRight: "calc(24px + env(safe-area-inset-right, 0px))", paddingBottom: 14 },
   logo: { display: "flex", alignItems: "baseline" },
   logoText: { fontSize: 42, fontWeight: 400, color: C.parchment, letterSpacing: "-0.02em", lineHeight: 1, textShadow: "0 2px 8px rgba(0,0,0,0.5)" },
   logoDot: { fontSize: 42, color: C.brass, textShadow: `0 0 20px ${C.brassGlow}` },
@@ -3137,84 +3248,99 @@ const R: Record<string, CSSProperties> = {
   screen: { flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", position: "relative", zIndex: 10 },
   navWrap: { position: "relative", zIndex: 10, background: "linear-gradient(0deg,rgba(8,10,5,0.95),rgba(8,10,5,0.8))", backdropFilter: "blur(20px)" },
   navLine: { height: 1, background: `linear-gradient(90deg,transparent,${C.brassDeep},${C.brass},${C.brassDeep},transparent)`, boxShadow: `0 0 10px ${C.brassGlow}` },
-  nav: { display: "flex", padding: "10px 0 20px" },
+  // Safe-area padding (#37) so the nav bar's bottom padding clears the
+  // home-indicator area instead of sitting right up against it.
+  nav: { display: "flex", paddingTop: 10, paddingBottom: "calc(20px + env(safe-area-inset-bottom, 0px))" },
   navBtn: { flex: 1, background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 5 },
   stewardIcon: { width: 20, height: 20, borderRadius: "50%", border: `1.6px solid ${C.parchmentLow}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: C.parchmentLow, fontFamily: F },
   stewardIconOn: { borderColor: C.brass, color: C.brass, boxShadow: `0 0 10px ${C.brassGlow}` },
-  navLabel: { fontSize: 11, color: C.parchmentLow },
+  navLabel: { fontSize: 14, color: C.parchmentDim },
   navLabelOn: { color: C.brass },
 };
 const S: Record<string, CSSProperties> = {
-  scroll: { flex: 1, overflowY: "auto", padding: "16px 18px 0" },
+  scroll: { flex: 1, overflowY: "auto", padding: "16px 18px 0", position: "relative" },
+  // Bottom fade cue (#37) — hints there's more to scroll without a visible
+  // scrollbar; ScrollFadeArea shows/hides it based on actual scroll position.
+  scrollFadeCue: { position: "absolute", left: 0, right: 0, bottom: 0, height: 28, background: "linear-gradient(to bottom, transparent, rgba(8,10,5,0.85))", pointerEvents: "none" },
   greetRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, gap: 10 },
   greet: { fontSize: 27, fontWeight: 400, color: C.parchment, lineHeight: 1.15, textShadow: "0 2px 6px rgba(0,0,0,0.5)" },
   greetSub: { fontSize: 14, color: C.parchmentDim, marginTop: 5 },
-  dateChip: { display: "flex", alignItems: "center", background: "rgba(30,26,16,0.5)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 22, padding: "7px 13px", fontSize: 12, color: C.parchmentMid, flexShrink: 0, whiteSpace: "nowrap", boxShadow: "0 2px 8px rgba(0,0,0,0.3)" },
-  verseCard: { ...glass, padding: "22px 20px", marginBottom: 14, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", border: `1.5px solid ${C.brass}`, boxShadow: `0 0 28px ${C.brassGlow},0 6px 22px rgba(0,0,0,0.55),inset 0 1px 0 rgba(255,240,200,0.08),-4px 0 20px ${C.brassGlow}` },
+  dateChip: { display: "flex", alignItems: "center", background: "rgba(30,26,16,0.5)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 22, padding: "7px 13px", fontSize: 14, color: C.parchmentMid, flexShrink: 0, whiteSpace: "nowrap", boxShadow: "0 2px 8px rgba(0,0,0,0.3)" },
   card: { ...glass, padding: "18px 20px", marginBottom: 14 },
+  // #40: quiet, not a "content card" — a dismissible orientation note.
+  tip: { display: "flex", alignItems: "flex-start", gap: 4, background: "rgba(30,26,16,0.5)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, padding: "12px 4px 12px 14px", marginBottom: 14 },
+  tipText: { flex: 1, fontSize: 14, color: C.parchmentMid, lineHeight: 1.5 },
+  // 44x44 hit area (#37) via padding/negative margins, not a blown-up glyph.
+  tipClose: { flexShrink: 0, width: 44, height: 44, marginTop: -10, marginBottom: -10, background: "none", border: "none", color: C.parchmentDim, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: F },
   cardCentered: { ...glass, padding: "22px 20px", marginBottom: 14, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" },
   eyebrow: { display: "flex", alignItems: "center", gap: 7, marginBottom: 12 },
   prioHeadRow: { display: "flex", justifyContent: "space-between", alignItems: "center" },
-  prioLogLink: { background: "none", border: "none", color: C.brassSoft, fontSize: 12, cursor: "pointer", fontFamily: F },
-  prioExpandBtn: { width: "100%", background: "none", border: "1px dashed rgba(210,190,130,0.22)", borderRadius: 12, color: C.brassSoft, fontSize: 12.5, fontWeight: 600, padding: "10px", cursor: "pointer", fontFamily: F, marginTop: 4 },
+  prioLogLink: { background: "none", border: "none", color: C.brassSoft, fontSize: 14, cursor: "pointer", fontFamily: F },
+  prioExpandBtn: { width: "100%", background: "none", border: "1px dashed rgba(210,190,130,0.22)", borderRadius: 12, color: C.brassSoft, fontSize: 14, fontWeight: 600, padding: "10px", cursor: "pointer", fontFamily: F, marginTop: 4 },
   eyeText: { fontSize: 11, letterSpacing: "0.16em", color: C.brassSoft, fontWeight: 600 },
   verseText: { fontSize: 18, lineHeight: 1.6, color: C.parchment, marginBottom: 14, textAlign: "center" },
   verseRef: { fontSize: 11, letterSpacing: "0.12em", color: C.brassSoft },
   intent: { fontSize: 15, lineHeight: 1.7, color: C.parchment, textAlign: "center" },
   intentInput: { width: "100%", background: "none", border: "none", outline: "none", resize: "none", fontFamily: F, fontSize: 15, lineHeight: 1.7, color: C.parchment, textAlign: "center" },
-  empty: { fontSize: 13, color: C.parchmentDim, textAlign: "center", padding: "6px 0" },
-  pulseSub: { fontSize: 12, color: C.parchmentDim, marginTop: -6, marginBottom: 14 },
+  empty: { fontSize: 14, color: C.parchmentDim, textAlign: "center", padding: "6px 0" },
+  pulseSub: { fontSize: 14, color: C.parchmentDim, marginTop: -6, marginBottom: 14 },
   pulseRow: { marginBottom: 10 },
   pulseRowTop: { display: "flex", justifyContent: "space-between", alignItems: "center" },
   pulseLabel: { fontSize: 14, color: C.parchment },
   pulseBtns: { display: "flex", gap: 8 },
-  pulseBtn: { width: 30, height: 30, borderRadius: "50%", border: "1px solid rgba(210,190,130,0.22)", background: "rgba(30,26,16,0.5)", color: C.parchmentDim, fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: F, display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1 },
+  // 44x44 (#37) — minimum comfortable tap target; was 30x30.
+  pulseBtn: { width: 44, height: 44, borderRadius: "50%", border: "1px solid rgba(210,190,130,0.22)", background: "rgba(30,26,16,0.5)", color: C.parchmentDim, fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: F, display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1 },
   pulseNoteInput: { width: "100%", background: "none", border: "none", borderBottom: "1px solid rgba(210,190,130,0.16)", outline: "none", fontFamily: F, fontSize: 12, color: C.parchmentMid, padding: "4px 0", marginTop: 6 },
   prioLine: { position: "absolute", left: 19, top: 18, bottom: 20, width: 2, background: `linear-gradient(180deg,${C.walnutLite},${C.walnut})`, boxShadow: "0 0 4px rgba(0,0,0,0.5)" },
   prioRow: { display: "flex", gap: 14, alignItems: "flex-start", position: "relative" },
-  prioNum: { width: 40, height: 40, borderRadius: "50%", flexShrink: 0, background: `radial-gradient(circle at 35% 28%,${C.walnutMid},${C.walnut} 70%,#3E2814)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, color: C.parchment, boxShadow: `0 3px 10px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,220,160,0.25),inset 0 -2px 4px rgba(0,0,0,0.4),0 0 0 5px rgba(20,18,11,0.85)`, zIndex: 1, textShadow: "0 1px 2px rgba(0,0,0,0.5)", border: "none", cursor: "pointer" },
+  // 44x44 (#37) — minimum comfortable tap target for the priority-done toggle; was 40x40.
+  prioNum: { width: 44, height: 44, borderRadius: "50%", flexShrink: 0, background: `radial-gradient(circle at 35% 28%,${C.walnutMid},${C.walnut} 70%,#3E2814)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, color: C.parchment, boxShadow: `0 3px 10px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,220,160,0.25),inset 0 -2px 4px rgba(0,0,0,0.4),0 0 0 5px rgba(20,18,11,0.85)`, zIndex: 1, textShadow: "0 1px 2px rgba(0,0,0,0.5)", border: "none", cursor: "pointer" },
   prioNumDone: { background: `radial-gradient(circle at 35% 28%,#7A9860,#4E6838 70%,#26361A)`, opacity: 0.85 },
   prioRowYellow: { boxShadow: `inset 3px 0 0 0 ${C.brass}` },
   prioRowRed: { boxShadow: "inset 3px 0 0 0 #C87060" },
   prioRowGreen: { boxShadow: "inset 3px 0 0 0 #8FAE6E" },
-  prioSubRed: { fontSize: 12, color: "#C87060", lineHeight: 1.4 },
-  prioSubGreen: { fontSize: 12, color: "#8FAE6E", lineHeight: 1.4 },
-  prioEditBtn: { flexShrink: 0, alignSelf: "center", background: "none", border: "none", color: C.brassSoft, fontSize: 12.5, fontWeight: 600, padding: "6px 4px", cursor: "pointer", fontFamily: F },
+  prioSubRed: { fontSize: 14, color: "#C87060", lineHeight: 1.4 },
+  prioSubGreen: { fontSize: 14, color: "#8FAE6E", lineHeight: 1.4 },
+  prioEditBtn: { flexShrink: 0, alignSelf: "center", background: "none", border: "none", color: C.brassSoft, fontSize: 14, fontWeight: 600, padding: "6px 4px", cursor: "pointer", fontFamily: F },
   prioTitle: { fontSize: 15, color: C.parchment, lineHeight: 1.4, marginBottom: 3 },
-  prioSub: { fontSize: 12, color: C.parchmentDim, lineHeight: 1.4 },
+  prioSub: { fontSize: 14, color: C.parchmentDim, lineHeight: 1.4 },
   // Caps a list to roughly 5 rows tall, scrolling for the rest (Completed / Deleted logs).
-  scrollCap5: { maxHeight: 300, overflowY: "auto" as const, paddingRight: 4 },
+  scrollCap5: { maxHeight: 300, overflowY: "auto" as const, paddingRight: 4, position: "relative" },
   swipeWrap: { position: "relative", overflow: "hidden", borderRadius: 12, touchAction: "pan-y" },
   swipeFront: { background: "transparent", width: "100%" },
-  deleteCue: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: 22, border: "none", background: "#C87060", color: "#fff", fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", cursor: "pointer", fontFamily: F },
-  completeCue: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "flex-start", paddingLeft: 22, border: "none", background: "#8FAE6E", color: "#fff", fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", cursor: "pointer", fontFamily: F },
+  deleteCue: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: 22, border: "none", background: "#C87060", color: "#fff", fontSize: 14, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", cursor: "pointer", fontFamily: F },
+  completeCue: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "flex-start", paddingLeft: 22, border: "none", background: "#8FAE6E", color: "#fff", fontSize: 14, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", cursor: "pointer", fontFamily: F },
   upRow: { display: "flex" },
   upCol: { flex: 1, paddingRight: 12 },
   upBorder: { borderRight: "1px solid rgba(210,190,130,0.14)", marginRight: 12 },
-  upTime: { display: "flex", alignItems: "center", fontSize: 12, color: C.brassSoft, marginBottom: 6, fontWeight: 600 },
+  upTime: { display: "flex", alignItems: "center", fontSize: 14, color: C.brassSoft, marginBottom: 6, fontWeight: 600 },
   upTitle: { fontSize: 14, color: C.parchment, marginBottom: 2, fontWeight: 600 },
-  upSub: { fontSize: 11, color: C.parchmentDim, marginBottom: 8 },
+  upSub: { fontSize: 14, color: C.parchmentDim, marginBottom: 8 },
   upTag: { display: "inline-block", fontSize: 9, letterSpacing: "0.1em", borderRadius: 5, padding: "3px 8px", fontWeight: 600, border: "1px solid" },
   tagWork: { color: "#A8C888", background: "rgba(120,150,90,0.18)", borderColor: "rgba(150,180,110,0.4)" },
   tagHer: { color: "#D4A090", background: "rgba(160,90,70,0.18)", borderColor: "rgba(190,120,100,0.4)" },
   journalCard: { ...glass, padding: "16px 20px", marginBottom: 14, display: "flex", alignItems: "center", gap: 12 },
-  journalText: { fontSize: 13, color: C.parchmentMid, marginTop: 2 },
+  journalText: { fontSize: 14, color: C.parchmentMid, marginTop: 2 },
   journalInput: { width: "100%", marginTop: 10, background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: "10px 12px", outline: "none", resize: "vertical", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
-  writeBtn: { flexShrink: 0, alignSelf: "flex-start", background: "transparent", border: `1.5px solid ${C.brass}`, borderRadius: 24, color: C.brass, fontSize: 13, fontWeight: 600, padding: "10px 18px", cursor: "pointer", boxShadow: `0 0 16px ${C.brassGlow},inset 0 0 8px rgba(216,170,62,0.1)` },
+  // #38: quiet secondary-button treatment — writing a reflection is
+  // optional, not the primary daily action, so this no longer competes
+  // with genuinely primary buttons for attention.
+  writeBtn: { flexShrink: 0, alignSelf: "flex-start", background: "transparent", border: "1.5px solid rgba(210,190,130,0.3)", borderRadius: 24, color: C.parchmentDim, fontSize: 14, fontWeight: 600, padding: "10px 18px", cursor: "pointer" },
   msgBar: { display: "flex", alignItems: "center", gap: 11, background: "rgba(8,10,5,0.55)", backdropFilter: "blur(8px)", borderRadius: 30, padding: "11px 11px 11px 17px", marginBottom: 14, border: "1px solid rgba(210,190,130,0.16)", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.5),0 2px 8px rgba(0,0,0,0.3)" },
   msgInput: { flex: 1, background: "none", border: "none", color: C.parchment, fontSize: 14, outline: "none", fontFamily: F },
-  msgSend: { width: 36, height: 36, borderRadius: "50%", background: `radial-gradient(circle at 35% 28%,${C.brass},${C.brassDeep})`, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: `0 2px 12px ${C.brassGlow},inset 0 1px 0 rgba(255,240,200,0.3)` },
-  micBtn: { width: 32, height: 32, borderRadius: "50%", background: "rgba(30,26,16,0.6)", border: "1px solid rgba(210,190,130,0.16)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.2s" },
+  // 44x44 (#37) — minimum comfortable tap target; msgSend was 36x36, micBtn 32x32.
+  msgSend: { width: 44, height: 44, borderRadius: "50%", background: `radial-gradient(circle at 35% 28%,${C.brass},${C.brassDeep})`, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: `0 2px 12px ${C.brassGlow},inset 0 1px 0 rgba(255,240,200,0.3)` },
+  micBtn: { width: 44, height: 44, borderRadius: "50%", background: "rgba(30,26,16,0.6)", border: "1px solid rgba(210,190,130,0.16)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.2s" },
   micBtnOn: { background: `radial-gradient(circle at 35% 28%,${C.brass},${C.brassDeep})`, border: `1px solid ${C.brass}`, boxShadow: `0 0 14px ${C.brassGlow}`, animation: "micPulse 1s ease-in-out infinite" },
   bottomTag: { textAlign: "center", fontSize: 10, letterSpacing: "0.18em", color: C.brassSoft, opacity: 0.7, marginBottom: 8 },
   pageTitle: { fontSize: 28, fontWeight: 400, color: C.parchment, marginBottom: 4, textShadow: "0 2px 6px rgba(0,0,0,0.5)" },
-  pageSub: { fontSize: 13, color: C.parchmentDim, marginBottom: 18 },
+  pageSub: { fontSize: 14, color: C.parchmentDim, marginBottom: 18 },
   toneRow: { display: "flex", gap: 6, marginBottom: 14, marginTop: -4 },
-  toneOpt: { flex: 1, background: "rgba(24,20,12,0.55)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 14, color: C.parchmentDim, fontSize: 11.5, fontWeight: 600, padding: "7px 4px", cursor: "pointer", fontFamily: F },
+  toneOpt: { flex: 1, background: "rgba(24,20,12,0.55)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 14, color: C.parchmentDim, fontSize: 14, fontWeight: 600, padding: "7px 4px", cursor: "pointer", fontFamily: F },
   toneOptOn: { borderColor: C.brass, background: "rgba(216,170,62,0.16)", color: C.parchment },
   logRow: { display: "flex", gap: 8, marginBottom: 14 },
   logInput: { flex: 1, background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: "12px 14px", outline: "none", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
-  logBtn: { background: `linear-gradient(135deg,${C.walnutMid},${C.walnut})`, border: "none", borderRadius: 12, color: C.parchment, fontSize: 13, fontWeight: 700, padding: "12px 18px", cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,220,160,0.15)" },
+  logBtn: { background: `linear-gradient(135deg,${C.walnutMid},${C.walnut})`, border: "none", borderRadius: 12, color: C.parchment, fontSize: 14, fontWeight: 700, padding: "12px 18px", cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,220,160,0.15)" },
   commitRow: { display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 14 },
   commitCard: { display: "flex", flexDirection: "column", width: "100%", background: "transparent" },
   commitExpandBtn: { flexShrink: 0, alignSelf: "center", background: "none", border: "none", color: C.parchmentDim, fontSize: 14, padding: "6px 4px", cursor: "pointer", fontFamily: F },
@@ -3223,49 +3349,50 @@ const S: Record<string, CSSProperties> = {
   tribeNameBtn: { flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer", fontFamily: F, padding: 0 },
   dragHandle: { flexShrink: 0, width: 22, background: "none", border: "none", color: C.parchmentLow, fontSize: 16, cursor: "grab", padding: "6px 0", touchAction: "none", fontFamily: F },
   peopleDivider: { height: 1, background: "rgba(210,190,130,0.14)", margin: "4px 0 10px" },
-  tribeTagSelect: { width: "100%", background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchmentMid, fontSize: 13, fontFamily: F, padding: "10px 12px", outline: "none", marginBottom: 14 },
-  dot: { width: 22, height: 22, borderRadius: "50%", flexShrink: 0, marginTop: 1, background: "rgba(0,0,0,0.2)", border: `1.5px solid ${C.parchmentLow}`, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#7AB46A", boxShadow: "inset 0 1px 3px rgba(0,0,0,0.4)" },
+  tribeTagSelect: { width: "100%", background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchmentMid, fontSize: 14, fontFamily: F, padding: "10px 12px", outline: "none", marginBottom: 14 },
+  // 44x44 (#37) — minimum comfortable tap target for the kept/reopen toggle; was 22x22.
+  dot: { width: 44, height: 44, borderRadius: "50%", flexShrink: 0, marginTop: 1, background: "rgba(0,0,0,0.2)", border: `1.5px solid ${C.parchmentLow}`, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, color: "#7AB46A", boxShadow: "inset 0 1px 3px rgba(0,0,0,0.4)" },
   dotDone: { background: "rgba(120,180,106,0.25)", borderColor: "#7AB46A" },
   jobRow: { marginBottom: 14, paddingBottom: 14, borderBottom: "1px solid rgba(210,190,130,0.12)" },
   workList: { ...glass, padding: "10px 0", marginBottom: 12 },
-  workGroup: { fontSize: 10, fontWeight: 800, letterSpacing: "0.13em", padding: "8px 16px 5px" },
+  workGroup: { fontSize: 14, fontWeight: 800, letterSpacing: "0.13em", padding: "8px 16px 5px" },
   workRow: { width: "100%", display: "grid", gridTemplateColumns: "1fr auto", gap: "2px 10px", alignItems: "center", background: "transparent", border: "none", borderTop: "1px solid rgba(210,190,130,0.09)", color: C.parchment, textAlign: "left", padding: "9px 16px 10px", cursor: "pointer", fontFamily: F },
   workMain: { minWidth: 0 },
   workName: { fontSize: 14, color: C.parchment, lineHeight: 1.25, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
-  workMeta: { fontSize: 11, color: C.parchmentDim, lineHeight: 1.35, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
-  workPct: { fontSize: 12, color: C.brassSoft, fontWeight: 700, gridColumn: "2", gridRow: "1 / span 2" },
+  workMeta: { fontSize: 14, color: C.parchmentDim, lineHeight: 1.35, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  workPct: { fontSize: 14, color: C.brassSoft, fontWeight: 700, gridColumn: "2", gridRow: "1 / span 2" },
   workTrack: { gridColumn: "1 / -1", height: 3, background: "rgba(0,0,0,0.42)", borderRadius: 3, overflow: "hidden", marginTop: 6 },
   workTrackFill: { height: "100%", borderRadius: 3, transition: "width 0.3s" },
   jobTop: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 2 },
   trackRow: { display: "flex", alignItems: "center", gap: 8 },
   track: { flex: 1, height: 5, background: "rgba(0,0,0,0.45)", borderRadius: 3, overflow: "hidden", boxShadow: "inset 0 1px 3px rgba(0,0,0,0.5)" },
   trackFill: { height: "100%", borderRadius: 3, transition: "width 0.4s" },
-  intakeBtn: { width: "100%", borderRadius: 14, border: `1px dashed ${C.walnutLite}80`, background: "rgba(90,58,32,0.18)", color: C.parchmentMid, fontSize: 13, fontWeight: 600, padding: "15px", cursor: "pointer", fontFamily: F },
+  intakeBtn: { width: "100%", borderRadius: 14, border: `1px dashed ${C.walnutLite}80`, background: "rgba(90,58,32,0.18)", color: C.parchmentMid, fontSize: 14, fontWeight: 600, padding: "15px", cursor: "pointer", fontFamily: F },
   chatWrap: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", paddingTop: 12 },
-  chatMsgs: { flex: 1, overflowY: "auto", padding: "12px 18px" },
+  chatMsgs: { flex: 1, overflowY: "auto", padding: "12px 18px", position: "relative" },
   bubble: { marginBottom: 14, maxWidth: "86%" },
   bubbleA: { marginRight: "auto" },
   bubbleU: { marginLeft: "auto" },
   bubbleName: { fontSize: 9, letterSpacing: "0.14em", color: C.brassSoft, marginBottom: 5, fontWeight: 600 },
   bubbleText: { ...glass, padding: "13px 15px", fontSize: 14, lineHeight: 1.65, color: C.parchment, display: "inline-block", whiteSpace: "pre-wrap", borderTopLeftRadius: 5 },
-  chatPrioChip: { alignSelf: "flex-start", background: "rgba(216,170,62,0.14)", border: "1px solid rgba(216,170,62,0.4)", borderRadius: 16, color: C.brassSoft, fontSize: 12, fontWeight: 600, padding: "6px 12px", cursor: "pointer", fontFamily: F },
+  chatPrioChip: { alignSelf: "flex-start", background: "rgba(216,170,62,0.14)", border: "1px solid rgba(216,170,62,0.4)", borderRadius: 16, color: C.brassSoft, fontSize: 14, fontWeight: 600, padding: "6px 12px", cursor: "pointer", fontFamily: F },
   bubbleTextU: { background: `linear-gradient(135deg,${C.walnut},${C.walnutMid})`, border: `1px solid ${C.walnutLite}50`, borderTopLeftRadius: 18, borderTopRightRadius: 5 },
   chatBar: { display: "flex", gap: 8, padding: "10px 18px 16px", borderTop: "1px solid rgba(210,190,130,0.12)", alignItems: "center" },
   calendarCard: { ...glass, padding: "14px 16px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
   calendarTitle: { fontSize: 14, color: C.parchment, fontWeight: 700, marginBottom: 3 },
-  calendarBtn: { background: `linear-gradient(135deg,${C.walnutMid},${C.walnut})`, border: "none", borderRadius: 12, color: C.parchment, fontSize: 13, fontWeight: 700, padding: "10px 14px", cursor: "pointer", fontFamily: F, flexShrink: 0, boxShadow: "0 2px 8px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,220,160,0.15)" },
-  calendarRemoveBtn: { background: "none", border: `1px solid rgba(200,112,96,0.4)`, borderRadius: 8, color: "#C87060", fontSize: 11, fontWeight: 600, padding: "4px 10px", cursor: "pointer", fontFamily: F, flexShrink: 0 },
+  calendarBtn: { background: `linear-gradient(135deg,${C.walnutMid},${C.walnut})`, border: "none", borderRadius: 12, color: C.parchment, fontSize: 14, fontWeight: 700, padding: "10px 14px", cursor: "pointer", fontFamily: F, flexShrink: 0, boxShadow: "0 2px 8px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,220,160,0.15)" },
+  calendarRemoveBtn: { background: "none", border: `1px solid rgba(200,112,96,0.4)`, borderRadius: 8, color: "#C87060", fontSize: 14, fontWeight: 600, padding: "4px 10px", cursor: "pointer", fontFamily: F, flexShrink: 0 },
   weekRow: { display: "flex", gap: 14, alignItems: "flex-start", paddingBottom: 14, marginBottom: 14, borderBottom: "1px solid rgba(210,190,130,0.12)" },
   weekToday: { ...glass, padding: "14px", border: `1px solid ${C.brass}50`, boxShadow: `0 0 18px ${C.brassGlow}`, margin: "0 -2px 14px" },
   weekL: { width: 42, flexShrink: 0 },
-  weekDay: { fontSize: 12, fontWeight: 700, color: C.parchmentMid, textTransform: "uppercase" },
+  weekDay: { fontSize: 14, fontWeight: 700, color: C.parchmentMid, textTransform: "uppercase" },
   todayPill: { fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", background: `linear-gradient(135deg,${C.brass},${C.brassDeep})`, color: C.ink, borderRadius: 6, padding: "3px 9px", fontWeight: 700, alignSelf: "center", flexShrink: 0, boxShadow: `0 2px 8px ${C.brassGlow}` },
   weekItem: { marginBottom: 8 },
   weekItemTop: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 },
-  weekTime: { fontSize: 11, color: C.brassSoft, flexShrink: 0 },
+  weekTime: { fontSize: 14, color: C.brassSoft, flexShrink: 0 },
   calendarBottom: { borderTop: "1px solid rgba(210,190,130,0.12)", marginTop: 8, paddingTop: 14, display: "flex", flexDirection: "column", gap: 8, alignItems: "stretch" },
-  calendarAccount: { display: "flex", justifyContent: "space-between", alignItems: "center", color: C.parchmentDim, fontSize: 12 },
-  calendarSmallBtn: { alignSelf: "stretch", background: "rgba(30,26,16,0.62)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 10, color: C.parchmentMid, fontSize: 12, fontWeight: 700, padding: "10px 12px", cursor: "pointer", fontFamily: F },
+  calendarAccount: { display: "flex", justifyContent: "space-between", alignItems: "center", color: C.parchmentDim, fontSize: 14 },
+  calendarSmallBtn: { alignSelf: "stretch", background: "rgba(30,26,16,0.62)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 10, color: C.parchmentMid, fontSize: 14, fontWeight: 700, padding: "10px 12px", cursor: "pointer", fontFamily: F },
 };
 const M: Record<string, CSSProperties> = {
   // The page behind (R.root's `background: C.ink`, #0C0E07) is already
@@ -3292,12 +3419,12 @@ const M: Record<string, CSSProperties> = {
   statusOptOn: { borderColor: C.brass, background: "rgba(216,170,62,0.14)", color: C.parchment },
   notesArea: { width: "100%", minHeight: 80, background: "rgba(8,10,5,0.7)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: 14, outline: "none", marginBottom: 4, resize: "vertical" },
   next: { width: "100%", background: `linear-gradient(135deg,${C.brass},${C.brassDeep})`, border: "none", borderRadius: 12, color: C.ink, fontSize: 15, fontWeight: 700, padding: "15px", cursor: "pointer", marginBottom: 8, fontFamily: F, boxShadow: `0 4px 18px ${C.brassGlow}` },
-  cancel: { width: "100%", background: "none", border: "none", color: C.parchmentDim, fontSize: 13, cursor: "pointer", padding: "10px", fontFamily: F },
+  cancel: { width: "100%", background: "none", border: "none", color: C.parchmentDim, fontSize: 14, cursor: "pointer", padding: "10px", fontFamily: F },
 };
 const E: Record<string, CSSProperties> = {
   fieldGroup: { marginBottom: 12 },
-  label: { fontSize: 11, letterSpacing: "0.1em", color: C.brassSoft, fontWeight: 600, marginBottom: 6 },
+  label: { fontSize: 14, letterSpacing: "0.1em", color: C.brassSoft, fontWeight: 600, marginBottom: 6 },
   chipRow: { display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14, marginTop: -4 },
-  chip: { background: "rgba(34,30,18,0.9)", border: "1px solid rgba(210,190,130,0.22)", borderRadius: 20, color: C.parchmentMid, fontSize: 13, padding: "7px 14px", cursor: "pointer", fontFamily: F },
+  chip: { background: "rgba(34,30,18,0.9)", border: "1px solid rgba(210,190,130,0.22)", borderRadius: 20, color: C.parchmentMid, fontSize: 14, padding: "7px 14px", cursor: "pointer", fontFamily: F },
   slider: { width: "100%", accentColor: C.brass, marginBottom: 12 },
 };

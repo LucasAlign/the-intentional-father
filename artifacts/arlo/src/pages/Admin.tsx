@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import type { CSSProperties } from "react";
 import { useLocation } from "wouter";
 import { useAuth } from "@workspace/replit-auth-web";
+import { apiFetch } from "../lib/apiFetch";
 
 // ── Palette (matches Home.tsx) ────────────────────────────────────────────────
 const C = {
@@ -41,7 +42,7 @@ export default function Admin() {
 
   const refresh = useCallback(() => {
     setLoadingInvites(true);
-    fetch(`${API}/admin/beta-invites`, { credentials: "include" })
+    apiFetch(`${API}/admin/beta-invites`, { credentials: "include" })
       .then((r) => (r.ok ? r.json() : []))
       .then((rows) => setInvites(Array.isArray(rows) ? rows : []))
       .catch(() => setInvites([]))
@@ -50,7 +51,7 @@ export default function Admin() {
 
   useEffect(() => {
     if (!isAuthenticated) { setCheckingAccess(false); return; }
-    fetch(`${API}/admin/is-admin`, { credentials: "include" })
+    apiFetch(`${API}/admin/is-admin`, { credentials: "include" })
       .then((r) => (r.ok ? r.json() : { isAdmin: false }))
       .then((d: { isAdmin?: boolean }) => {
         setHasAccess(!!d.isAdmin);
@@ -63,7 +64,7 @@ export default function Admin() {
   async function setStatus(invite: BetaInvite, status: "active" | "pending") {
     setBusyId(invite.id);
     try {
-      const r = await fetch(`${API}/admin/beta-invites/${invite.id}`, {
+      const r = await apiFetch(`${API}/admin/beta-invites/${invite.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status }),
