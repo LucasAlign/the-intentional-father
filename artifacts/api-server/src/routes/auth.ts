@@ -31,6 +31,7 @@ import {
   type SessionData,
 } from "../lib/auth";
 import { emailStartRateLimit, emailVerifyRateLimit } from "../middlewares/emailAuthRateLimit";
+import { demoLoginRateLimit } from "../middlewares/demoLoginRateLimit";
 import { sendLoginCode } from "../lib/email";
 import { getOrigin } from "../lib/origin";
 
@@ -516,7 +517,9 @@ router.post(
 // No OAuth round-trip: creates a fresh throwaway user and session directly,
 // so anyone can try the app without a Google/Microsoft account. Bypasses the
 // beta-invite gate on purpose — that gate only protects the real providers.
-router.get("/login/demo", async (req: Request, res: Response) => {
+// Rate-limited (#79): unlike that gate, nothing else here stops a script
+// from creating unlimited accounts and burning AI-chat cost on each one.
+router.get("/login/demo", demoLoginRateLimit, async (req: Request, res: Response) => {
   const rawClientOrigin = typeof req.query.appOrigin === "string" ? req.query.appOrigin : "";
   const clientOrigin = /^https?:\/\/[a-zA-Z0-9][a-zA-Z0-9.-]*(:\d+)?$/.test(rawClientOrigin)
     ? rawClientOrigin
