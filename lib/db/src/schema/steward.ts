@@ -109,10 +109,15 @@ export const commits = pgTable("commits", {
   done: boolean("done").notNull().default(false),
   deleted: boolean("deleted").notNull().default(false),
   deletedAt: timestamp("deleted_at"),
+  // Superseded by commitRelationshipTargets (#72) — left in place, no
+  // longer read or written, rather than a destructive column drop (same
+  // treatment as jobs.biz post-#29). migrateCommitTargets() backfills any
+  // pre-#72 value here into the new table once.
   relationshipId: integer("relationship_id").references(() => relationships.id, { onDelete: "set null" }),
   // A one-time commitment target not added to the permanent Tribe list —
-  // mutually exclusive with relationshipId (#60). Kept separate from `notes`
-  // so "for [mechanic]" renders the same way "for [wife]" does.
+  // mutually exclusive with relationship targeting, whether the single old
+  // relationshipId (#60) or the new multi-person commitRelationshipTargets
+  // (#72).
   adHocName: text("ad_hoc_name"),
   adHocCategory: text("ad_hoc_category"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -121,6 +126,28 @@ export const commits = pgTable("commits", {
 export const insertCommitSchema = createInsertSchema(commits).omit({ id: true, createdAt: true });
 export type InsertCommit = z.infer<typeof insertCommitSchema>;
 export type Commit = typeof commits.$inferSelect;
+
+// One row per (commitment, person) pair — a commitment can name 1+ Tribe
+// people (#72), e.g. a promise made to both a spouse and kids together.
+// Never mixed with the ad-hoc one-time target above: a commitment is either
+// this, or an ad-hoc name+category, never both. `userId` is denormalized
+// from the owning commit so RLS can scope this table directly, matching
+// every other per-user table's policy rather than relying only on
+// application-level scoping.
+export const commitRelationshipTargets = pgTable("commit_relationship_targets", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  commitId: integer("commit_id").notNull().references(() => commits.id, { onDelete: "cascade" }),
+  // Cascades on delete — permanently deleting a person just drops their row
+  // here, same as leaving the commitment with whoever's left; no app code
+  // needed for that edge case.
+  relationshipId: integer("relationship_id").notNull().references(() => relationships.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  unique("commit_relationship_targets_unique").on(table.commitId, table.relationshipId),
+]);
+
+export type CommitRelationshipTarget = typeof commitRelationshipTargets.$inferSelect;
 
 export const pursuits = pgTable("pursuits", {
   id: serial("id").primaryKey(),

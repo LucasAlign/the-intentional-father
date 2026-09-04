@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { db, withUserSession } from "@workspace/db";
-import { journalEntries, chatMessages, tasks, taskCompletions, commits, jobs, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit } from "@workspace/db";
+import { journalEntries, chatMessages, tasks, taskCompletions, commits, commitRelationshipTargets, type Commit, jobs, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit } from "@workspace/db";
 import { eq, desc, asc, gte, lte, and, isNull, inArray, notInArray, sql } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
 import { normalizeProfileData, isToneVoice, DEFAULT_TONE_VOICE, type ProfileData, type ToneVoice } from "../lib/profile";
@@ -650,8 +650,9 @@ router.delete('/relationships/:id', async (req: Request, res: Response) => {
 
 // DELETE /api/relationships/:id/permanent
 // Only allowed once a row is already soft-deleted — a client bug can't
-// hard-delete an active person in one step (#64). commits.relationshipId
-// already has onDelete: "set null" at the DB level, so this is safe.
+// hard-delete an active person in one step (#64). commitRelationshipTargets
+// cascades on delete (#72), so a permanently-deleted person is automatically
+// dropped from any commitment they were part of, at the DB level.
 router.delete('/relationships/:id/permanent', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
@@ -668,11 +669,31 @@ router.delete('/relationships/:id/permanent', async (req: Request, res: Response
   }
 });
 
+// Batch-attaches each commit's multi-person targets (#72) — one query for
+// the whole page of results rather than one per row. Drops the raw
+// `relationshipId` scalar from what's sent to the client: the column stays
+// in the DB (see commits.relationshipId's comment) but relationshipIds is
+// the only target field callers should read going forward.
+async function attachRelationshipTargets(rows: Commit[]): Promise<(Omit<Commit, 'relationshipId'> & { relationshipIds: number[] })[]> {
+  const byCommit = new Map<number, number[]>();
+  if (rows.length > 0) {
+    const targets = await db.select({ commitId: commitRelationshipTargets.commitId, relationshipId: commitRelationshipTargets.relationshipId })
+      .from(commitRelationshipTargets)
+      .where(inArray(commitRelationshipTargets.commitId, rows.map(r => r.id)));
+    for (const t of targets) {
+      const list = byCommit.get(t.commitId);
+      if (list) list.push(t.relationshipId);
+      else byCommit.set(t.commitId, [t.relationshipId]);
+    }
+  }
+  return rows.map(({ relationshipId: _unused, ...rest }) => ({ ...rest, relationshipIds: byCommit.get(rest.id) ?? [] }));
+}
+
 // GET /api/commits
 router.get('/commits', async (req: Request, res: Response) => {
   try {
     const rows = await db.select().from(commits).where(and(eq(commits.userId, req.user!.id), eq(commits.deleted, false))).orderBy(desc(commits.createdAt));
-    res.json(rows);
+    res.json(await attachRelationshipTargets(rows));
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch commits' });
   }
@@ -681,37 +702,39 @@ router.get('/commits', async (req: Request, res: Response) => {
 // GET /api/commits/deleted
 router.get('/commits/deleted', async (req: Request, res: Response) => {
   try {
-    const items = await db.select().from(commits)
+    const rows = await db.select().from(commits)
       .where(and(eq(commits.userId, req.user!.id), eq(commits.deleted, true)))
       .orderBy(desc(commits.deletedAt)).limit(200);
-    res.json({ items });
+    res.json({ items: await attachRelationshipTargets(rows) });
   } catch (err) {
     req.log?.error({ err }, 'Error fetching deleted commits');
     res.status(500).json({ error: 'Failed to fetch deleted commits' });
   }
 });
 
-// Every commitment needs a named target — an existing relationship, or a
-// one-time ad hoc name + category (#60: no more "General"). The two are
-// mutually exclusive; this resolves req.body into whichever was given, or
-// responds with an error and returns null.
+// Every commitment needs at least one named target — 1+ existing
+// relationships, or a one-time ad hoc name + category (#60: no more
+// "General"). The two are mutually exclusive; this resolves req.body into
+// whichever was given, or responds with an error and returns null.
 async function resolveCommitTarget(
   req: Request, res: Response,
-): Promise<{ relationshipId: number | null; adHocName: string | null; adHocCategory: string | null } | null> {
-  const { relationshipId, adHocName, adHocCategory } = req.body;
-  if (relationshipId !== undefined && relationshipId !== null) {
-    const relId = Number(relationshipId);
-    if (isNaN(relId)) { res.status(400).json({ error: 'Invalid relationshipId' }); return null; }
-    const [owned] = await db.select({ id: relationships.id }).from(relationships).where(and(eq(relationships.id, relId), eq(relationships.userId, req.user!.id))).limit(1);
-    if (!owned) { res.status(400).json({ error: 'relationshipId not found' }); return null; }
-    return { relationshipId: relId, adHocName: null, adHocCategory: null };
+): Promise<{ relationshipIds: number[]; adHocName: string | null; adHocCategory: string | null } | null> {
+  const { relationshipIds, adHocName, adHocCategory } = req.body;
+  if (Array.isArray(relationshipIds) && relationshipIds.length > 0) {
+    const ids = relationshipIds.map(Number);
+    if (ids.some((n) => isNaN(n))) { res.status(400).json({ error: 'Invalid relationshipIds' }); return null; }
+    const uniqueIds = [...new Set(ids)];
+    const owned = await db.select({ id: relationships.id }).from(relationships)
+      .where(and(inArray(relationships.id, uniqueIds), eq(relationships.userId, req.user!.id)));
+    if (owned.length !== uniqueIds.length) { res.status(400).json({ error: 'One or more relationshipIds not found' }); return null; }
+    return { relationshipIds: uniqueIds, adHocName: null, adHocCategory: null };
   }
   if (typeof adHocName === 'string' && adHocName.trim()) {
     if (!isRelationshipCategory(adHocCategory)) {
       res.status(400).json({ error: 'A valid category is required for a one-time commitment target' });
       return null;
     }
-    return { relationshipId: null, adHocName: adHocName.trim(), adHocCategory };
+    return { relationshipIds: [], adHocName: adHocName.trim(), adHocCategory };
   }
   res.status(400).json({ error: 'Every commitment needs someone it was made to — pick a person or name someone new.' });
   return null;
@@ -731,9 +754,15 @@ router.post('/commits', async (req: Request, res: Response) => {
     const madeDate = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     const [row] = await db.insert(commits).values({
       userId: req.user!.id, text: text.trim(), notes: notes?.trim() || '', madeDate,
-      dueDate: dueDate || null, done: false, ...target,
+      dueDate: dueDate || null, done: false, adHocName: target.adHocName, adHocCategory: target.adHocCategory,
     }).returning();
-    res.json(row);
+    if (target.relationshipIds.length > 0) {
+      await db.insert(commitRelationshipTargets).values(
+        target.relationshipIds.map((relationshipId) => ({ userId: req.user!.id, commitId: row.id, relationshipId })),
+      );
+    }
+    const { relationshipId: _unused, ...rest } = row;
+    res.json({ ...rest, relationshipIds: target.relationshipIds });
   } catch (err) {
     req.log?.error({ err }, 'Error creating commit');
     res.status(500).json({ error: 'Failed to create commit' });
@@ -748,7 +777,7 @@ router.patch('/commits/:id', async (req: Request, res: Response) => {
     const [existing] = await db.select().from(commits).where(and(eq(commits.id, id), eq(commits.userId, req.user!.id))).limit(1);
     if (!existing) { res.status(404).json({ error: 'Commit not found' }); return; }
 
-    const { done, text, notes, dueDate, deleted, relationshipId, adHocName } = req.body;
+    const { done, text, notes, dueDate, deleted, relationshipIds, adHocName } = req.body;
     const updates: Partial<typeof commits.$inferInsert> = {};
     if (typeof done === 'boolean') updates.done = done;
     if (typeof text === 'string' && text.trim()) updates.text = text.trim();
@@ -762,12 +791,19 @@ router.patch('/commits/:id', async (req: Request, res: Response) => {
       updates.deleted = deleted;
       updates.deletedAt = deleted ? new Date() : null;
     }
-    if (relationshipId !== undefined || adHocName !== undefined) {
+    if (relationshipIds !== undefined || adHocName !== undefined) {
       const target = await resolveCommitTarget(req, res);
       if (!target) return;
-      updates.relationshipId = target.relationshipId;
       updates.adHocName = target.adHocName;
       updates.adHocCategory = target.adHocCategory;
+      // Replace the full target set — the edit UI always submits the
+      // complete current membership, not an incremental add/remove.
+      await db.delete(commitRelationshipTargets).where(eq(commitRelationshipTargets.commitId, id));
+      if (target.relationshipIds.length > 0) {
+        await db.insert(commitRelationshipTargets).values(
+          target.relationshipIds.map((relationshipId) => ({ userId: req.user!.id, commitId: id, relationshipId })),
+        );
+      }
     }
     if (Object.keys(updates).length > 0) await db.update(commits).set(updates).where(and(eq(commits.id, id), eq(commits.userId, req.user!.id)));
     res.json({ success: true });

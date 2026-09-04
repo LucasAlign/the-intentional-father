@@ -58,7 +58,8 @@ interface TaskHistory {
 }
 interface Commit {
   id: number; text: string; notes: string; madeDate: string; dueDate: string | null; done: boolean;
-  relationshipId: number | null; adHocName: string | null; adHocCategory: RelationshipCategory | null;
+  // 1+ Tribe people, or an ad-hoc one-time target — never both (#72).
+  relationshipIds: number[]; adHocName: string | null; adHocCategory: RelationshipCategory | null;
 }
 interface Job { id: number; biz: string; name: string; stage: string; due: string; pct: number; pursuitId: number | null; materials: string; budget: string; risk: string; }
 type PursuitCategory = "job" | "business" | "volunteer" | "other";
@@ -1289,17 +1290,21 @@ function relationshipLabel(r: Relationship): string {
   return r.name || r.type || RELATIONSHIP_CATEGORY_LABEL[r.category];
 }
 
-// A commitment's target is either an existing Tribe relationship, or a
-// one-time ad hoc name + category (#60) — never neither.
+// A commitment's target is either 1+ existing Tribe relationships, or a
+// one-time ad hoc name + category (#60/#72) — never neither.
 function commitTargetLabel(c: Commit, byId: Map<number, Relationship>): string {
-  if (c.relationshipId && byId.has(c.relationshipId)) return relationshipLabel(byId.get(c.relationshipId)!);
+  const names = c.relationshipIds.map((id) => byId.get(id)).filter((r): r is Relationship => Boolean(r)).map(relationshipLabel);
+  if (names.length > 0) return names.join(", ");
   if (c.adHocName) return c.adHocName;
   return "someone";
 }
+// Category only makes sense to show for a single target — a mixed-category
+// multi-person commitment (e.g. spouse + child) has no one clean label, so
+// this stays blank for anything but exactly one Tribe person.
 function commitTargetSub(c: Commit, byId: Map<number, Relationship>): string {
-  if (c.relationshipId && byId.has(c.relationshipId)) {
-    const r = byId.get(c.relationshipId)!;
-    return RELATIONSHIP_CATEGORY_LABEL[r.category];
+  if (c.relationshipIds.length === 1) {
+    const r = byId.get(c.relationshipIds[0]!);
+    if (r) return RELATIONSHIP_CATEGORY_LABEL[r.category];
   }
   if (c.adHocCategory) return RELATIONSHIP_CATEGORY_LABEL[c.adHocCategory];
   return "";
@@ -1516,7 +1521,9 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
 }) {
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<Relationship | null>(null);
-  const [logOpen, setLogOpen] = useState(false);
+  // false | {} for a plain "Log a commitment", or a locked+prefilled entry
+  // handed off from a person's profile (#72) — see addAsCommitment below.
+  const [logOpen, setLogOpen] = useState<false | { lockedPerson?: { id: number; label: string }; initialText?: string }>(false);
   const [editingCommit, setEditingCommit] = useState<Commit | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [deletingIds, setDeletingIds] = useState<number[]>([]);
@@ -1645,7 +1652,7 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 2 }}>
         <button style={S.prioLogLink} onClick={() => setHistoryOpen(true)}>Kept &amp; Deleted history ›</button>
       </div>
-      <button style={{ ...S.intakeBtn, marginBottom: 4 }} onClick={() => setLogOpen(true)}>＋  Log a commitment</button>
+      <button style={{ ...S.intakeBtn, marginBottom: 4 }} onClick={() => setLogOpen({})}>＋  Log a commitment</button>
 
       {open.length > 0 && (
         <div style={S.card}>
@@ -1667,8 +1674,19 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
         </div>
       )}
       {addOpen && <RelationshipModal onClose={() => setAddOpen(false)} onSaved={refreshRelationships} />}
-      {editing && <RelationshipModal relationship={editing} onClose={() => setEditing(null)} onSaved={refreshRelationships} onDeleted={() => { refreshRelationships(); refreshCommits(); }} />}
-      {logOpen && <CommitLogModal relationships={relationships} onClose={() => setLogOpen(false)} onSaved={refreshCommits} onRelationshipAdded={refreshRelationships} />}
+      {editing && (
+        <RelationshipModal
+          relationship={editing} onClose={() => setEditing(null)} onSaved={refreshRelationships}
+          onDeleted={() => { refreshRelationships(); refreshCommits(); }}
+          onAddAsCommitment={(person, text) => { setEditing(null); setLogOpen({ lockedPerson: { id: person.id, label: relationshipLabel(person) }, initialText: text }); }}
+        />
+      )}
+      {logOpen && (
+        <CommitLogModal
+          relationships={relationships} lockedPerson={logOpen.lockedPerson} initialText={logOpen.initialText}
+          onClose={() => setLogOpen(false)} onSaved={refreshCommits} onRelationshipAdded={refreshRelationships}
+        />
+      )}
       {editingCommit && (
         <CommitEditModal
           commit={editingCommit} relationships={relationships}
@@ -1685,23 +1703,37 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
 }
 
 // Shared "who is this to?" picker used by both the log and edit modals:
-// pick an existing Tribe relationship, or name someone new under a category
-// and choose whether it's a one-time thing or worth adding to Tribe (#60).
-function CommitTargetPicker({ relationships, relationshipId, setRelationshipId, newCategory, setNewCategory, newName, setNewName, addToTribe, setAddToTribe }: {
+// multi-select 1+ existing Tribe relationships, or name someone new under a
+// category and choose whether it's a one-time thing or worth adding to
+// Tribe (#60/#72). Selecting a new-category chip clears any existing-Tribe
+// selections and vice versa — ad-hoc and Tribe targeting stay mutually
+// exclusive. `lockedIds` (only ever passed by CommitLogModal, when opened
+// from a specific person's profile) renders those chips selected and
+// un-toggleable — #72's "can't swap out who started it," creation-time
+// only, so CommitEditModal never passes this.
+function CommitTargetPicker({ relationships, relationshipIds, setRelationshipIds, lockedIds, newCategory, setNewCategory, newName, setNewName, addToTribe, setAddToTribe }: {
   relationships: Relationship[];
-  relationshipId: string; setRelationshipId: (v: string) => void;
+  relationshipIds: number[]; setRelationshipIds: (v: number[]) => void;
+  lockedIds?: number[];
   newCategory: RelationshipCategory | ""; setNewCategory: (v: RelationshipCategory | "") => void;
   newName: string; setNewName: (v: string) => void;
   addToTribe: boolean; setAddToTribe: (v: boolean) => void;
 }) {
   const hasNew = newCategory !== "" && newName.trim() !== "";
-  function pickExisting(id: number) {
-    setRelationshipId(String(id));
+  const locked = new Set(lockedIds ?? []);
+  function toggleExisting(id: number) {
+    if (locked.has(id)) return;
+    const isSelected = relationshipIds.includes(id);
+    // #72: never let a direct deselect take the set to zero — switching to
+    // an ad-hoc target instead goes through "Someone new" below, which
+    // clears the set as an intentional mode switch, not a bare removal.
+    if (isSelected && relationshipIds.length === 1) return;
+    setRelationshipIds(isSelected ? relationshipIds.filter(existing => existing !== id) : [...relationshipIds, id]);
     setNewCategory(""); setNewName(""); setAddToTribe(false);
   }
   function pickNewCategory(cat: RelationshipCategory) {
     setNewCategory(cat);
-    setRelationshipId("");
+    setRelationshipIds([...locked]);
   }
   return (
     <>
@@ -1710,7 +1742,7 @@ function CommitTargetPicker({ relationships, relationshipId, setRelationshipId, 
         {relationships.length > 0 && (
           <div style={E.chipRow}>
             {relationships.map(r => (
-              <button key={r.id} style={{ ...E.chip, ...(relationshipId === String(r.id) ? { background: C.brass, color: C.ink } : {}) }} onClick={() => pickExisting(r.id)}>
+              <button key={r.id} style={{ ...E.chip, ...(relationshipIds.includes(r.id) ? { background: C.brass, color: C.ink } : {}), ...(locked.has(r.id) ? { cursor: "default" } : {}) }} onClick={() => toggleExisting(r.id)}>
                 {relationshipLabel(r)}
               </button>
             ))}
@@ -1752,20 +1784,27 @@ async function createAdHocRelationship(name: string, category: RelationshipCateg
 }
 
 // ── Log a commitment modal ──────────────────────────────────────────────────
-function CommitLogModal({ relationships, onClose, onSaved, onRelationshipAdded }: {
-  relationships: Relationship[]; onClose: () => void; onSaved: () => void; onRelationshipAdded: () => void;
+// `lockedPerson` + `initialText` (#72) are only passed when opened via a
+// specific person's "Add this as an open commitment" button (RelationshipModal)
+// — that person starts pre-selected and un-removable for the rest of this
+// creation flow, and the free-text Commitments field's current value seeds
+// the commitment text. Neither carries any special meaning once saved: a
+// later edit treats everyone the same.
+function CommitLogModal({ relationships, lockedPerson, initialText, onClose, onSaved, onRelationshipAdded }: {
+  relationships: Relationship[]; lockedPerson?: { id: number; label: string }; initialText?: string;
+  onClose: () => void; onSaved: () => void; onRelationshipAdded: () => void;
 }) {
-  const [relationshipId, setRelationshipId] = useState("");
+  const [relationshipIds, setRelationshipIds] = useState<number[]>(lockedPerson ? [lockedPerson.id] : []);
   const [newCategory, setNewCategory] = useState<RelationshipCategory | "">("");
   const [newName, setNewName] = useState("");
   const [addToTribe, setAddToTribe] = useState(false);
-  const [text, setText] = useState("");
+  const [text, setText] = useState(initialText ?? "");
   const [notes, setNotes] = useState("");
   const [dueDate, setDueDate] = useState("");
   const saveStatus = useSaveStatus();
   const [validationErr, setValidationErr] = useState("");
 
-  const hasExisting = relationshipId !== "";
+  const hasExisting = relationshipIds.length > 0;
   const hasNew = newCategory !== "" && newName.trim() !== "";
   const canSave = text.trim() !== "";
 
@@ -1774,17 +1813,18 @@ function CommitLogModal({ relationships, onClose, onSaved, onRelationshipAdded }
     if (!hasExisting && !hasNew) { setValidationErr("Select who this commitment is for."); return; }
     setValidationErr("");
     await saveStatus.save(async () => {
-      let targetRelationshipId: number | null = hasExisting ? Number(relationshipId) : null;
+      let targetRelationshipIds = relationshipIds;
       if (!hasExisting && hasNew && addToTribe) {
-        targetRelationshipId = await createAdHocRelationship(newName.trim(), newCategory as RelationshipCategory);
-        if (targetRelationshipId === null) return false;
+        const createdId = await createAdHocRelationship(newName.trim(), newCategory as RelationshipCategory);
+        if (createdId === null) return false;
+        targetRelationshipIds = [createdId];
       }
       const body: Record<string, unknown> = { text: text.trim(), notes: notes.trim(), dueDate: dueDate || null };
-      if (targetRelationshipId) body.relationshipId = targetRelationshipId;
+      if (targetRelationshipIds.length > 0) body.relationshipIds = targetRelationshipIds;
       else { body.adHocName = newName.trim(); body.adHocCategory = newCategory; }
       const r = await apiFetch(`${API}/commits`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (r.ok) {
-        if (targetRelationshipId && addToTribe) onRelationshipAdded();
+        if (targetRelationshipIds.length > 0 && addToTribe) onRelationshipAdded();
         onSaved(); onClose();
         return true;
       }
@@ -1797,7 +1837,8 @@ function CommitLogModal({ relationships, onClose, onSaved, onRelationshipAdded }
       <ModalSheet title="Log a Commitment" onClose={onClose}>
         <CommitTargetPicker
           relationships={relationships}
-          relationshipId={relationshipId} setRelationshipId={setRelationshipId}
+          relationshipIds={relationshipIds} setRelationshipIds={setRelationshipIds}
+          lockedIds={lockedPerson ? [lockedPerson.id] : undefined}
           newCategory={newCategory} setNewCategory={setNewCategory}
           newName={newName} setNewName={setNewName}
           addToTribe={addToTribe} setAddToTribe={setAddToTribe}
@@ -1832,9 +1873,9 @@ function CommitEditModal({ commit, relationships, onClose, onSaved, onDeleted, o
   commit: Commit; relationships: Relationship[];
   onClose: () => void; onSaved: () => void; onDeleted: () => void; onRelationshipAdded: () => void;
 }) {
-  const [relationshipId, setRelationshipId] = useState(commit.relationshipId ? String(commit.relationshipId) : "");
-  const [newCategory, setNewCategory] = useState<RelationshipCategory | "">(commit.relationshipId ? "" : (commit.adHocCategory ?? ""));
-  const [newName, setNewName] = useState(commit.relationshipId ? "" : (commit.adHocName ?? ""));
+  const [relationshipIds, setRelationshipIds] = useState<number[]>(commit.relationshipIds);
+  const [newCategory, setNewCategory] = useState<RelationshipCategory | "">(commit.relationshipIds.length > 0 ? "" : (commit.adHocCategory ?? ""));
+  const [newName, setNewName] = useState(commit.relationshipIds.length > 0 ? "" : (commit.adHocName ?? ""));
   const [addToTribe, setAddToTribe] = useState(false);
   const [text, setText] = useState(commit.text);
   const [notes, setNotes] = useState(commit.notes);
@@ -1844,7 +1885,7 @@ function CommitEditModal({ commit, relationships, onClose, onSaved, onDeleted, o
   const [delErr, setDelErr] = useState("");
   const [validationErr, setValidationErr] = useState("");
 
-  const hasExisting = relationshipId !== "";
+  const hasExisting = relationshipIds.length > 0;
   const hasNew = newCategory !== "" && newName.trim() !== "";
   const canSave = text.trim() !== "";
 
@@ -1853,17 +1894,18 @@ function CommitEditModal({ commit, relationships, onClose, onSaved, onDeleted, o
     if (!hasExisting && !hasNew) { setValidationErr("Select who this commitment is for."); return; }
     setValidationErr("");
     await saveStatus.save(async () => {
-      let targetRelationshipId: number | null = hasExisting ? Number(relationshipId) : null;
+      let targetRelationshipIds = relationshipIds;
       if (!hasExisting && hasNew && addToTribe) {
-        targetRelationshipId = await createAdHocRelationship(newName.trim(), newCategory as RelationshipCategory);
-        if (targetRelationshipId === null) return false;
+        const createdId = await createAdHocRelationship(newName.trim(), newCategory as RelationshipCategory);
+        if (createdId === null) return false;
+        targetRelationshipIds = [createdId];
       }
       const body: Record<string, unknown> = { text: text.trim(), notes: notes.trim(), dueDate: dueDate || null };
-      if (targetRelationshipId) body.relationshipId = targetRelationshipId;
+      if (targetRelationshipIds.length > 0) body.relationshipIds = targetRelationshipIds;
       else { body.adHocName = newName.trim(); body.adHocCategory = newCategory; }
       const r = await apiFetch(`${API}/commits/${commit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (r.ok) {
-        if (targetRelationshipId && addToTribe) onRelationshipAdded();
+        if (targetRelationshipIds.length > 0 && addToTribe) onRelationshipAdded();
         onSaved(); onClose();
         return true;
       }
@@ -1885,7 +1927,7 @@ function CommitEditModal({ commit, relationships, onClose, onSaved, onDeleted, o
       <ModalSheet title="Edit Commitment" onClose={onClose}>
         <CommitTargetPicker
           relationships={relationships}
-          relationshipId={relationshipId} setRelationshipId={setRelationshipId}
+          relationshipIds={relationshipIds} setRelationshipIds={setRelationshipIds}
           newCategory={newCategory} setNewCategory={setNewCategory}
           newName={newName} setNewName={setNewName}
           addToTribe={addToTribe} setAddToTribe={setAddToTribe}
@@ -1999,8 +2041,12 @@ function CommitHistoryModal({ commits, byId, onClose, onChanged }: {
 }
 
 // ── Relationship add/edit modal ────────────────────────────────────────────────
-function RelationshipModal({ relationship, onClose, onSaved, onDeleted }: {
+function RelationshipModal({ relationship, onClose, onSaved, onDeleted, onAddAsCommitment }: {
   relationship?: Relationship; onClose: () => void; onSaved: () => void; onDeleted?: () => void;
+  // #72 — only meaningful (and only ever passed) once the person already
+  // has a real id to attach a commitment to; a brand-new, not-yet-saved
+  // person has to be saved first, then reopened, to use it.
+  onAddAsCommitment?: (person: Relationship, text: string) => void;
 }) {
   const [name, setName] = useState(relationship?.name ?? "");
   const [category, setCategory] = useState<RelationshipCategory>(relationship?.category ?? "family");
@@ -2060,6 +2106,14 @@ function RelationshipModal({ relationship, onClose, onSaved, onDeleted }: {
         <div style={E.fieldGroup}>
           <div style={E.label}>Commitments</div>
           <input style={M.input} value={commitments} onChange={e => setCommitments(e.target.value)} placeholder="What you've committed to" />
+          {/* Generic — a personal note only ever shown in this window, not
+              tracked or due-dated (#72). This button is the bridge into a
+              real, trackable commitment when one's actually warranted. */}
+          {relationship && onAddAsCommitment && (
+            <button style={{ ...S.prioLogLink, marginTop: 8 }} onClick={() => onAddAsCommitment(relationship, commitments)}>
+              Add this as an open commitment ›
+            </button>
+          )}
         </div>
         <div style={E.fieldGroup}>
           <div style={E.label}>Biggest challenge</div>
