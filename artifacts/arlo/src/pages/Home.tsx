@@ -77,7 +77,7 @@ interface Relationship {
 const RELATIONSHIP_CATEGORIES: RelationshipCategory[] = ["spouse", "child", "family", "friend", "other"];
 const RELATIONSHIP_CATEGORY_LABEL: Record<RelationshipCategory, string> = { spouse: "Spouse", child: "Child", family: "Family", friend: "Friend", other: "Other" };
 type ToneVoice = "straight_talk" | "middle_of_the_road" | "take_it_easy";
-interface ProfileData { name?: string | null; season_of_life?: string | null; voice?: ToneVoice | null; }
+interface ProfileData { name?: string | null; season_of_life?: string | null; voice?: ToneVoice | null; remindersEnabled?: boolean | null; }
 type PulseCategory = "physical" | "mental" | "spiritual";
 type PulseState = "up" | "mid" | "down";
 interface PulseCheckEntry { category: PulseCategory; state: PulseState; note: string; }
@@ -557,6 +557,22 @@ export default function Home() {
     } catch { /* optimistic update already applied; a stale read on next load self-corrects */ }
   }
 
+  async function setRemindersEnabled(remindersEnabled: boolean) {
+    setProfile(p => ({ ...(p ?? {}), remindersEnabled }));
+    try {
+      await apiFetch(`${API}/profile`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ remindersEnabled }) });
+    } catch { /* optimistic update already applied; a stale read on next load self-corrects */ }
+  }
+
+  async function sendTestReminder(): Promise<boolean> {
+    try {
+      const res = await apiFetch(`${API}/reminders/test`, { method: "POST" });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
   const refreshTasks = useCallback(() => {
     return getList<Task>(`${API}/tasks?today=${ymd(new Date())}`).then(setTasks);
   }, []);
@@ -716,7 +732,7 @@ export default function Home() {
         {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} onOpenJournalHistory={() => setJournalHistoryOpen(true)} />}
         {tab === "her" && <Relationships relationships={relationships} refreshRelationships={refreshRelationships} commits={commits} refreshCommits={refreshCommits} />}
         {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} onOpenClosed={() => setClosedPursuitsOpen(true)} />}
-        {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} />}
+        {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} remindersEnabled={profile?.remindersEnabled ?? true} onSetRemindersEnabled={setRemindersEnabled} onSendTestReminder={sendTestReminder} />}
         {tab === "week" && <WeekView events={week} jobs={jobs} pursuits={pursuits} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await apiFetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
       </main>
 
@@ -2306,13 +2322,22 @@ function tasksMentionedIn(content: string, tasks: Task[]): Task[] {
   return tasks.filter(t => t.text.trim().length > 3 && lower.includes(t.text.trim().toLowerCase()));
 }
 
-function StewardChat({ messages, input, setInput, send, sending, tasks, onOpenPriority, tone, onSetTone, suggestedTone }: {
+function StewardChat({ messages, input, setInput, send, sending, tasks, onOpenPriority, tone, onSetTone, suggestedTone, remindersEnabled, onSetRemindersEnabled, onSendTestReminder }: {
   messages: Message[]; input: string; setInput: (v: string) => void; send: () => void; sending: boolean; tasks: Task[]; onOpenPriority: (t: Task) => void;
   tone: ToneVoice; onSetTone: (t: ToneVoice) => void; suggestedTone: ToneVoice | null;
+  remindersEnabled: boolean; onSetRemindersEnabled: (enabled: boolean) => void; onSendTestReminder: () => Promise<boolean>;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
   const scrollFade = useBottomScrollFade<HTMLDivElement>();
+  const { error: reminderMsg, flash: flashReminderMsg } = useTapError();
+  const [sendingTest, setSendingTest] = useState(false);
+  async function handleSendTest() {
+    setSendingTest(true);
+    const ok = await onSendTestReminder();
+    setSendingTest(false);
+    flashReminderMsg(ok ? "Test reminder sent — check your inbox" : "Couldn't send — try again");
+  }
   return (
     <div style={S.chatWrap}>
       <div style={{ padding: "4px 18px 0" }}>
@@ -2326,6 +2351,17 @@ function StewardChat({ messages, input, setInput, send, sending, tasks, onOpenPr
           {(["straight_talk", "middle_of_the_road", "take_it_easy"] as const).map(t => (
             <button key={t} style={{ ...S.toneOpt, ...(tone === t ? S.toneOptOn : {}) }} onClick={() => onSetTone(t)}>{TONE_LABEL[t]}</button>
           ))}
+        </div>
+        <div style={S.remindersRow}>
+          <button style={{ ...S.toneOpt, flex: "none", padding: "7px 14px" }} onClick={() => onSetRemindersEnabled(!remindersEnabled)}>
+            Commitment reminders: {remindersEnabled ? "On" : "Off"}
+          </button>
+          {remindersEnabled && (
+            <button style={S.chatPrioChip} disabled={sendingTest} onClick={handleSendTest}>
+              {sendingTest ? "Sending…" : "Send test reminder"}
+            </button>
+          )}
+          {reminderMsg && <span style={S.pageSub}>{reminderMsg}</span>}
         </div>
       </div>
       <div ref={scrollFade.ref} style={S.chatMsgs}>
@@ -3398,6 +3434,7 @@ const S: Record<string, CSSProperties> = {
   toneRow: { display: "flex", gap: 6, marginBottom: 14, marginTop: -4 },
   toneOpt: { flex: 1, background: "rgba(24,20,12,0.55)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 14, color: C.parchmentDim, fontSize: 14, fontWeight: 600, padding: "7px 4px", cursor: "pointer", fontFamily: F },
   toneOptOn: { borderColor: C.brass, background: "rgba(216,170,62,0.16)", color: C.parchment },
+  remindersRow: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 14, marginTop: -4 },
   logRow: { display: "flex", gap: 8, marginBottom: 14 },
   logInput: { flex: 1, background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: "12px 14px", outline: "none", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
   logBtn: { background: `linear-gradient(135deg,${C.walnutMid},${C.walnut})`, border: "none", borderRadius: 12, color: C.parchment, fontSize: 14, fontWeight: 700, padding: "12px 18px", cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,220,160,0.15)" },

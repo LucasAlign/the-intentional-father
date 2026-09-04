@@ -11,6 +11,8 @@ import { buildTodayContext } from "../lib/stewardContext";
 import { isPulseCategory, isPulseState } from "../lib/pulseCheck";
 import { isRelationshipCategory, RELATIONSHIP_RANK_SQL, RELATIONSHIP_CATEGORY_RANK, type RelationshipCategory } from "../lib/relationships";
 import { isPursuitCategory } from "../lib/pursuits";
+import { sendTestReminderDigest } from "../lib/reminders";
+import { testReminderRateLimit } from "../middlewares/testReminderRateLimit";
 
 const MAX_PULSE_NOTE_LENGTH = 500;
 
@@ -824,6 +826,27 @@ router.delete('/commits/:id', async (req: Request, res: Response) => {
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete commit' });
+  }
+});
+
+// POST /api/reminders/test — sends the calling user a preview of their
+// daily reminder digest right now (#75), so they can verify delivery
+// without waiting on the actual daily cron. Always reflects current state;
+// never marks commits as reminded (a test send can't use up the real one).
+router.post('/reminders/test', testReminderRateLimit, async (req: Request, res: Response) => {
+  try {
+    const email = req.user!.email;
+    if (!email) { res.status(400).json({ error: 'No email on file for this account' }); return; }
+    const digest = await sendTestReminderDigest(db, req.user!.id, email);
+    res.json({
+      sent: true,
+      overdueCount: digest.overdue.length,
+      dueTodayCount: digest.dueToday.length,
+      dueTomorrowCount: digest.dueTomorrow.length,
+    });
+  } catch (err) {
+    req.log?.error({ err }, 'Error sending test reminder');
+    res.status(500).json({ error: 'Failed to send test reminder' });
   }
 });
 

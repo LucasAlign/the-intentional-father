@@ -120,6 +120,12 @@ export const commits = pgTable("commits", {
   // (#72).
   adHocName: text("ad_hoc_name"),
   adHocCategory: text("ad_hoc_category"),
+  // Set once the daily reminder digest (#75) has included this commit in its
+  // "due today"/"due tomorrow" or "overdue" section, respectively — each
+  // fires at most once per commit, not every day it stays in that window.
+  // Null means "not yet reminded for that transition".
+  remindedDueAt: timestamp("reminded_due_at"),
+  remindedOverdueAt: timestamp("reminded_overdue_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

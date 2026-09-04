@@ -3,9 +3,44 @@ import { db, journalEntries, tasks, taskCompletions, pulseChecks, commits, commi
 import { isSlipping, type RecurrencePeriod } from "./priorityPeriods";
 import { PULSE_STATE_LABEL, type PulseState } from "./pulseCheck";
 
-const RELATIONSHIP_CATEGORY_LABEL: Record<string, string> = { spouse: "Spouse", child: "Child", family: "Family", friend: "Friend", other: "Other" };
+export const RELATIONSHIP_CATEGORY_LABEL: Record<string, string> = { spouse: "Spouse", child: "Child", family: "Family", friend: "Friend", other: "Other" };
 function relationshipLabel(r: Pick<Relationship, "name" | "type" | "category">): string {
   return r.name || r.type || RELATIONSHIP_CATEGORY_LABEL[r.category] || r.category;
+}
+
+type DbLike = typeof db;
+
+// Batch-resolves the "who" display string for a set of commits — 1+ Tribe
+// people via commitRelationshipTargets (#72), or the ad-hoc one-time
+// name+category fallback. Shared by buildTodayContext below and by the
+// reminder digest (#75, lib/reminders.ts) so the two don't drift on how a
+// commitment's target gets displayed.
+export async function resolveCommitWhoLabels(
+  dbClient: DbLike,
+  userCommits: { id: number; adHocName: string | null; adHocCategory: string | null }[],
+): Promise<Map<number, string>> {
+  const result = new Map<number, string>();
+  if (userCommits.length === 0) return result;
+
+  const targets = await dbClient.select({ commitId: commitRelationshipTargets.commitId, relationshipId: commitRelationshipTargets.relationshipId })
+    .from(commitRelationshipTargets)
+    .where(inArray(commitRelationshipTargets.commitId, userCommits.map((c) => c.id)));
+  const relIdsByCommit = new Map<number, number[]>();
+  for (const t of targets) {
+    const list = relIdsByCommit.get(t.commitId);
+    if (list) list.push(t.relationshipId);
+    else relIdsByCommit.set(t.commitId, [t.relationshipId]);
+  }
+  const allRelIds = [...new Set(targets.map((t) => t.relationshipId))];
+  const rels = allRelIds.length > 0 ? await dbClient.select().from(relationships).where(inArray(relationships.id, allRelIds)) : [];
+  const relById = new Map(rels.map((r) => [r.id, r]));
+
+  for (const c of userCommits) {
+    const names = (relIdsByCommit.get(c.id) ?? []).map((id) => relById.get(id)).filter((r): r is Relationship => Boolean(r)).map(relationshipLabel);
+    const who = names.length > 0 ? names.join(', ') : c.adHocName ? `${c.adHocName} (${RELATIONSHIP_CATEGORY_LABEL[c.adHocCategory ?? ''] ?? c.adHocCategory})` : 'someone';
+    result.set(c.id, who);
+  }
+  return result;
 }
 
 // Single source of the "what's going on with this person today" text block
@@ -73,24 +108,12 @@ export async function buildTodayContext(userId: string, today: string): Promise<
   if (openCommits.length > 0) {
     // #72 — a commitment can name 1+ Tribe people via the join table now,
     // not just the old single relationshipId (which new/edited commits no
-    // longer write to). Batch-fetch targets the same way the API routes do.
-    const targets = await db.select({ commitId: commitRelationshipTargets.commitId, relationshipId: commitRelationshipTargets.relationshipId })
-      .from(commitRelationshipTargets)
-      .where(inArray(commitRelationshipTargets.commitId, openCommits.map((c) => c.id)));
-    const relIdsByCommit = new Map<number, number[]>();
-    for (const t of targets) {
-      const list = relIdsByCommit.get(t.commitId);
-      if (list) list.push(t.relationshipId);
-      else relIdsByCommit.set(t.commitId, [t.relationshipId]);
-    }
-    const allRelIds = [...new Set(targets.map((t) => t.relationshipId))];
-    const rels = allRelIds.length > 0 ? await db.select().from(relationships).where(inArray(relationships.id, allRelIds)) : [];
-    const relById = new Map(rels.map((r) => [r.id, r]));
+    // longer write to).
+    const whoByCommit = await resolveCommitWhoLabels(db, openCommits);
 
     context += '## Commitments made to others:\n';
     openCommits.forEach((c) => {
-      const names = (relIdsByCommit.get(c.id) ?? []).map((id) => relById.get(id)).filter((r): r is Relationship => Boolean(r)).map(relationshipLabel);
-      const who = names.length > 0 ? names.join(', ') : c.adHocName ? `${c.adHocName} (${RELATIONSHIP_CATEGORY_LABEL[c.adHocCategory ?? ''] ?? c.adHocCategory})` : 'someone';
+      const who = whoByCommit.get(c.id) ?? 'someone';
 
       let status = '';
       if (c.dueDate) {
