@@ -834,11 +834,13 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   useEffect(() => { setIntent(journal.commit_text); setReflect(journal.reflect); }, [journal.commit_text, journal.reflect]);
 
   const [favoritingVerse, setFavoritingVerse] = useState(false);
+  const { error: verseFavError, flash: flashVerseFavError } = useTapError();
   async function handleToggleVerseFavorite() {
     if (!verse || favoritingVerse) return;
     setFavoritingVerse(true);
-    await onToggleVerseFavorite(verse.ref, !verse.favorited);
+    const ok = await onToggleVerseFavorite(verse.ref, !verse.favorited);
     setFavoritingVerse(false);
+    if (!ok) flashVerseFavError("Couldn't save — try again");
   }
 
   const hr = new Date().getHours();
@@ -943,6 +945,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
             </button>
           </div>
         )}
+        <TapError message={verseFavError} />
       </div>
 
       <div style={S.cardCentered}>
@@ -3178,6 +3181,8 @@ function VerseHistoryModal({ onClose, onToggleFavorite }: { onClose: () => void;
   const [entries, setEntries] = useState<VerseHistoryEntry[] | null>(null);
   const [togglingRef, setTogglingRef] = useState<string | null>(null);
 
+  const { error: toggleError, flash: flashToggleError } = useTapError();
+
   useEffect(() => { getList<VerseHistoryEntry>(`${API}/verse/history`).then(setEntries); }, []);
 
   async function toggle(entry: VerseHistoryEntry) {
@@ -3185,6 +3190,7 @@ function VerseHistoryModal({ onClose, onToggleFavorite }: { onClose: () => void;
     setTogglingRef(entry.ref);
     const ok = await onToggleFavorite(entry.ref, !entry.favorited);
     if (ok) setEntries(list => list && list.map(e => (e.ref === entry.ref ? { ...e, favorited: !entry.favorited } : e)));
+    else flashToggleError("Couldn't save — try again");
     setTogglingRef(null);
   }
 
@@ -3209,6 +3215,7 @@ function VerseHistoryModal({ onClose, onToggleFavorite }: { onClose: () => void;
           ))}
           {entries && entries.length === 0 && <div style={S.empty}>No history yet.</div>}
         </div>
+        <TapError message={toggleError} />
         <button style={M.cancel} onClick={onClose}>Close</button>
       </ModalSheet>
     </div>
@@ -3218,6 +3225,8 @@ function VerseHistoryModal({ onClose, onToggleFavorite }: { onClose: () => void;
 function VerseFavoritesModal({ onClose, onToggleFavorite }: { onClose: () => void; onToggleFavorite: (ref: string, favorite: boolean) => Promise<boolean> }) {
   const [entries, setEntries] = useState<{ ref: string; text: string }[] | null>(null);
   const [removingRef, setRemovingRef] = useState<string | null>(null);
+
+  const { error: removeError, flash: flashRemoveError } = useTapError();
 
   const load = useCallback(() => {
     getList<{ ref: string; text: string }>(`${API}/verse-favorites`).then(setEntries);
@@ -3229,6 +3238,7 @@ function VerseFavoritesModal({ onClose, onToggleFavorite }: { onClose: () => voi
     setRemovingRef(ref);
     const ok = await onToggleFavorite(ref, false);
     if (ok) setEntries(list => list && list.filter(e => e.ref !== ref));
+    else flashRemoveError("Couldn't save — try again");
     setRemovingRef(null);
   }
 
@@ -3249,6 +3259,7 @@ function VerseFavoritesModal({ onClose, onToggleFavorite }: { onClose: () => voi
           ))}
           {entries && entries.length === 0 && <div style={S.empty}>No favorites yet — tap the star on Verse of the Day to save one.</div>}
         </div>
+        <TapError message={removeError} />
         <button style={M.cancel} onClick={onClose}>Close</button>
       </ModalSheet>
     </div>
@@ -3634,8 +3645,14 @@ const M: Record<string, CSSProperties> = {
   overlay: { position: "fixed", inset: 0, background: "rgba(90,58,32,0.28)", display: "flex", alignItems: "flex-end", zIndex: 200, backdropFilter: "blur(3px)" },
   // maxHeight + overflowY (not a blanket `overflow: hidden`) so content
   // taller than the viewport scrolls instead of clipping inaccessibly —
-  // every modal in the app shares this one sheet style (#66).
-  sheet: { width: "100%", maxWidth: 440, margin: "0 auto", maxHeight: "88vh", position: "relative", overflowY: "auto", overflowX: "hidden", background: "linear-gradient(160deg,rgba(34,30,18,0.98),rgba(16,14,8,0.98))", backdropFilter: "blur(24px)", borderRadius: "22px 22px 0 0", padding: "24px 24px 48px", border: "1px solid rgba(210,190,130,0.18)", borderBottom: "none", boxShadow: "0 -10px 50px rgba(0,0,0,0.7)" },
+  // every modal in the app shares this one sheet style (#66). 88dvh, not
+  // 88vh (matches R.root's #37 fix, never applied here) — vh is the
+  // *largest* possible viewport in a mobile browser, so a modal sized
+  // against it can render with its bottom (here, the Cancel button) below
+  // the actually-visible area once the browser's own chrome (address bar,
+  // or an embedded preview's own frame) is accounted for; dvh tracks the
+  // real visible viewport instead.
+  sheet: { width: "100%", maxWidth: 440, margin: "0 auto", maxHeight: "88dvh", position: "relative", overflowY: "auto", overflowX: "hidden", background: "linear-gradient(160deg,rgba(34,30,18,0.98),rgba(16,14,8,0.98))", backdropFilter: "blur(24px)", borderRadius: "22px 22px 0 0", padding: "24px 24px 48px", border: "1px solid rgba(210,190,130,0.18)", borderBottom: "none", boxShadow: "0 -10px 50px rgba(0,0,0,0.7)" },
   strip: { position: "absolute", top: 0, left: 0, right: 0, height: 2, background: `linear-gradient(90deg,transparent,${C.brass},transparent)`, boxShadow: `0 0 14px ${C.brassGlow}` },
   head: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
   title: { fontSize: 23, color: C.parchment, fontWeight: 400 },
