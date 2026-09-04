@@ -78,6 +78,8 @@ const RELATIONSHIP_CATEGORIES: RelationshipCategory[] = ["spouse", "child", "fam
 const RELATIONSHIP_CATEGORY_LABEL: Record<RelationshipCategory, string> = { spouse: "Spouse", child: "Child", family: "Family", friend: "Friend", other: "Other" };
 type ToneVoice = "straight_talk" | "middle_of_the_road" | "take_it_easy";
 interface ProfileData { name?: string | null; season_of_life?: string | null; voice?: ToneVoice | null; remindersEnabled?: boolean | null; }
+interface VerseEntry { ref: string; text: string; favorited: boolean; }
+interface VerseHistoryEntry extends VerseEntry { date: string; }
 type PulseCategory = "physical" | "mental" | "spiritual";
 type PulseState = "up" | "mid" | "down";
 interface PulseCheckEntry { category: PulseCategory; state: PulseState; note: string; }
@@ -520,7 +522,9 @@ export default function Home() {
   const [, setLocation] = useLocation();
   const [tab, setTab] = useState<TabId>("today");
 
-  const [verse, setVerse] = useState("");
+  const [verse, setVerse] = useState<VerseEntry | null>(null);
+  const [verseHistoryOpen, setVerseHistoryOpen] = useState(false);
+  const [verseFavoritesOpen, setVerseFavoritesOpen] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [journal, setJournal] = useState<Journal>({ reflect: "", commit_text: "" });
   const [commits, setCommits] = useState<Commit[]>([]);
@@ -567,6 +571,24 @@ export default function Home() {
   async function sendTestReminder(): Promise<boolean> {
     try {
       const res = await apiFetch(`${API}/reminders/test`, { method: "POST" });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  const refreshVerse = useCallback(() => {
+    return getJson(`${API}/verse`, null).then((v) => v && setVerse(v as VerseEntry));
+  }, []);
+
+  async function toggleVerseFavorite(ref: string, favorite: boolean): Promise<boolean> {
+    try {
+      const res = await apiFetch(`${API}/verse-favorites`, {
+        method: favorite ? "POST" : "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ref }),
+      });
+      if (res.ok) setVerse(v => (v && v.ref === ref ? { ...v, favorited: favorite } : v));
       return res.ok;
     } catch {
       return false;
@@ -641,7 +663,7 @@ export default function Home() {
 
     const days = weekDays();
     const start = days[0].key, end = days[6].key;
-    apiFetch(`${API}/verse`).then(r => r.ok ? r.text() : "").then(v => v && setVerse(v)).catch(() => {});
+    refreshVerse();
     refreshJournal();
     getList<Event>(`${API}/coming-up`).then(setToday);
     getList<Event>(`${API}/coming-up?start=${start}&end=${end}`).then(setWeek);
@@ -729,7 +751,7 @@ export default function Home() {
       </header>
 
       <main style={R.screen}>
-        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} onOpenJournalHistory={() => setJournalHistoryOpen(true)} />}
+        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} onOpenJournalHistory={() => setJournalHistoryOpen(true)} onToggleVerseFavorite={toggleVerseFavorite} onOpenVerseHistory={() => setVerseHistoryOpen(true)} onOpenVerseFavorites={() => setVerseFavoritesOpen(true)} />}
         {tab === "her" && <Relationships relationships={relationships} refreshRelationships={refreshRelationships} commits={commits} refreshCommits={refreshCommits} />}
         {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} onOpenClosed={() => setClosedPursuitsOpen(true)} />}
         {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} remindersEnabled={profile?.remindersEnabled ?? true} onSetRemindersEnabled={setRemindersEnabled} onSendTestReminder={sendTestReminder} />}
@@ -766,6 +788,8 @@ export default function Home() {
       {priorityDetail && <PriorityDetailModal task={priorityDetail} onClose={() => setPriorityDetail(null)} onChanged={refreshTasks} />}
       {completedLogOpen && <CompletedLogModal onClose={() => setCompletedLogOpen(false)} onChanged={refreshTasks} />}
       {journalHistoryOpen && <JournalHistoryModal onClose={() => setJournalHistoryOpen(false)} onSaved={refreshJournal} />}
+      {verseHistoryOpen && <VerseHistoryModal onClose={() => setVerseHistoryOpen(false)} onToggleFavorite={toggleVerseFavorite} />}
+      {verseFavoritesOpen && <VerseFavoritesModal onClose={() => setVerseFavoritesOpen(false)} onToggleFavorite={toggleVerseFavorite} />}
     </div>
   );
 }
@@ -787,14 +811,15 @@ function ProfileMenu({ name, email, onClose, onLogout }: { name?: string | null;
 }
 
 // ── Today ───────────────────────────────────────────────────────────────────
-function Today({ verse, tasks, journal, events, name, profile, relationships, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks, onOpenPriority, onViewCompleted, pulseChecks, onSavePulseCheck, onOpenJournalHistory }: {
-  verse: string; tasks: Task[]; journal: Journal; events: Event[]; name?: string | null;
+function Today({ verse, tasks, journal, events, name, profile, relationships, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks, onOpenPriority, onViewCompleted, pulseChecks, onSavePulseCheck, onOpenJournalHistory, onToggleVerseFavorite, onOpenVerseHistory, onOpenVerseFavorites }: {
+  verse: VerseEntry | null; tasks: Task[]; journal: Journal; events: Event[]; name?: string | null;
   profile: ProfileData | null; relationships: Relationship[]; primaryRel: Relationship | null;
   onSend: (m?: string) => void; ci: string; setCi: (v: string) => void; sending: boolean;
   onSaveJournal: (j: Journal) => Promise<boolean>; refreshTasks: () => void;
   onOpenPriority: (t: Task) => void; onViewCompleted: () => void;
   pulseChecks: PulseCheckEntry[]; onSavePulseCheck: (category: PulseCategory, state: PulseState, note: string) => Promise<boolean>;
   onOpenJournalHistory: () => void;
+  onToggleVerseFavorite: (ref: string, favorite: boolean) => Promise<boolean>; onOpenVerseHistory: () => void; onOpenVerseFavorites: () => void;
 }) {
   const [intent, setIntent] = useState(journal.commit_text);
   const [reflect, setReflect] = useState(journal.reflect);
@@ -808,11 +833,16 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   const addTaskSave = useSaveStatus();
   useEffect(() => { setIntent(journal.commit_text); setReflect(journal.reflect); }, [journal.commit_text, journal.reflect]);
 
+  const [favoritingVerse, setFavoritingVerse] = useState(false);
+  async function handleToggleVerseFavorite() {
+    if (!verse || favoritingVerse) return;
+    setFavoritingVerse(true);
+    await onToggleVerseFavorite(verse.ref, !verse.favorited);
+    setFavoritingVerse(false);
+  }
+
   const hr = new Date().getHours();
   const greeting = `Good ${hr < 12 ? "morning" : hr < 18 ? "afternoon" : "evening"}${name ? `, ${name}` : ""}.`;
-  const sep = verse.indexOf(" — ");
-  const vRef = sep === -1 ? "" : verse.slice(0, sep);
-  const vText = sep === -1 ? verse : verse.slice(sep + 3);
   const openTasks = tasks.filter(t => !deletingIds.includes(t.id));
   const visibleTasks = prioritiesExpanded ? openTasks : openTasks.slice(0, PRIORITIES_VISIBLE_CAP);
   const hiddenTaskCount = openTasks.length - visibleTasks.length;
@@ -891,9 +921,28 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
           — Verse of the Day is read-only, non-actionable content, so it
           shouldn't outrank the actionable cards below it. */}
       <div style={S.cardCentered}>
-        <div style={S.eyebrow}><Icon name="book" /><span style={S.eyeText}>VERSE OF THE DAY</span></div>
-        <div style={S.verseText}>{vText || "…"}</div>
-        {vRef && <div style={S.verseRef}>{vRef.toUpperCase()}</div>}
+        <div style={{ ...S.prioHeadRow, width: "100%", marginBottom: 12 }}>
+          <div style={{ ...S.eyebrow, marginBottom: 0 }}><Icon name="book" /><span style={S.eyeText}>VERSE OF THE DAY</span></div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button style={S.prioLogLink} onClick={onOpenVerseHistory}>History ›</button>
+            <button style={S.prioLogLink} onClick={onOpenVerseFavorites}>Favorites ›</button>
+          </div>
+        </div>
+        <div style={S.verseText}>{verse?.text || "…"}</div>
+        {verse?.ref && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "center" }}>
+            <div style={S.verseRef}>{verse.ref.toUpperCase()}</div>
+            <button
+              style={S.verseStarBtn}
+              onClick={handleToggleVerseFavorite}
+              disabled={favoritingVerse}
+              aria-label={verse.favorited ? "Remove from favorites" : "Add to favorites"}
+              aria-pressed={verse.favorited}
+            >
+              <span style={{ color: verse.favorited ? C.brass : C.parchmentDim }}>★</span>
+            </button>
+          </div>
+        )}
       </div>
 
       <div style={S.cardCentered}>
@@ -3123,6 +3172,89 @@ function JournalHistoryModal({ onClose, onSaved }: { onClose: () => void; onSave
   );
 }
 
+// #77 — last 5 days (today included), recomputed live by the server rather
+// than logged; see lib/verses.ts's getVerseHistoryForUser.
+function VerseHistoryModal({ onClose, onToggleFavorite }: { onClose: () => void; onToggleFavorite: (ref: string, favorite: boolean) => Promise<boolean> }) {
+  const [entries, setEntries] = useState<VerseHistoryEntry[] | null>(null);
+  const [togglingRef, setTogglingRef] = useState<string | null>(null);
+
+  useEffect(() => { getList<VerseHistoryEntry>(`${API}/verse/history`).then(setEntries); }, []);
+
+  async function toggle(entry: VerseHistoryEntry) {
+    if (togglingRef) return;
+    setTogglingRef(entry.ref);
+    const ok = await onToggleFavorite(entry.ref, !entry.favorited);
+    if (ok) setEntries(list => list && list.map(e => (e.ref === entry.ref ? { ...e, favorited: !entry.favorited } : e)));
+    setTogglingRef(null);
+  }
+
+  return (
+    <div style={M.overlay}>
+      <ModalSheet title="Verse History" onClose={onClose}>
+        <div>
+          {(entries ?? []).map(entry => (
+            <div key={entry.date} style={S.card}>
+              <div style={S.prioHeadRow}>
+                <div style={S.prioSub}>{entry.date}</div>
+                <button
+                  style={S.verseStarBtn} onClick={() => toggle(entry)} disabled={togglingRef === entry.ref}
+                  aria-label={entry.favorited ? "Remove from favorites" : "Add to favorites"} aria-pressed={entry.favorited}
+                >
+                  <span style={{ color: entry.favorited ? C.brass : C.parchmentDim }}>★</span>
+                </button>
+              </div>
+              <div style={{ ...S.prioTitle, marginTop: 6 }}>{entry.text}</div>
+              <div style={S.verseRef}>{entry.ref.toUpperCase()}</div>
+            </div>
+          ))}
+          {entries && entries.length === 0 && <div style={S.empty}>No history yet.</div>}
+        </div>
+        <button style={M.cancel} onClick={onClose}>Close</button>
+      </ModalSheet>
+    </div>
+  );
+}
+
+function VerseFavoritesModal({ onClose, onToggleFavorite }: { onClose: () => void; onToggleFavorite: (ref: string, favorite: boolean) => Promise<boolean> }) {
+  const [entries, setEntries] = useState<{ ref: string; text: string }[] | null>(null);
+  const [removingRef, setRemovingRef] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    getList<{ ref: string; text: string }>(`${API}/verse-favorites`).then(setEntries);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function remove(ref: string) {
+    if (removingRef) return;
+    setRemovingRef(ref);
+    const ok = await onToggleFavorite(ref, false);
+    if (ok) setEntries(list => list && list.filter(e => e.ref !== ref));
+    setRemovingRef(null);
+  }
+
+  return (
+    <div style={M.overlay}>
+      <ModalSheet title="Favorite Verses" onClose={onClose}>
+        <div>
+          {(entries ?? []).map(entry => (
+            <div key={entry.ref} style={S.card}>
+              <div style={S.prioHeadRow}>
+                <div style={S.verseRef}>{entry.ref.toUpperCase()}</div>
+                <button style={S.verseStarBtn} onClick={() => remove(entry.ref)} disabled={removingRef === entry.ref} aria-label="Remove from favorites" aria-pressed={true}>
+                  <span style={{ color: C.brass }}>★</span>
+                </button>
+              </div>
+              <div style={{ ...S.prioTitle, marginTop: 6 }}>{entry.text}</div>
+            </div>
+          ))}
+          {entries && entries.length === 0 && <div style={S.empty}>No favorites yet — tap the star on Verse of the Day to save one.</div>}
+        </div>
+        <button style={M.cancel} onClick={onClose}>Close</button>
+      </ModalSheet>
+    </div>
+  );
+}
+
 // ── Auth gate ───────────────────────────────────────────────────────────────────
 type EmailLoginStartResult = { ok: true } | { ok: false; error: string };
 type EmailLoginVerifyResult = { ok: true; pendingApproval: boolean } | { ok: false; error: string };
@@ -3376,6 +3508,7 @@ const S: Record<string, CSSProperties> = {
   eyeText: { fontSize: 11, letterSpacing: "0.16em", color: C.brassSoft, fontWeight: 600 },
   verseText: { fontSize: 18, lineHeight: 1.6, color: C.parchment, marginBottom: 14, textAlign: "center" },
   verseRef: { fontSize: 11, letterSpacing: "0.12em", color: C.brassSoft },
+  verseStarBtn: { background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 16, lineHeight: 1, display: "flex", alignItems: "center" },
   intent: { fontSize: 15, lineHeight: 1.7, color: C.parchment, textAlign: "center" },
   intentInput: { width: "100%", background: "none", border: "none", outline: "none", resize: "none", fontFamily: F, fontSize: 15, lineHeight: 1.7, color: C.parchment, textAlign: "center" },
   empty: { fontSize: 14, color: C.parchmentDim, textAlign: "center", padding: "6px 0" },

@@ -94,21 +94,97 @@ function hasKids(profile: VerseProfileContext | null): boolean {
   );
 }
 
-export function getVerseOfTheDay(profile: VerseProfileContext | null = null): string {
+function filteredPool(profile: VerseProfileContext | null): string[] {
   const married = isMarried(profile);
   const kids = hasKids(profile);
-  const pool = VERSES.filter((v) => {
+  return VERSES.filter((v) => {
     const ref = verseRef(v);
     if (MARRIAGE_ONLY_REFS.has(ref) && !married) return false;
     if (PARENTING_ONLY_REFS.has(ref) && !kids) return false;
     return true;
   });
+}
 
-  const today = new Date();
-  const dayOfYear = Math.floor(
-    (today.getTime() - new Date(today.getFullYear(), 0, 0).getTime()) / 86400000,
-  );
-  return pool[dayOfYear % pool.length]!;
+function dayOfYear(date: Date): number {
+  return Math.floor((date.getTime() - new Date(date.getFullYear(), 0, 0).getTime()) / 86400000);
+}
+
+export function getVerseOfTheDay(profile: VerseProfileContext | null = null): string {
+  const pool = filteredPool(profile);
+  return pool[dayOfYear(new Date()) % pool.length]!;
+}
+
+const REF_TO_VERSE = new Map(VERSES.map((v) => [verseRef(v), v]));
+
+export function isValidVerseRef(ref: string): boolean {
+  return REF_TO_VERSE.has(ref);
+}
+
+export interface ParsedVerse {
+  ref: string;
+  text: string;
+}
+
+export function parseVerse(v: string): ParsedVerse {
+  const idx = v.indexOf(" — ");
+  return idx === -1 ? { ref: "", text: v } : { ref: v.slice(0, idx), text: v.slice(idx + 3) };
+}
+
+export function verseTextForRef(ref: string): string | null {
+  const v = REF_TO_VERSE.get(ref);
+  return v ? parseVerse(v).text : null;
+}
+
+// #77 — once a user has 1+ favorite, every FAVORITE_CYCLE_DAYS-th day is
+// guaranteed one of their favorites (cycling through them in the stable
+// order they were favorited in — see verseFavorites.createdAt), still
+// filtered through the same married/parenting gate as every other day; if
+// that empties the set (e.g. a profile change invalidated all of them),
+// falls back to the normal pick for that day only. A user with zero
+// favorites never diverges from the original shared day-of-year pick.
+// Stays a pure function of (date, profile category, favorite set) — no
+// per-user storage needed to reconstruct what was shown on a past day, see
+// getVerseHistoryForUser below.
+const FAVORITE_CYCLE_DAYS = 5;
+
+export function getVerseForUser(profile: VerseProfileContext | null, favoriteRefs: string[], date: Date = new Date()): string {
+  const pool = filteredPool(profile);
+  const doy = dayOfYear(date);
+  const normalPick = pool[doy % pool.length]!;
+  if (favoriteRefs.length === 0 || doy % FAVORITE_CYCLE_DAYS !== 0) return normalPick;
+
+  const poolRefs = new Set(pool.map(verseRef));
+  const eligibleFavorites = favoriteRefs.filter((ref) => poolRefs.has(ref)).map((ref) => REF_TO_VERSE.get(ref)).filter((v): v is string => Boolean(v));
+  if (eligibleFavorites.length === 0) return normalPick;
+
+  const cycleIndex = Math.floor(doy / FAVORITE_CYCLE_DAYS) % eligibleFavorites.length;
+  return eligibleFavorites[cycleIndex]!;
+}
+
+function ymdLocal(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+export interface VerseHistoryEntry extends ParsedVerse {
+  date: string;
+}
+
+// Recomputed live from getVerseForUser, not logged anywhere — see #77's
+// resolution. Newest first (today included as entry 0).
+export function getVerseHistoryForUser(profile: VerseProfileContext | null, favoriteRefs: string[], days = 5, from: Date = new Date()): VerseHistoryEntry[] {
+  const entries: VerseHistoryEntry[] = [];
+  for (let i = 0; i < days; i++) {
+    const d = new Date(from);
+    d.setDate(d.getDate() - i);
+    entries.push({ date: ymdLocal(d), ...parseVerse(getVerseForUser(profile, favoriteRefs, d)) });
+  }
+  return entries;
+}
+
+export function favoriteVersesPromptBlock(favoriteRefs: string[]): string {
+  const favoriteVerses = favoriteRefs.map((ref) => REF_TO_VERSE.get(ref)).filter((v): v is string => Boolean(v));
+  if (favoriteVerses.length === 0) return "";
+  return `\n\n## User's favorited verses\nThe user has favorited these — prefer one of these when Scripture fits naturally, especially if they ask for one directly:\n${favoriteVerses.map((v) => `- ${v}`).join("\n")}`;
 }
 
 export const SCRIPTURE_GROUNDING = `## Approved verses

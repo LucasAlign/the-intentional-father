@@ -1,11 +1,11 @@
 import { Router, Request, Response } from "express";
 import { db, withUserSession } from "@workspace/db";
-import { journalEntries, chatMessages, tasks, taskCompletions, commits, commitRelationshipTargets, type Commit, jobs, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit } from "@workspace/db";
+import { journalEntries, chatMessages, tasks, taskCompletions, commits, commitRelationshipTargets, type Commit, jobs, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit, verseFavorites } from "@workspace/db";
 import { eq, desc, asc, gte, lte, and, isNull, inArray, notInArray, sql } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
 import { normalizeProfileData, isToneVoice, DEFAULT_TONE_VOICE, type ProfileData, type ToneVoice } from "../lib/profile";
 import { aiRateLimit } from "../middlewares/aiRateLimit";
-import { SCRIPTURE_GROUNDING, getVerseOfTheDay } from "../lib/verses";
+import { SCRIPTURE_GROUNDING, getVerseOfTheDay, getVerseForUser, getVerseHistoryForUser, parseVerse, verseTextForRef, isValidVerseRef, favoriteVersesPromptBlock } from "../lib/verses";
 import { computeCurrentPeriodStats, computeStreak, isSlipping, type RecurrencePeriod } from "../lib/priorityPeriods";
 import { buildTodayContext } from "../lib/stewardContext";
 import { isPulseCategory, isPulseState } from "../lib/pulseCheck";
@@ -51,7 +51,7 @@ const TONE_DELIVERY: Record<ToneVoice, string> = {
   take_it_easy: "Lead with real warmth and room to reflect — noticeably more give than Middle of the Road, and slower to pivot to the direct point. Draw the truth out with questions rather than stating it outright up front. Still gets to honesty before the exchange is over, and never drifts into flattery or avoidance — but this should read as clearly the gentlest of the three, not tougher than Middle of the Road.",
 };
 
-function buildStewardSystemPrompt(profileData: ProfileData | null, relationshipRows: Relationship[], pursuitRows: Pursuit[], fallbackName: string): string {
+function buildStewardSystemPrompt(profileData: ProfileData | null, relationshipRows: Relationship[], pursuitRows: Pursuit[], fallbackName: string, favoriteVerseRefs: string[]): string {
   const name = profileData?.name || fallbackName || "friend";
   const season = profileData?.season_of_life ? `\nTheir season of life: ${profileData.season_of_life}.` : "";
   const topPriority = profileData?.core_identity?.top_priority
@@ -125,7 +125,13 @@ Guidelines:
 
 You are a tool, not a pastor, counselor, or substitute for the people in their life.
 
-${SCRIPTURE_GROUNDING}`;
+${SCRIPTURE_GROUNDING}${favoriteVersesPromptBlock(favoriteVerseRefs)}`;
+}
+
+async function loadFavoriteRefs(userId: string): Promise<string[]> {
+  const rows = await db.select({ verseRef: verseFavorites.verseRef }).from(verseFavorites)
+    .where(eq(verseFavorites.userId, userId)).orderBy(asc(verseFavorites.createdAt));
+  return rows.map((r) => r.verseRef);
 }
 
 // GET /api/verse
@@ -133,10 +139,73 @@ router.get('/verse', async (req: Request, res: Response) => {
   try {
     const [profileRow] = await db.select().from(profileTable).where(eq(profileTable.userId, req.user!.id)).limit(1);
     const profileData = normalizeProfileData(profileRow?.data ?? null);
-    res.send(getVerseOfTheDay(profileData));
+    const favoriteRefs = await loadFavoriteRefs(req.user!.id);
+    const { ref, text } = parseVerse(getVerseForUser(profileData, favoriteRefs));
+    res.json({ ref, text, favorited: favoriteRefs.includes(ref) });
   } catch (err) {
     req.log?.error({ err }, 'Error fetching verse of the day');
-    res.send(getVerseOfTheDay(null));
+    const { ref, text } = parseVerse(getVerseOfTheDay(null));
+    res.json({ ref, text, favorited: false });
+  }
+});
+
+// GET /api/verse/history — last 5 days (today included), recomputed live
+// rather than logged (#77's resolution).
+router.get('/verse/history', async (req: Request, res: Response) => {
+  try {
+    const [profileRow] = await db.select().from(profileTable).where(eq(profileTable.userId, req.user!.id)).limit(1);
+    const profileData = normalizeProfileData(profileRow?.data ?? null);
+    const favoriteRefs = await loadFavoriteRefs(req.user!.id);
+    const favSet = new Set(favoriteRefs);
+    const history = getVerseHistoryForUser(profileData, favoriteRefs).map((entry) => ({ ...entry, favorited: favSet.has(entry.ref) }));
+    res.json(history);
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching verse history');
+    res.status(500).json({ error: 'Failed to fetch verse history' });
+  }
+});
+
+// GET /api/verse-favorites
+router.get('/verse-favorites', async (req: Request, res: Response) => {
+  try {
+    const rows = await db.select().from(verseFavorites).where(eq(verseFavorites.userId, req.user!.id)).orderBy(desc(verseFavorites.createdAt));
+    res.json(rows.map((r) => ({ ref: r.verseRef, text: verseTextForRef(r.verseRef) ?? '' })));
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching verse favorites');
+    res.status(500).json({ error: 'Failed to fetch favorites' });
+  }
+});
+
+// POST /api/verse-favorites
+router.post('/verse-favorites', async (req: Request, res: Response) => {
+  try {
+    const { ref } = req.body as { ref?: unknown };
+    if (typeof ref !== 'string' || !isValidVerseRef(ref)) {
+      res.status(400).json({ error: 'Invalid verse reference' });
+      return;
+    }
+    await db.insert(verseFavorites).values({ userId: req.user!.id, verseRef: ref }).onConflictDoNothing();
+    res.json({ ref, text: verseTextForRef(ref) });
+  } catch (err) {
+    req.log?.error({ err }, 'Error adding verse favorite');
+    res.status(500).json({ error: 'Failed to add favorite' });
+  }
+});
+
+// DELETE /api/verse-favorites — ref passed in the body (not the URL) since
+// a verse reference (e.g. "Proverbs 6:6-8") isn't a clean path segment.
+router.delete('/verse-favorites', async (req: Request, res: Response) => {
+  try {
+    const { ref } = req.body as { ref?: unknown };
+    if (typeof ref !== 'string') {
+      res.status(400).json({ error: 'Invalid verse reference' });
+      return;
+    }
+    await db.delete(verseFavorites).where(and(eq(verseFavorites.userId, req.user!.id), eq(verseFavorites.verseRef, ref)));
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error removing verse favorite');
+    res.status(500).json({ error: 'Failed to remove favorite' });
   }
 });
 
@@ -1083,16 +1152,17 @@ router.post('/chat', aiRateLimit, async (req: Request, res: Response) => {
     const userId = req.user!.id;
     const today = new Date().toISOString().split('T')[0];
 
-    const [context, todayChat, profileRow, relationshipRows, pursuitRows] = await Promise.all([
+    const [context, todayChat, profileRow, relationshipRows, pursuitRows, favoriteRows] = await Promise.all([
       buildTodayContext(userId, today),
       db.select().from(chatMessages).where(and(eq(chatMessages.userId, userId), eq(chatMessages.date, today))).orderBy(asc(chatMessages.createdAt)),
       db.select().from(profileTable).where(eq(profileTable.userId, userId)).limit(1),
       db.select().from(relationships).where(eq(relationships.userId, userId)).orderBy(RELATIONSHIP_RANK_SQL, relationships.createdAt),
       db.select().from(pursuits).where(eq(pursuits.userId, userId)).orderBy(asc(pursuits.name)),
+      db.select({ verseRef: verseFavorites.verseRef }).from(verseFavorites).where(eq(verseFavorites.userId, userId)),
     ]);
 
     const profileData = normalizeProfileData(profileRow[0]?.data ?? null);
-    const STEWARD_SYSTEM_PROMPT = buildStewardSystemPrompt(profileData, relationshipRows, pursuitRows, req.user!.firstName ?? "");
+    const STEWARD_SYSTEM_PROMPT = buildStewardSystemPrompt(profileData, relationshipRows, pursuitRows, req.user!.firstName ?? "", favoriteRows.map((f) => f.verseRef));
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {

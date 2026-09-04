@@ -266,3 +266,21 @@ export const pulseChecks = pgTable("pulse_checks", {
 export const insertPulseCheckSchema = createInsertSchema(pulseChecks).omit({ id: true, createdAt: true });
 export type InsertPulseCheck = z.infer<typeof insertPulseCheckSchema>;
 export type PulseCheck = typeof pulseChecks.$inferSelect;
+
+// #77 — a user's favorited Verse of the Day entries. Keyed by the verse's
+// reference string (e.g. "Ephesians 5:25"), not an array index into
+// lib/verses.ts's VERSES — an index would silently break if that list is
+// ever reordered. createdAt order is the stable cycle order the weighted
+// rotation uses (lib/verses.ts's getVerseForUser).
+export const verseFavorites = pgTable("verse_favorites", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  verseRef: text("verse_ref").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  unique("verse_favorites_user_ref_unique").on(table.userId, table.verseRef),
+]);
+
+export const insertVerseFavoriteSchema = createInsertSchema(verseFavorites).omit({ id: true, createdAt: true });
+export type InsertVerseFavorite = z.infer<typeof insertVerseFavoriteSchema>;
+export type VerseFavorite = typeof verseFavorites.$inferSelect;
