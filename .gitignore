@@ -47,3 +47,9 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Playwright (e2e)
+/e2e/playwright-report/
+/e2e/test-results/
+/e2e/blob-report/
+/e2e/playwright/.cache/

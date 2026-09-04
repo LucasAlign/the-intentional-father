@@ -24,7 +24,7 @@ The dev servers below are already kept running by the Replit "Project" workflow 
 - `PUBLIC_URL` (e.g. `https://1arlo.replit.app`): the canonical app origin. Takes priority over request headers (`x-forwarded-proto`/`x-forwarded-host`) everywhere an OAuth `redirect_uri` or an absolute link in an email is built (`lib/origin.ts`, `lib/email.ts`) — unset in a deployment, those fall back to proxy-forwarded headers, which can diverge from what's registered with the OAuth provider and cause `redirect_uri_mismatch`. Set it explicitly in any deployment that sits behind a proxy.
 - `ADMIN_EMAILS` (comma-separated, case-insensitive): grants admin access (beta-invite approval, `routes/admin.ts`) and bypasses the beta-invite gate. Defaults to `witeyford@gmail.com` if unset. Read once at server startup (`lib/auth.ts`) — changing it in a running deployment's Secrets requires an actual redeploy/restart, not just a save, to take effect. Note the trailing **S** — a secret named `ADMIN_EMAIL` (singular) is silently ignored and the default applies instead.
 - `LOG_LEVEL` (optional, defaults to `info`): pino log level (`lib/logger.ts`).
-- No test suite exists yet — correctness is verified via `typecheck` plus manual exercise of the running app.
+- `pnpm --filter @workspace/e2e run test` — run the Playwright usability-regression suite (#41) locally against whatever `arlo`/`api-server` you already have running (`reuseExistingServer` in `e2e/playwright.config.ts`); if neither is running, Playwright boots both itself. Needs `playwright install --with-deps chromium` once per machine first. Correctness beyond this suite's coverage is still verified via `typecheck` plus manual exercise of the running app — the suite is intentionally not comprehensive yet, see #41.
 
 ## Stack
 
@@ -66,6 +66,7 @@ All app data tables are scoped by `user_id` — this is a multi-user app, not si
 - `lib/replit-auth-web/` — browser `useAuth()` hook (login/logout/user state)
 - `lib/db/src/schema/steward.ts` — app data tables; `schema/auth.ts` — session/user/beta-invite tables
 - `artifacts/mockup-sandbox/` — scratch Vite app for iterating on UI mockups before they graduate into `arlo`. Its `arlo-redesign` mockup still says "Arlo" throughout (frozen historical snapshot, not live) — deliberately untouched, see #6's resolution.
+- `e2e/` — Playwright usability-regression suite (#41), a separate workspace package (not under `artifacts/*`, since it's tooling rather than a deployable artifact — same category as `scripts`). `tests/helpers/auth.ts`'s `signInAsDemoUser` is the seed strategy: hits `GET /api/login/demo` (no OAuth, throwaway user) then `POST /api/interview/skip` (no OpenAI call) to land on Today — no secrets needed beyond `DATABASE_URL`. Runs against 4 viewport widths (320/375/390/430) via `playwright.config.ts`'s `projects`. `.github/workflows/ci.yml` runs it on every PR against an ephemeral Postgres service container.
 
 ## Gotchas
 
