@@ -8,6 +8,11 @@ import { signInAsDemoUser } from "./helpers/auth";
 // doesn't cover.
 test.describe("Today — accessibility and keyboard", () => {
   test("has no automatically detectable accessibility violations", async ({ page, baseURL }) => {
+    // The authenticated Today screen is a much bigger DOM than the
+    // signed-out AuthGate (all 5 tabs' worth of cards/icons render into
+    // one page) — axe takes ~11s to analyze it locally, well past the
+    // default 30s test timeout once combined with sign-in and page load.
+    test.setTimeout(60_000);
     await signInAsDemoUser(page, baseURL!);
     const results = await new AxeBuilder({ page }).analyze();
     expect(results.violations).toEqual([]);

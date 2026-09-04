@@ -693,7 +693,10 @@ export default function Home() {
       <div style={R.woodLayer} />
       <div style={R.ambient} />
 
-      <div style={R.header}>
+      {/* <header>/<main>, not <div> (#41 — axe's "region" rule: all page
+          content must be contained by a landmark; the nav already had one
+          via <nav aria-label="Main">, these two didn't). */}
+      <header style={R.header}>
         <div>
           <div style={R.logo}><span style={R.logoText}>Steward</span><span style={R.logoDot}>.</span></div>
           <div style={R.tagline}>FOCUSED. FAITHFUL. FREE.</div>
@@ -706,15 +709,15 @@ export default function Home() {
           )}
           <button style={{ ...R.avatar, padding: 0, cursor: "pointer" }} onClick={() => setProfileMenu(true)} title="Profile" aria-label="Profile"><Icon name="user" size={20} color={C.parchmentDim} /></button>
         </div>
-      </div>
+      </header>
 
-      <div style={R.screen}>
+      <main style={R.screen}>
         {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} onOpenJournalHistory={() => setJournalHistoryOpen(true)} />}
         {tab === "her" && <Relationships relationships={relationships} refreshRelationships={refreshRelationships} commits={commits} refreshCommits={refreshCommits} />}
         {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} onOpenClosed={() => setClosedPursuitsOpen(true)} />}
         {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} />}
         {tab === "week" && <WeekView events={week} jobs={jobs} pursuits={pursuits} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await apiFetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
-      </div>
+      </main>
 
       <div style={R.navWrap}>
         <div style={R.navLine} />
@@ -3082,7 +3085,10 @@ function AuthGate({
     <div style={R.root}>
       <div style={R.woodLayer} />
       <div style={R.ambient} />
-      <div style={G.wrap}>
+      {/* <main>, not <div> (#41 — axe's "region" rule: all page content
+          must be contained by a landmark; this was the only content on
+          the signed-out screen with none). */}
+      <main style={G.wrap}>
         <div style={R.logo}><span style={R.logoText}>Steward</span><span style={R.logoDot}>.</span></div>
         <div style={{ ...R.tagline, textAlign: "center", marginBottom: 38 }}>FOCUSED. FAITHFUL. FREE.</div>
         {loading ? (
@@ -3154,7 +3160,7 @@ function AuthGate({
             <button style={{ ...G.addHomeToggle, marginTop: 10 }} onClick={() => { setError(""); setCode(""); setStep("email"); }}>Use a different email</button>
           </>
         )}
-      </div>
+      </main>
     </div>
   );
 }
