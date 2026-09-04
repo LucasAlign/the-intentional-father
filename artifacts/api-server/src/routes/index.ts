@@ -5,6 +5,7 @@ import stewardRouter from "./steward";
 import googleCalendarRouter from "./googleCalendar";
 import interviewRouter from "./interview";
 import adminRouter from "./admin";
+import remindersRouter from "./reminders";
 import { requireAuth } from "../middlewares/requireAuth";
 import { dbUserContext } from "../middlewares/dbUserContext";
 
@@ -12,6 +13,8 @@ const router: IRouter = Router();
 
 router.use(healthRouter);
 router.use(authRouter);
+// Public (secret-keyed, not session-based) — see reminders.ts and #75.
+router.use(remindersRouter);
 // Establish authentication and the RLS-scoped database transaction once for
 // the protected router stack. Applying these middlewares separately to each
 // child router opens another pooled connection every time an earlier router

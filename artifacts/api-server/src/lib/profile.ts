@@ -26,6 +26,10 @@ export interface ProfileData {
   planning_profile?: PlanningProfile | null;
   guardrails?: { do_not_suggest?: string[]; always_remind_of?: string | null };
   voice: ToneVoice;
+  // Daily commitment-reminder emails (#75) — defaults to on so a user gets
+  // the benefit without having to find a setting first; PATCHable the same
+  // way voice is.
+  remindersEnabled: boolean;
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -79,5 +83,6 @@ export function normalizeProfileData(raw: unknown): ProfileData | null {
       always_remind_of: typeof rawGuardrails?.always_remind_of === "string" ? rawGuardrails.always_remind_of : null,
     },
     voice: isToneVoice(raw.voice) ? raw.voice : DEFAULT_TONE_VOICE,
+    remindersEnabled: raw.remindersEnabled !== false,
   };
 }

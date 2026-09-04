@@ -9,10 +9,10 @@
 // RLS (#26) is fail-closed and neither has a per-request user session to
 // scope it, so without the bypass they'd silently see zero rows.
 
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import type { Pool } from "pg";
-import { jobs, profile, pursuits, relationships } from "./index";
+import { commitRelationshipTargets, commits, jobs, profile, pursuits, relationships } from "./index";
 
 const RELATIONSHIP_CATEGORIES = ["spouse", "child", "family", "friend"] as const;
 type RelationshipCategory = (typeof RELATIONSHIP_CATEGORIES)[number];
@@ -167,4 +167,42 @@ export async function migratePursuits(pool: Pool): Promise<MigratePursuitsResult
   }
 
   return { pursuitsCreated, jobsRetagged };
+}
+
+export interface MigrateCommitTargetsResult {
+  targetsCreated: number;
+}
+
+// One-time backfill for #72 — copies every commit's old single
+// `relationshipId` into the new commitRelationshipTargets join table, which
+// now owns multi-person targeting going forward. Safe to re-run: the join
+// table's (commit_id, relationship_id) unique constraint plus
+// onConflictDoNothing means a second run just skips rows already migrated,
+// same idempotency shape as migrateRelationships/migratePursuits above.
+// Doesn't touch commits.relationshipId itself — it stays in place, unread,
+// same treatment as jobs.biz post-#29.
+export async function migrateCommitTargets(pool: Pool): Promise<MigrateCommitTargetsResult> {
+  const client = await pool.connect();
+  let targetsCreated = 0;
+  try {
+    await client.query("SELECT set_config('app.bypass_rls', 'true', false)");
+    const db = drizzle(client);
+
+    const toMigrate = await db.select({ id: commits.id, userId: commits.userId, relationshipId: commits.relationshipId })
+      .from(commits)
+      .where(isNotNull(commits.relationshipId));
+
+    for (const c of toMigrate) {
+      const result = await db.insert(commitRelationshipTargets)
+        .values({ userId: c.userId, commitId: c.id, relationshipId: c.relationshipId! })
+        .onConflictDoNothing()
+        .returning({ id: commitRelationshipTargets.id });
+      if (result.length > 0) targetsCreated++;
+    }
+  } finally {
+    await client.query("RESET app.bypass_rls").catch(() => undefined);
+    client.release();
+  }
+
+  return { targetsCreated };
 }

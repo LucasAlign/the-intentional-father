@@ -192,15 +192,24 @@ router.get("/profile", async (req: Request, res: Response) => {
   }
 });
 
-// PATCH /api/profile — updates a single field on the user's profile without
-// re-running the interview. Only `voice` today; the only writer of profile
-// data before this was interview completion (and the dev-only test seed).
+// PATCH /api/profile — updates one or more fields on the user's profile
+// without re-running the interview. `voice` and `remindersEnabled` (#75)
+// today; the only writer of profile data before this was interview
+// completion (and the dev-only test seed).
 router.patch("/profile", async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
-    const { voice } = req.body as { voice?: unknown };
-    if (!isToneVoice(voice)) {
+    const { voice, remindersEnabled } = req.body as { voice?: unknown; remindersEnabled?: unknown };
+    if (voice === undefined && remindersEnabled === undefined) {
+      res.status(400).json({ error: "Provide at least one of: voice, remindersEnabled" });
+      return;
+    }
+    if (voice !== undefined && !isToneVoice(voice)) {
       res.status(400).json({ error: `voice must be one of: ${TONE_VOICES.join(", ")}` });
+      return;
+    }
+    if (remindersEnabled !== undefined && typeof remindersEnabled !== "boolean") {
+      res.status(400).json({ error: "remindersEnabled must be a boolean" });
       return;
     }
     const [existing] = await db
@@ -209,7 +218,11 @@ router.patch("/profile", async (req: Request, res: Response) => {
       .where(eq(profileTable.userId, userId))
       .limit(1);
     const existingData = isRecord(existing?.data) ? existing.data : {};
-    const data = { ...existingData, voice };
+    const data = {
+      ...existingData,
+      ...(voice !== undefined ? { voice } : {}),
+      ...(remindersEnabled !== undefined ? { remindersEnabled } : {}),
+    };
     await db
       .insert(profileTable)
       .values({ userId, data, onboarded: existing?.onboarded ?? false, updatedAt: new Date() })
@@ -217,7 +230,7 @@ router.patch("/profile", async (req: Request, res: Response) => {
         target: profileTable.userId,
         set: { data, updatedAt: new Date() },
       });
-    res.json({ voice });
+    res.json({ voice: data.voice, remindersEnabled: data.remindersEnabled });
   } catch (err) {
     req.log?.error({ err }, "Error updating profile");
     res.status(500).json({ error: "Failed to update profile" });
