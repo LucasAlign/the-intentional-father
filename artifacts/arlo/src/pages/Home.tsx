@@ -2898,8 +2898,19 @@ function Sphere() {
   const byCategory = new Map(checks.map(c => [c.category, c]));
   const dashByCategory = new Map((dashboard ?? []).map(d => [d.category, d]));
 
+  // Guards against a battery-icon tap's optimistic update losing a race
+  // against the initial GET /sphere still in flight from mount: if that GET
+  // resolves after a tap's POST already landed, its `.then(setChecks)` would
+  // otherwise stomp the fresh state with the pre-tap snapshot it fetched
+  // earlier — the tap would visibly glow, then revert. Bumped by both a new
+  // fetch and every successful write, so a write always invalidates any
+  // still-pending fetch that started before it.
+  const checksVersion = useRef(0);
   const refreshChecks = useCallback(() => {
-    getList<SphereCheckEntry>(`${API}/sphere?week=${weekStartYmd(new Date())}`).then(setChecks);
+    const v = ++checksVersion.current;
+    getList<SphereCheckEntry>(`${API}/sphere?week=${weekStartYmd(new Date())}`).then(list => {
+      if (v === checksVersion.current) setChecks(list);
+    });
   }, []);
   const refreshDashboard = useCallback(() => {
     getJson(`${API}/sphere/dashboard`, null).then(d => {
@@ -2919,6 +2930,7 @@ function Sphere() {
       if (answers !== undefined) body.answers = answers;
       const r = await apiFetch(`${API}/sphere`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (r.ok) {
+        checksVersion.current++;
         setChecks(prev => [...prev.filter(c => c.category !== category), { category, state, note, answers: answers ?? prev.find(c => c.category === category)?.answers ?? null }]);
         return true;
       }
