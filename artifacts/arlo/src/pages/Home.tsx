@@ -795,7 +795,7 @@ function ProfileMenu({ name, email, onClose, onLogout, hintsEnabled, onSetHintsE
             actually using Steward and looking for it, not pushed on every
             visitor before they've seen the product. */}
         <AddToHomeScreen />
-        <button style={M.cancel} onClick={onClose}>Cancel</button>
+        <button style={M.cancel} onClick={onClose}>Close</button>
       </ModalSheet>
     </div>
   );
