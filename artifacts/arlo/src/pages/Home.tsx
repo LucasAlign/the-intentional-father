@@ -231,7 +231,7 @@ function TapError({ message }: { message: string | null }) {
 }
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
-type IconName = "book" | "heart" | "target" | "cal" | "clock" | "pen" | "chat" | "sun" | "work" | "user" | "send" | "mic" | "compass";
+type IconName = "book" | "heart" | "target" | "cal" | "clock" | "pen" | "chat" | "sun" | "work" | "user" | "send" | "mic" | "globe";
 function Icon({ name, size = 15, color = C.brassSoft, stroke = 1.6 }: { name: IconName; size?: number; color?: string; stroke?: number }) {
   const p = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: color, strokeWidth: stroke, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
   const m: Record<IconName, ReactElement> = {
@@ -247,7 +247,7 @@ function Icon({ name, size = 15, color = C.brassSoft, stroke = 1.6 }: { name: Ic
     user: <><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></>,
     send: <path d="M3 11l18-8-8 18-2-7-8-3z" fill={color} stroke="none" />,
     mic: <><path d="M12 1a3 3 0 0 1 3 3v8a3 3 0 0 1-6 0V4a3 3 0 0 1 3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" /></>,
-    compass: <><circle cx="12" cy="12" r="9" /><path d="M15.5 8.5l-2 5-5 2 2-5z" /></>,
+    globe: <><circle cx="12" cy="12" r="9" /><ellipse cx="12" cy="12" rx="4" ry="9" /><line x1="3.3" y1="8.5" x2="20.7" y2="8.5" /><line x1="3.3" y1="15.5" x2="20.7" y2="15.5" /></>,
   };
   // Every icon in the app is decorative — paired with a visible label, or
   // sitting inside a button that carries its own aria-label — so it's
@@ -263,7 +263,7 @@ const NAV: { id: TabId; icon: IconName | "stewardIcon"; label: string }[] = [
   { id: "today", icon: "sun", label: "Today" },
   { id: "her", icon: "heart", label: "Tribe" },
   { id: "work", icon: "work", label: "Work" },
-  { id: "sphere", icon: "compass", label: "Sphere" },
+  { id: "sphere", icon: "globe", label: "Sphere" },
   { id: "steward", icon: "stewardIcon", label: "Chat" },
   { id: "week", icon: "cal", label: "Week" },
 ];
