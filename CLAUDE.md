@@ -78,7 +78,7 @@ All app data tables are scoped by `user_id` — this is a multi-user app, not si
 - `OPENAI_API_KEY` must be set (as a Replit secret in deployed envs) for AI chat/interview features to work.
 - Journal and chat save on blur / form submit, not live.
 - The reminder scan (#75) computes "today" from the server's UTC clock — there's no per-user timezone anywhere in the schema. A commitment can land in the wrong day's bucket by up to ~a day for a user far from UTC; accepted tradeoff for v1, not a bug.
-- Sphere's `weekStart` (#82) is likewise client-computed (the client's local Monday, not a per-user timezone the schema tracks) and only validated, not recomputed, server-side; the same up-to-~a-day skew as the reminders gotcha above applies if the server ever falls back to its own UTC-based default (in practice the client always sends `week=` explicitly, so this is rarely hit).
+- Sphere's `weekStart` (#82) runs Sunday–Saturday (resets Saturday night at 11:59pm) and is client-computed using the browser's local Date methods — no per-user timezone field in the schema, it just relies on the client already being in the user's own timezone — and only validated, not recomputed, server-side; the same up-to-~a-day skew as the reminders gotcha above applies if the server ever falls back to its own UTC-based default (in practice the client always sends `week=` explicitly, so this is rarely hit).
 
 ## Replit Environment Rules
 

@@ -466,14 +466,17 @@ function FirstVisitTip({ id, children }: { id: string; children: ReactNode }) {
 
 // ── Date helpers ───────────────────────────────────────────────────────────────
 const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-// Monday of the local week containing `d`, as YYYY-MM-DD — the client is the
-// source of truth for "what week is it" (#82, same reasoning as `?today=`
-// elsewhere in this file: no per-user timezone anywhere in the schema).
+// Sunday of the local week containing `d`, as YYYY-MM-DD — the Sphere week
+// runs Sunday through Saturday, resetting Saturday night at 11:59pm in
+// whatever timezone the browser is actually in (plain, non-UTC Date methods
+// already read the system/browser's local time, so this needs no explicit
+// timezone handling of its own). The client is the source of truth for
+// "what week is it" (#82, same reasoning as `?today=` elsewhere in this
+// file: no per-user timezone anywhere in the schema).
 function weekStartYmd(d: Date): string {
-  const diffToMonday = (d.getDay() + 6) % 7;
-  const monday = new Date(d);
-  monday.setDate(d.getDate() - diffToMonday);
-  return ymd(monday);
+  const sunday = new Date(d);
+  sunday.setDate(d.getDate() - d.getDay());
+  return ymd(sunday);
 }
 function weekDays() {
   const now = new Date();
@@ -2977,7 +2980,7 @@ function Sphere() {
           <div style={S.eyeText}>SPHERE DASHBOARD</div>
           <button style={S.prioLogLink} onClick={() => setHistoryOpen(true)}>History ›</button>
         </div>
-        <div style={{ fontSize: 11, color: C.parchmentLow, marginBottom: 10 }}>This week's check-in resets every Monday at midnight.</div>
+        <div style={{ fontSize: 11, color: C.parchmentLow, marginBottom: 10 }}>This week's check-in resets Saturday night at 11:59 PM, your time.</div>
         {dashboard === null ? (
           <div style={S.empty}>Loading…</div>
         ) : dashboardEmpty ? (

@@ -100,15 +100,16 @@ export function summarizeFlaggedSphereAnswers(category: SphereCategory, rawAnswe
   return lines;
 }
 
-// Monday of the ISO week containing `date`, as YYYY-MM-DD. The client is the
-// source of truth for "what week is it" (same reasoning as tasks/pulse-checks'
-// `?today=` param — no per-user timezone anywhere in this schema, see
-// CLAUDE.md's Gotchas), so this exists mainly to validate a client-supplied
-// value server-side and for any one-off server-side default.
+// Sunday of the week containing `date` (UTC), as YYYY-MM-DD — the Sphere
+// week runs Sunday through Saturday, resetting Saturday night at 11:59pm in
+// the user's own timezone. The client (Home.tsx's weekStartYmd, using plain
+// local Date methods) is the source of truth for "what week is it" — this
+// UTC version exists only to validate a client-supplied value server-side
+// and for one-off server-side defaults (the dashboard/history rollups),
+// same reasoning as tasks/pulse-checks' `?today=` param (no per-user
+// timezone anywhere in this schema, see CLAUDE.md's Gotchas).
 export function getWeekStart(date: Date): string {
   const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-  const day = d.getUTCDay(); // 0 = Sunday
-  const diffToMonday = (day + 6) % 7;
-  d.setUTCDate(d.getUTCDate() - diffToMonday);
+  d.setUTCDate(d.getUTCDate() - d.getUTCDay()); // getUTCDay(): 0 = Sunday
   return d.toISOString().split('T')[0];
 }
