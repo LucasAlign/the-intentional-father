@@ -30,6 +30,16 @@ export interface ProfileData {
   // the benefit without having to find a setting first; PATCHable the same
   // way voice is.
   remindersEnabled: boolean;
+  // Helpful Hints (#83) — a profile-page master switch over the per-hint
+  // <FirstVisitTip> close buttons scattered across the tabs. Defaults to
+  // false here (existing users see hints off until they opt in); a brand
+  // new user gets hintsEnabled seeded true at onboarding completion
+  // (routes/interview.ts) so hints still show automatically on first login.
+  hintsEnabled: boolean;
+  // Hint ids the user has individually closed while the master switch is
+  // on. Turning the switch on (from off) always clears this array — that's
+  // the "reset" behavior, not something normalizeProfileData decides.
+  dismissedHints: string[];
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -84,5 +94,7 @@ export function normalizeProfileData(raw: unknown): ProfileData | null {
     },
     voice: isToneVoice(raw.voice) ? raw.voice : DEFAULT_TONE_VOICE,
     remindersEnabled: raw.remindersEnabled !== false,
+    hintsEnabled: raw.hintsEnabled === true,
+    dismissedHints: stringArray(raw.dismissedHints),
   };
 }

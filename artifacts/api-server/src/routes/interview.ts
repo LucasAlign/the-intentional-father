@@ -193,15 +193,18 @@ router.get("/profile", async (req: Request, res: Response) => {
 });
 
 // PATCH /api/profile — updates one or more fields on the user's profile
-// without re-running the interview. `voice` and `remindersEnabled` (#75)
-// today; the only writer of profile data before this was interview
-// completion (and the dev-only test seed).
+// without re-running the interview. `voice` and `remindersEnabled` (#75),
+// plus `hintsEnabled`/`dismissedHints` (#83 — the Helpful Hints master
+// switch and its per-hint close-button state); the only writer of profile
+// data before this was interview completion (and the dev-only test seed).
 router.patch("/profile", async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
-    const { voice, remindersEnabled } = req.body as { voice?: unknown; remindersEnabled?: unknown };
-    if (voice === undefined && remindersEnabled === undefined) {
-      res.status(400).json({ error: "Provide at least one of: voice, remindersEnabled" });
+    const { voice, remindersEnabled, hintsEnabled, dismissedHints } = req.body as {
+      voice?: unknown; remindersEnabled?: unknown; hintsEnabled?: unknown; dismissedHints?: unknown;
+    };
+    if (voice === undefined && remindersEnabled === undefined && hintsEnabled === undefined && dismissedHints === undefined) {
+      res.status(400).json({ error: "Provide at least one of: voice, remindersEnabled, hintsEnabled, dismissedHints" });
       return;
     }
     if (voice !== undefined && !isToneVoice(voice)) {
@@ -210,6 +213,14 @@ router.patch("/profile", async (req: Request, res: Response) => {
     }
     if (remindersEnabled !== undefined && typeof remindersEnabled !== "boolean") {
       res.status(400).json({ error: "remindersEnabled must be a boolean" });
+      return;
+    }
+    if (hintsEnabled !== undefined && typeof hintsEnabled !== "boolean") {
+      res.status(400).json({ error: "hintsEnabled must be a boolean" });
+      return;
+    }
+    if (dismissedHints !== undefined && (!Array.isArray(dismissedHints) || !dismissedHints.every((v) => typeof v === "string"))) {
+      res.status(400).json({ error: "dismissedHints must be an array of strings" });
       return;
     }
     const [existing] = await db
@@ -222,6 +233,8 @@ router.patch("/profile", async (req: Request, res: Response) => {
       ...existingData,
       ...(voice !== undefined ? { voice } : {}),
       ...(remindersEnabled !== undefined ? { remindersEnabled } : {}),
+      ...(hintsEnabled !== undefined ? { hintsEnabled } : {}),
+      ...(dismissedHints !== undefined ? { dismissedHints } : {}),
     };
     await db
       .insert(profileTable)
@@ -230,7 +243,7 @@ router.patch("/profile", async (req: Request, res: Response) => {
         target: profileTable.userId,
         set: { data, updatedAt: new Date() },
       });
-    res.json({ voice: data.voice, remindersEnabled: data.remindersEnabled });
+    res.json({ voice: data.voice, remindersEnabled: data.remindersEnabled, hintsEnabled: data.hintsEnabled, dismissedHints: data.dismissedHints });
   } catch (err) {
     req.log?.error({ err }, "Error updating profile");
     res.status(500).json({ error: "Failed to update profile" });
@@ -385,6 +398,12 @@ router.post("/interview", aiRateLimit, async (req: Request, res: Response) => {
         if (isRecord(profileData)) {
           delete profileData.relationships;
           delete profileData.pursuits;
+          // Helpful Hints (#83) — show automatically for a brand new user's
+          // first login, even though the general default (normalizeProfileData)
+          // is off.
+          profileData.hintsEnabled = true;
+        } else {
+          profileData = { hintsEnabled: true };
         }
 
         await db
@@ -400,10 +419,11 @@ router.post("/interview", aiRateLimit, async (req: Request, res: Response) => {
         return;
       } catch (extractErr) {
         req.log?.error({ extractErr }, "Profile extraction failed");
-        // Still mark complete even if extraction failed
+        // Still mark complete even if extraction failed — hintsEnabled: true
+        // for the same first-login reason as the success branch above.
         await db
           .insert(profileTable)
-          .values({ userId, data: null, onboarded: true, updatedAt: new Date() })
+          .values({ userId, data: { hintsEnabled: true }, onboarded: true, updatedAt: new Date() })
           .onConflictDoUpdate({
             target: profileTable.userId,
             set: { onboarded: true, updatedAt: new Date() },
@@ -425,9 +445,11 @@ router.post("/interview", aiRateLimit, async (req: Request, res: Response) => {
 router.post("/interview/skip", async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
+    // hintsEnabled: true — skipping the interview still counts as this
+    // user's first login, so Helpful Hints (#83) should show automatically.
     await db
       .insert(profileTable)
-      .values({ userId, data: null, onboarded: true, updatedAt: new Date() })
+      .values({ userId, data: { hintsEnabled: true }, onboarded: true, updatedAt: new Date() })
       .onConflictDoUpdate({
         target: profileTable.userId,
         set: { onboarded: true, updatedAt: new Date() },
@@ -494,6 +516,7 @@ router.post("/test/complete-interview", async (req: Request, res: Response) => {
         always_remind_of: "wife's needs come first",
       },
       voice: "straight_talk",
+      hintsEnabled: true,
     };
 
     await persistExtractedRelationships(userId, testProfile);

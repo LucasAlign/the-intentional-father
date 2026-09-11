@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useId } from "react";
+import { useState, useEffect, useRef, useCallback, useId, useContext, createContext } from "react";
 import type { CSSProperties, ReactElement, ReactNode, PointerEvent } from "react";
 import { useAuth } from "@workspace/replit-auth-web";
 import { useLocation } from "wouter";
@@ -77,7 +77,7 @@ interface Relationship {
 const RELATIONSHIP_CATEGORIES: RelationshipCategory[] = ["spouse", "child", "family", "friend", "other"];
 const RELATIONSHIP_CATEGORY_LABEL: Record<RelationshipCategory, string> = { spouse: "Spouse", child: "Child", family: "Family", friend: "Friend", other: "Other" };
 type ToneVoice = "straight_talk" | "middle_of_the_road" | "take_it_easy";
-interface ProfileData { name?: string | null; season_of_life?: string | null; voice?: ToneVoice | null; remindersEnabled?: boolean | null; }
+interface ProfileData { name?: string | null; season_of_life?: string | null; voice?: ToneVoice | null; remindersEnabled?: boolean | null; hintsEnabled?: boolean | null; dismissedHints?: string[] | null; }
 interface VerseEntry { ref: string; text: string; favorited: boolean; }
 interface VerseHistoryEntry extends VerseEntry { date: string; }
 type PulseCategory = "physical" | "mental" | "spiritual";
@@ -367,24 +367,22 @@ function useBottomScrollFade<T extends HTMLElement>() {
   return { ref, showFade };
 }
 
-// One-time first-visit orientation tip (#40) — dismissed state persists
-// per-device via localStorage, since there's no per-user "seen this"
-// tracking anywhere in the schema; a tip can reappear on a new device,
-// an accepted tradeoff rather than a bug.
+// Helpful Hints (#83) — orientation tips shown across the tabs, gated by a
+// Profile-page master switch (HintsContext) plus each hint's own close
+// button. Superseded #40's per-device localStorage dismiss: state is now
+// per-user, server-persisted in profile.data (hintsEnabled/dismissedHints),
+// so turning the switch off hides every hint and back on resets them all.
+const HintsContext = createContext<{ enabled: boolean; dismissed: string[]; dismiss: (id: string) => void }>({
+  enabled: false, dismissed: [], dismiss: () => {},
+});
+
 function FirstVisitTip({ id, children }: { id: string; children: ReactNode }) {
-  const storageKey = `steward:tip-seen:${id}`;
-  const [dismissed, setDismissed] = useState(() => {
-    try { return localStorage.getItem(storageKey) === "1"; } catch { return false; }
-  });
-  function dismiss() {
-    setDismissed(true);
-    try { localStorage.setItem(storageKey, "1"); } catch { /* private browsing, etc. — dismiss still works for this session */ }
-  }
-  if (dismissed) return null;
+  const { enabled, dismissed, dismiss } = useContext(HintsContext);
+  if (!enabled || dismissed.includes(id)) return null;
   return (
     <div style={S.tip}>
       <div style={S.tipText}>{children}</div>
-      <button style={S.tipClose} onClick={dismiss} aria-label="Dismiss tip">✕</button>
+      <button style={S.tipClose} onClick={() => dismiss(id)} aria-label="Dismiss tip">✕</button>
     </div>
   );
 }
@@ -568,6 +566,26 @@ export default function Home() {
     } catch { /* optimistic update already applied; a stale read on next load self-corrects */ }
   }
 
+  // Turning the switch on always resets dismissedHints — that's what makes
+  // a repeat on->off->on bring every hint back, per #83.
+  async function setHintsEnabled(enabled: boolean) {
+    setProfile(p => ({ ...(p ?? {}), hintsEnabled: enabled, dismissedHints: enabled ? [] : (p?.dismissedHints ?? []) }));
+    try {
+      await apiFetch(`${API}/profile`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(enabled ? { hintsEnabled: true, dismissedHints: [] } : { hintsEnabled: false }),
+      });
+    } catch { /* optimistic update already applied; a stale read on next load self-corrects */ }
+  }
+
+  async function dismissHint(id: string) {
+    const next = Array.from(new Set([...(profile?.dismissedHints ?? []), id]));
+    setProfile(p => ({ ...(p ?? {}), dismissedHints: next }));
+    try {
+      await apiFetch(`${API}/profile`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dismissedHints: next }) });
+    } catch { /* optimistic update already applied; a stale read on next load self-corrects */ }
+  }
+
   async function sendTestReminder(): Promise<boolean> {
     try {
       const res = await apiFetch(`${API}/reminders/test`, { method: "POST" });
@@ -727,6 +745,7 @@ export default function Home() {
   const primaryRel = primaryRelationship(relationships);
 
   return (
+    <HintsContext.Provider value={{ enabled: profile?.hintsEnabled === true, dismissed: profile?.dismissedHints ?? [], dismiss: dismissHint }}>
     <div style={R.root}>
       <style>{`*{box-sizing:border-box}::-webkit-scrollbar{display:none}input::placeholder,textarea::placeholder{color:${C.parchmentLow}}@keyframes micPulse{0%,100%{box-shadow:0 0 14px ${C.brassGlow}}50%{box-shadow:0 0 26px ${C.brassGlow},0 0 40px rgba(216,170,62,0.2)}}`}</style>
       <div style={R.woodLayer} />
@@ -784,20 +803,27 @@ export default function Home() {
           onClosed={() => { setClosePursuitPrompt(null); refreshPursuits(); }}
         />
       )}
-      {profileMenu && <ProfileMenu name={user?.firstName} email={user?.email} onClose={() => setProfileMenu(false)} onLogout={logout} />}
+      {profileMenu && <ProfileMenu name={user?.firstName} email={user?.email} onClose={() => setProfileMenu(false)} onLogout={logout} hintsEnabled={profile?.hintsEnabled === true} onSetHintsEnabled={setHintsEnabled} />}
       {priorityDetail && <PriorityDetailModal task={priorityDetail} onClose={() => setPriorityDetail(null)} onChanged={refreshTasks} />}
       {completedLogOpen && <CompletedLogModal onClose={() => setCompletedLogOpen(false)} onChanged={refreshTasks} />}
       {journalHistoryOpen && <JournalHistoryModal onClose={() => setJournalHistoryOpen(false)} onSaved={refreshJournal} />}
       {verseHistoryOpen && <VerseHistoryModal onClose={() => setVerseHistoryOpen(false)} onToggleFavorite={toggleVerseFavorite} />}
       {verseFavoritesOpen && <VerseFavoritesModal onClose={() => setVerseFavoritesOpen(false)} onToggleFavorite={toggleVerseFavorite} />}
     </div>
+    </HintsContext.Provider>
   );
 }
 
-function ProfileMenu({ name, email, onClose, onLogout }: { name?: string | null; email?: string | null; onClose: () => void; onLogout: () => void }) {
+function ProfileMenu({ name, email, onClose, onLogout, hintsEnabled, onSetHintsEnabled }: { name?: string | null; email?: string | null; onClose: () => void; onLogout: () => void; hintsEnabled: boolean; onSetHintsEnabled: (enabled: boolean) => void }) {
   return (
     <div style={M.overlay} onClick={onClose}>
       <ModalSheet title={name || email || "Profile"} onClose={onClose} sheetOnClick={e => e.stopPropagation()}>
+        {/* Helpful Hints (#83) — master switch over the per-tab <FirstVisitTip>
+            close buttons; turning it on always resets any hints closed
+            individually, so they all reappear. */}
+        <button style={{ ...M.statusOpt, ...(hintsEnabled ? M.statusOptOn : {}) }} onClick={() => onSetHintsEnabled(!hintsEnabled)}>
+          Helpful Hints: {hintsEnabled ? "On" : "Off"}
+        </button>
         <a style={{ ...M.next, textDecoration: "none", display: "block", textAlign: "center" }} href="mailto:admin@lucasalign.com?subject=Steward%20feedback">Contact Support / Feedback</a>
         <button style={{ ...M.next, background: "none", border: "1px solid rgba(210,190,130,0.18)", color: C.parchmentDim, boxShadow: "none" }} onClick={onLogout}>Log Out</button>
         {/* Moved here from the signed-out gate (#35) — offered once someone's
