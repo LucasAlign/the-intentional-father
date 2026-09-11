@@ -2,7 +2,7 @@ import { and, desc, eq, gte, inArray, lt } from "drizzle-orm";
 import { db, journalEntries, tasks, taskCompletions, pulseChecks, commits, commitRelationshipTargets, relationships, type Relationship, sphereChecks } from "@workspace/db";
 import { isSlipping, type RecurrencePeriod } from "./priorityPeriods";
 import { PULSE_STATE_LABEL, type PulseState } from "./pulseCheck";
-import { SPHERE_CATEGORIES, SPHERE_CATEGORY_LABEL, SPHERE_STATE_LABEL, getWeekStart, type SphereCategory, type SphereState } from "./sphere";
+import { SPHERE_CATEGORIES, SPHERE_CATEGORY_LABEL, SPHERE_STATE_LABEL, getWeekStart, summarizeFlaggedSphereAnswers, type SphereCategory, type SphereState } from "./sphere";
 
 export const RELATIONSHIP_CATEGORY_LABEL: Record<string, string> = { spouse: "Spouse", child: "Child", family: "Family", friend: "Friend", other: "Other" };
 function relationshipLabel(r: Pick<Relationship, "name" | "type" | "category">): string {
@@ -126,6 +126,12 @@ export async function buildTodayContext(userId: string, today: string): Promise<
     thisWeekSphere.forEach((s) => {
       const note = s.note ? ` — note: "${s.note.slice(0, 150)}"` : '';
       context += `- ${SPHERE_CATEGORY_LABEL[s.category as SphereCategory] ?? s.category}: ${SPHERE_STATE_LABEL[s.state as SphereState] ?? s.state}${note}\n`;
+      // Itemized "Walk through this" answers, when they used it — only the
+      // ones worth flagging (not a clean up/agree) and only their own
+      // words, never the canned follow-up prompt text.
+      summarizeFlaggedSphereAnswers(s.category as SphereCategory, s.answers).forEach((line) => {
+        context += `  ↳ ${line}\n`;
+      });
     });
     context += '\n';
   }

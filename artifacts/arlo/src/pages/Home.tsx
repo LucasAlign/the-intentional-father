@@ -58,17 +58,107 @@ const PULSE_CATEGORIES: { id: PulseCategory; label: string }[] = [
 // same up/mid/down + note shape as Pulse Check (PulseState is reused as-is,
 // same 3-value vocabulary and color mapping).
 type SphereCategory = "family" | "yourself" | "community" | "provide" | "lead";
-interface SphereCheckEntry { category: SphereCategory; state: PulseState; note: string; }
+type SphereAnswerState = "up" | "mid" | "down" | null;
+// One entry per question in that category's fixed SPHERE_QUESTIONS list
+// (matched by array index) — the itemized result of "Walk through this",
+// as opposed to just tapping a battery icon manually. Both are valid,
+// independent ways to arrive at the same state+note (see #82's spec).
+interface SphereAnswer { questionIndex: number; answer: SphereAnswerState; note: string; followup: string; subAnswer: "yes" | "no" | null; }
+interface SphereCheckEntry { category: SphereCategory; state: PulseState; note: string; answers: SphereAnswer[] | null; }
 const SPHERE_CATEGORIES: { id: SphereCategory; label: string; group: string | null }[] = [
   { id: "family", label: "Family", group: "Protect" },
   { id: "yourself", label: "Yourself", group: "Protect" },
   { id: "community", label: "Community", group: "Protect" },
-  { id: "provide", label: "Provide", group: "Provide" },
-  { id: "lead", label: "Lead", group: "Lead" },
+  { id: "provide", label: "Provision", group: "Provision" },
+  { id: "lead", label: "Leadership", group: "Leadership" },
 ];
 interface SphereWeek { weekStart: string; state: PulseState | "none"; note: string; }
 interface SphereDashboardCategory { category: SphereCategory; weeks: SphereWeek[]; }
-interface SphereMonth { month: string; score: number; }
+interface SphereMonth { month: string; score: number; categories: { category: SphereCategory; state: PulseState | null }[]; }
+
+// ── Sphere walkthrough content ──────────────────────────────────────────────
+// Every question + every answer branch's follow-up, per the grilled/reviewed
+// spec on #82. "yn" = Not really/Some/Yes; "agree" (Leadership's closing
+// question) = Disagree/Not Sure/Agree; "struggle" (Yourself only) has its
+// own nested branching — see its own comment below.
+interface SphereQuestionYn { type: "yn"; text: string; negFollowup: string; posFollowup?: string; midFollowup?: string; }
+interface SphereQuestionAgree { type: "agree"; text: string; negFollowup: string; midFollowup: string; }
+interface SphereQuestionStruggle {
+  type: "struggle"; text: string; subQuestion: string;
+  workingYesLabel: string; workingNoLabel: string; someFollowup: string; notReallyResponse: string;
+}
+type SphereQuestion = SphereQuestionYn | SphereQuestionAgree | SphereQuestionStruggle;
+const SPHERE_MOMENTUM_Q = "Nice job! What's the plan to keep maintaining your momentum?";
+const SPHERE_HOLDING_BACK_Q = "What's holding you back?";
+function ynQuestion(text: string, negFollowup: string): SphereQuestionYn { return { type: "yn", text, negFollowup }; }
+
+const SPHERE_QUESTIONS: Record<SphereCategory, SphereQuestion[]> = {
+  family: [
+    ynQuestion("Is your family physically healthy and taken care of right now?", "What's getting in the way?"),
+    ynQuestion("Is your family doing okay emotionally?", "What's going on?"),
+    ynQuestion("Do you feel your family is safe — physically, financially, otherwise?", "What's the biggest risk right now?"),
+  ],
+  yourself: [
+    ynQuestion("Are you eating well, exercising, and getting enough sleep?", "What's the biggest obstacle right now?"),
+    ynQuestion("Are you spending time in the Bible?", "What's getting in the way?"),
+    ynQuestion("Are you watching what you consume on your phone, TV, music, podcasts, social media, etc.?", "What's something you should cut back on?"),
+    ynQuestion("Are you taking breaks, and avoiding excess stress or toxic people?", "What's the biggest source of stress right now?"),
+    ynQuestion("Do you have appropriate boundaries in your life with other people?", "Where do you need a boundary you don't have yet?"),
+    ynQuestion("Are you prioritizing God first, marriage 2nd, yourself and your children 3rd, and everything else 4th?", "What's out of order right now?"),
+    // "Yes" here is the negative signal (struggling) — its answer-set state
+    // colors are inverted (down=Yes, up=Not really) in SPHERE_ANSWER_SETS
+    // so the rollup math (up=good/down=bad) stays correct without
+    // special-casing it there.
+    {
+      type: "struggle",
+      text: "Are you struggling with any addictions, resentments, anger, or struggles in your life?",
+      subQuestion: "Are you working to resolve this issue?",
+      workingYesLabel: "How are you working on improving the situation?",
+      workingNoLabel: "What's holding you back?",
+      someFollowup: "Are you being honest with yourself? Is this a small issue, or are you avoiding addressing it?",
+      notReallyResponse: "That's great — just make sure you're being honest with yourself.",
+    },
+  ],
+  community: [
+    ynQuestion("Are you mentoring anyone?", "Who's someone you could start investing in?"),
+    ynQuestion("Is someone mentoring you?", "Who's someone you could ask?"),
+    ynQuestion("Are you serving others?", "What's one way you could start serving?"),
+    {
+      type: "yn",
+      text: "Are you making time for close male friends or a band of brothers?",
+      posFollowup: "Nice job — men need close male friendships to thrive. Keep it up.",
+      midFollowup: "What's holding you back? Remember — iron sharpens iron.",
+      negFollowup: "Who is someone you can reach out to? Men weren't designed to carry the burdens of this world alone.",
+    },
+  ],
+  provide: [
+    ynQuestion("Are you tithing?", "What's stopping you?"),
+    ynQuestion("Are you helping those less fortunate than you?", "What's one way you could start?"),
+    ynQuestion("Are you managing your money well?", "Where's it breaking down?"),
+    ynQuestion("Are you out of, or working to eliminate, debt?", "What's the plan to move forward?"),
+    ynQuestion("Are you working as if working for the Lord?", "What's getting in the way of that?"),
+    ynQuestion("Are you working to improve both your situation and those within your sphere of influence?", "What's one thing you could do this week?"),
+  ],
+  lead: [
+    ynQuestion("Are you leading at home?", "Why not?"),
+    ynQuestion("Are you leading at work?", "Why not?"),
+    ynQuestion("Are you leading at church or in your community?", "How can you get involved?"),
+    { type: "agree", text: "Leading means owning your piece and doing your best with it — whether or not you're in charge.", negFollowup: "What would you push back on?", midFollowup: "What's unclear about that?" },
+  ],
+};
+const SPHERE_ANSWER_SETS: Record<SphereQuestion["type"], [PulseState, string][]> = {
+  yn: [["up", "Yes"], ["mid", "Some"], ["down", "Not really"]],
+  agree: [["up", "Agree"], ["mid", "Not Sure"], ["down", "Disagree"]],
+  struggle: [["down", "Yes"], ["mid", "Some"], ["up", "Not really"]],
+};
+function sphereFollowupFor(q: SphereQuestionYn | SphereQuestionAgree, answer: PulseState): string {
+  if (answer === "up") return ("posFollowup" in q && q.posFollowup) || SPHERE_MOMENTUM_Q;
+  if (answer === "mid") return ("midFollowup" in q && q.midFollowup) || SPHERE_HOLDING_BACK_Q;
+  return q.negFollowup;
+}
+function sphereBlankAnswers(questions: SphereQuestion[]): SphereAnswer[] {
+  return questions.map((_q, questionIndex) => ({ questionIndex, answer: null, note: "", followup: "", subAnswer: null }));
+}
 
 const TONE_LABEL: Record<ToneVoice, string> = { straight_talk: "Straight Talk", middle_of_the_road: "Middle of the Road", take_it_easy: "Take it Easy" };
 function isToneVoice(v: unknown): v is ToneVoice { return v === "straight_talk" || v === "middle_of_the_road" || v === "take_it_easy"; }
@@ -1047,6 +1137,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
 }
 
 const PULSE_STATE_COLOR: Record<PulseState, string> = { down: "#C87060", mid: C.brassSoft, up: "#8FAE6E" };
+const PULSE_STATE_LABEL: Record<PulseState, string> = { down: "down", mid: "steady", up: "up" };
 // Empty/half/full fuel gauge — #44's chosen icon direction. Both the outline
 // and the fill level use currentColor so the icon automatically picks up the
 // button's own active/inactive color, same as the plain-text glyph it replaces.
@@ -2458,9 +2549,6 @@ function SphereMiniMeter({ weeks }: { weeks: SphereWeek[] }) {
   );
 }
 
-function sphereScoreColor(score: number): string {
-  return score >= 0.66 ? "#8FAE6E" : score >= 0.4 ? C.brassSoft : "#C87060";
-}
 function sphereMonthLabel(month: string): string {
   const [y, mo] = month.split("-").map(Number);
   return new Date(y!, (mo ?? 1) - 1, 1).toLocaleDateString("en-US", { month: "long" });
@@ -2488,26 +2576,173 @@ function SphereHistoryModal({ onClose }: { onClose: () => void }) {
         ) : !m ? (
           <div style={S.empty}>Nothing to show yet — check in for a few weeks first.</div>
         ) : (
-          <div style={{ textAlign: "center" }}>
+          <div>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 18, marginBottom: 16 }}>
               <button style={{ ...S.prioLogLink, ...(idx === 0 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => setIdx(i => i - 1)} aria-label="Previous month">‹</button>
-              <div style={{ fontSize: 16, color: C.parchment, fontWeight: 600, minWidth: 100 }}>{sphereMonthLabel(m.month)}</div>
+              <div style={{ fontSize: 16, color: C.parchment, fontWeight: 600, minWidth: 100, textAlign: "center" }}>{sphereMonthLabel(m.month)}</div>
               <button style={{ ...S.prioLogLink, ...(idx === months.length - 1 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => setIdx(i => i + 1)} aria-label="Next month">›</button>
             </div>
-            <div style={{
-              width: 150, height: 150, borderRadius: "50%", margin: "0 auto",
-              border: `3px solid ${C.brassDeep}`,
-              background: "radial-gradient(circle at 35% 30%, rgba(216,170,62,0.18), rgba(0,0,0,0.4))",
-              boxShadow: `0 0 24px ${C.brassGlow}, inset 0 0 20px rgba(0,0,0,0.5)`,
-              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-            }}>
-              <div style={{ fontSize: 13, letterSpacing: "0.08em", textTransform: "uppercase", color: C.brassSoft, marginBottom: 6 }}>Overall</div>
-              <div style={{ fontSize: 26, color: sphereScoreColor(m.score), fontWeight: 600 }}>{Math.round(m.score * 100)}%</div>
+            {m.categories.map(c => {
+              const label = SPHERE_CATEGORIES.find(sc => sc.id === c.category)?.label ?? c.category;
+              return (
+                <div key={c.category} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 2px", borderBottom: "1px solid rgba(210,190,130,0.08)" }}>
+                  <div style={{ fontSize: 13.5, color: C.parchmentMid }}>{label}</div>
+                  {c.state ? (
+                    <div style={{ fontSize: 10.5, letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 700, padding: "3px 10px", borderRadius: 20, border: `1px solid ${PULSE_STATE_COLOR[c.state]}`, color: PULSE_STATE_COLOR[c.state] }}>
+                      {PULSE_STATE_LABEL[c.state]}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 11, color: C.parchmentLow, fontStyle: "italic" }}>not logged</div>
+                  )}
+                </div>
+              );
+            })}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 14, paddingTop: 12, borderTop: "1px dashed rgba(210,190,130,0.18)" }}>
+              <div style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: C.brassSoft, fontWeight: 700 }}>Overall</div>
+              <div style={{ fontSize: 18, color: C.parchment, fontWeight: 600 }}>{Math.round(m.score * 100)}%</div>
             </div>
             <div style={{ ...S.empty, marginTop: 14 }}>Showing {months.length} of up to 6 months — only months with data appear.</div>
           </div>
         )}
         <button style={M.cancel} onClick={onClose}>Close</button>
+      </ModalSheet>
+    </div>
+  );
+}
+
+// Guided weekly review over one category's fixed question list — an
+// alternative, itemized way to arrive at the same state+note a battery-icon
+// tap sets directly (#82). Works on its own draft, cloned from whatever was
+// last saved; only "Use this" commits it, so backing out any other way
+// (mid-walkthrough Close, or Close without saving on the summary) always
+// leaves the prior saved answers (or nothing, if none were ever saved)
+// exactly as they were.
+function SphereWalkthroughModal({ category, label, savedAnswers, onClose, onSave }: {
+  category: SphereCategory; label: string; savedAnswers: SphereAnswer[] | null;
+  onClose: () => void; onSave: (state: PulseState, answers: SphereAnswer[]) => Promise<boolean>;
+}) {
+  const questions = SPHERE_QUESTIONS[category];
+  const [step, setStep] = useState(0);
+  const [draft, setDraft] = useState<SphereAnswer[]>(() => savedAnswers ? savedAnswers.map(a => ({ ...a })) : sphereBlankAnswers(questions));
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState("");
+
+  const atSummary = step >= questions.length;
+  const q = atSummary ? null : questions[step];
+  const a = atSummary ? null : draft[step];
+
+  function updateCurrent(patch: Partial<SphereAnswer>) {
+    setDraft(prev => prev.map((entry, i) => i === step ? { ...entry, ...patch } : entry));
+  }
+
+  const upCount = draft.filter(x => x.answer === "up").length;
+  const downCount = draft.filter(x => x.answer === "down").length;
+  const suggested: PulseState = upCount >= questions.length * 0.7 ? "up" : downCount >= questions.length * 0.4 ? "down" : "mid";
+  const suggestedColor = suggested === "up" ? "#8FAE6E" : suggested === "mid" ? C.brassSoft : "#C87060";
+
+  async function handleUseThis() {
+    setSaving(true);
+    const ok = await onSave(suggested, draft);
+    if (ok) onClose();
+    else { setSaving(false); setSaveErr("Couldn't save — try again"); }
+  }
+
+  return (
+    <div style={M.overlay}>
+      <ModalSheet title={`Walk through: ${label}`} onClose={onClose}>
+        {atSummary ? (
+          <>
+            <div style={S.sphereSummaryBox}>
+              {questions.map((qq, i) => {
+                const ans = draft[i];
+                const mark = ans.answer === "up" ? "✓" : ans.answer === "mid" ? "±" : ans.answer === "down" ? "✕" : "○";
+                const color = ans.answer === "up" ? "#8FAE6E" : ans.answer === "mid" ? C.brassSoft : ans.answer === "down" ? "#C87060" : C.parchmentLow;
+                const extra = [ans.note, ans.followup].filter(Boolean).join(" — ");
+                return (
+                  <div key={i} style={{ marginBottom: 10 }}>
+                    <span style={{ color }}>{mark}</span> {qq.text}
+                    {extra && <div style={{ color: C.parchmentLow, fontSize: 11.5, marginTop: 2 }}>↳ {extra}</div>}
+                  </div>
+                );
+              })}
+            </div>
+            <div style={S.sphereQuestion}>Suggested state: <b style={{ color: suggestedColor }}>{suggested.toUpperCase()}</b> — the note and state stay yours to edit before saving.</div>
+            <TapError message={saveErr || null} />
+            <div style={S.sphereWizNav}>
+              <button style={S.sphereWizBtn} onClick={() => setStep(questions.length - 1)}>‹ Review answers</button>
+              <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnPrimary }} disabled={saving} onClick={handleUseThis}>{saving ? "Saving…" : "Use this ✓"}</button>
+            </div>
+            <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnDanger }} onClick={onClose}>Close without saving</button>
+          </>
+        ) : q && a && (
+          <>
+            <div style={S.sphereProgress}>
+              {questions.map((_qq, i) => <div key={i} style={{ ...S.sphereDot, ...(i < step ? S.sphereDotDone : i === step ? S.sphereDotCurrent : {}) }} />)}
+            </div>
+            <div style={S.sphereStepLabel}>Question {step + 1} of {questions.length} — {label}</div>
+            <div style={S.sphereQuestion}>{q.text}</div>
+            <div style={S.sphereAnswerRow}>
+              {SPHERE_ANSWER_SETS[q.type].map(([state, answerLabel]) => (
+                <button
+                  key={state}
+                  style={{ ...S.sphereAnswerBtn, ...(a.answer === state ? { borderColor: PULSE_STATE_COLOR[state], color: PULSE_STATE_COLOR[state] } : {}) }}
+                  onClick={() => updateCurrent({ answer: state })}
+                >
+                  {answerLabel}
+                </button>
+              ))}
+            </div>
+            <div style={S.sphereFieldLabel}>Add a note — elaborate on your answer (optional)</div>
+            <textarea style={{ ...M.input, resize: "none" }} rows={2} value={a.note} onChange={e => updateCurrent({ note: e.target.value })} />
+
+            {a.answer && (q.type === "struggle" ? (
+              <div style={S.sphereFollowup}>
+                {a.answer === "down" ? (
+                  <>
+                    <div style={S.sphereFollowupQ}>{q.subQuestion}</div>
+                    <div style={S.sphereAnswerRow}>
+                      {(["yes", "no"] as const).map(sub => (
+                        <button
+                          key={sub}
+                          style={{ ...S.sphereAnswerBtn, flex: "none", minWidth: 70, ...(a.subAnswer === sub ? { borderColor: sub === "yes" ? "#8FAE6E" : "#C87060", color: sub === "yes" ? "#8FAE6E" : "#C87060" } : {}) }}
+                          onClick={() => updateCurrent({ subAnswer: sub })}
+                        >
+                          {sub === "yes" ? "Yes" : "No"}
+                        </button>
+                      ))}
+                    </div>
+                    {a.subAnswer && (
+                      <>
+                        <div style={S.sphereFieldLabel}>{a.subAnswer === "yes" ? q.workingYesLabel : q.workingNoLabel}</div>
+                        <textarea style={{ ...M.input, resize: "none" }} rows={2} value={a.followup} onChange={e => updateCurrent({ followup: e.target.value })} />
+                      </>
+                    )}
+                  </>
+                ) : a.answer === "mid" ? (
+                  <>
+                    <div style={S.sphereFollowupQ}>{q.someFollowup}</div>
+                    <textarea style={{ ...M.input, resize: "none" }} rows={2} value={a.followup} onChange={e => updateCurrent({ followup: e.target.value })} />
+                  </>
+                ) : (
+                  <div style={S.sphereFollowupQ}>{q.notReallyResponse}</div>
+                )}
+              </div>
+            ) : (
+              <div style={S.sphereFollowup}>
+                <div style={S.sphereFollowupQ}>{sphereFollowupFor(q, a.answer)}</div>
+                <textarea style={{ ...M.input, resize: "none" }} rows={2} value={a.followup} onChange={e => updateCurrent({ followup: e.target.value })} />
+              </div>
+            ))}
+
+            <div style={S.sphereWizNav}>
+              <button style={{ ...S.sphereWizBtn, ...(step === 0 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => setStep(s => s - 1)}>‹ Back</button>
+              <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnPrimary, ...(!a.answer ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => setStep(s => s + 1)}>
+                {step === questions.length - 1 ? "See summary ›" : "Next ›"}
+              </button>
+            </div>
+            <button style={{ ...S.sphereWizBtn, marginTop: 10, width: "100%" }} onClick={onClose}>Close</button>
+          </>
+        )}
       </ModalSheet>
     </div>
   );
@@ -2534,13 +2769,20 @@ function Sphere() {
   }, []);
   useEffect(() => { refreshChecks(); refreshDashboard(); }, [refreshChecks, refreshDashboard]);
 
-  async function saveCheck(category: SphereCategory, state: PulseState, note: string): Promise<boolean> {
+  const [walkthroughCategory, setWalkthroughCategory] = useState<SphereCategory | null>(null);
+
+  // `answers` omitted entirely (not just undefined) means "don't touch
+  // whatever was last saved there" — a manual battery-icon tap or a plain
+  // note edit must never blank out a previously-saved walkthrough.
+  async function saveCheck(category: SphereCategory, state: PulseState, note: string, answers?: SphereAnswer[]): Promise<boolean> {
     try {
-      const r = await apiFetch(`${API}/sphere`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ week: weekStartYmd(new Date()), category, state, note }),
-      });
-      if (r.ok) { setChecks(prev => [...prev.filter(c => c.category !== category), { category, state, note }]); return true; }
+      const body: Record<string, unknown> = { week: weekStartYmd(new Date()), category, state, note };
+      if (answers !== undefined) body.answers = answers;
+      const r = await apiFetch(`${API}/sphere`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (r.ok) {
+        setChecks(prev => [...prev.filter(c => c.category !== category), { category, state, note, answers: answers ?? prev.find(c => c.category === category)?.answers ?? null }]);
+        return true;
+      }
       return false;
     } catch { return false; }
   }
@@ -2556,6 +2798,12 @@ function Sphere() {
     const note = drafts[category] ?? entry.note;
     if (note === entry.note) return;
     noteSave.save(category, () => saveCheck(category, entry.state, note));
+  }
+  async function saveWalkthrough(category: SphereCategory, state: PulseState, answers: SphereAnswer[]): Promise<boolean> {
+    const existing = byCategory.get(category);
+    const ok = await saveCheck(category, state, existing?.note ?? "", answers);
+    if (ok) refreshDashboard();
+    return ok;
   }
 
   const groups: { name: string | null; items: typeof SPHERE_CATEGORIES }[] = [];
@@ -2624,6 +2872,7 @@ function Sphere() {
                     <SaveStatus status={noteSave.get(cat.id)} onRetry={() => saveNote(cat.id, entry)} />
                   </>
                 )}
+                <button style={S.prioExpandBtn} onClick={() => setWalkthroughCategory(cat.id)}>Walk through this ›</button>
                 {dashCat && <div style={{ marginTop: 10 }}><SphereMiniMeter weeks={dashCat.weeks.slice(-4)} /></div>}
               </div>
             );
@@ -2632,6 +2881,15 @@ function Sphere() {
       ))}
       <TapError message={tapError} />
       {historyOpen && <SphereHistoryModal onClose={() => setHistoryOpen(false)} />}
+      {walkthroughCategory && (
+        <SphereWalkthroughModal
+          category={walkthroughCategory}
+          label={SPHERE_CATEGORIES.find(c => c.id === walkthroughCategory)!.label}
+          savedAnswers={byCategory.get(walkthroughCategory)?.answers ?? null}
+          onClose={() => setWalkthroughCategory(null)}
+          onSave={(state, answers) => saveWalkthrough(walkthroughCategory, state, answers)}
+        />
+      )}
       <div style={{ height: 32 }} />
     </div>
   );
@@ -3800,6 +4058,23 @@ const S: Record<string, CSSProperties> = {
   // 44x44 (#37) — minimum comfortable tap target; was 30x30.
   pulseBtn: { width: 44, height: 44, borderRadius: "50%", border: "1px solid rgba(210,190,130,0.22)", background: "rgba(30,26,16,0.5)", color: C.parchmentDim, fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: F, display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1 },
   pulseNoteInput: { width: "100%", background: "none", border: "none", borderBottom: "1px solid rgba(210,190,130,0.16)", outline: "none", fontFamily: F, fontSize: 12, color: C.parchmentMid, padding: "4px 0", marginTop: 6 },
+  // ── Sphere walkthrough (#82) ──────────────────────────────────────────────
+  sphereProgress: { display: "flex", gap: 5, marginBottom: 16 },
+  sphereDot: { flex: 1, height: 4, borderRadius: 2, background: "rgba(210,190,130,0.15)" },
+  sphereDotDone: { background: C.brassSoft },
+  sphereDotCurrent: { background: C.brass },
+  sphereStepLabel: { fontSize: 10, letterSpacing: "0.12em", color: C.parchmentLow, textTransform: "uppercase", marginBottom: 8 },
+  sphereQuestion: { fontSize: 16, color: C.parchment, lineHeight: 1.5, marginBottom: 16 },
+  sphereAnswerRow: { display: "flex", gap: 8, marginBottom: 14 },
+  sphereAnswerBtn: { flex: 1, background: "rgba(30,26,16,0.5)", border: "1px solid rgba(210,190,130,0.22)", borderRadius: 10, color: C.parchmentMid, fontSize: 13, fontWeight: 700, padding: "12px 4px", cursor: "pointer", fontFamily: F, textAlign: "center" },
+  sphereFieldLabel: { fontSize: 11, color: C.parchmentLow, margin: "12px 0 4px" },
+  sphereFollowup: { marginTop: 14, paddingTop: 12, borderTop: "1px dashed rgba(210,190,130,0.18)" },
+  sphereFollowupQ: { fontSize: 13.5, color: C.brassSoft, fontWeight: 600, marginBottom: 6, lineHeight: 1.4 },
+  sphereWizNav: { display: "flex", justifyContent: "space-between", marginTop: 18 },
+  sphereWizBtn: { background: "none", border: "1px solid rgba(210,190,130,0.28)", color: C.brassSoft, fontFamily: F, fontSize: 13, padding: "8px 16px", borderRadius: 20, cursor: "pointer" },
+  sphereWizBtnPrimary: { borderColor: C.brass, color: C.brass, fontWeight: 700 },
+  sphereWizBtnDanger: { display: "block", margin: "8px auto 0", borderColor: "rgba(200,112,96,0.4)", color: "#C87060", fontSize: 11.5, padding: "5px 12px" },
+  sphereSummaryBox: { fontSize: 12.5, color: C.parchmentMid, lineHeight: 1.7, background: "rgba(0,0,0,0.25)", borderRadius: 10, padding: 12, marginBottom: 16, maxHeight: 260, overflowY: "auto" },
   prioLine: { position: "absolute", left: 19, top: 18, bottom: 20, width: 2, background: `linear-gradient(180deg,${C.walnutLite},${C.walnut})`, boxShadow: "0 0 4px rgba(0,0,0,0.5)" },
   prioRow: { display: "flex", gap: 14, alignItems: "flex-start", position: "relative" },
   // 44x44 (#37) — minimum comfortable tap target for the priority-done toggle; was 40x40.

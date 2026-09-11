@@ -279,6 +279,15 @@ export const sphereChecks = pgTable("sphere_checks", {
   category: text("category").notNull(),
   state: text("state").notNull(),
   note: text("note").notNull().default(""),
+  // Optional itemized answers from the guided "Walk through this" review —
+  // one entry per question in that category's fixed question list (see
+  // artifacts/arlo/src/pages/Home.tsx's SPHERE_QUESTIONS), each holding
+  // {questionIndex, answer, note, followup, subAnswer}. Null when the state
+  // was set manually (tapping a battery icon) rather than via the
+  // walkthrough — the two are independent ways to set the same state/note,
+  // per #82's settled spec. Opaque JSON rather than a separate table since
+  // the question set itself is fixed application code, not user data.
+  answers: jsonb("answers"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
   unique("sphere_checks_user_week_category_unique").on(table.userId, table.weekStart, table.category),

@@ -120,7 +120,7 @@ Guidelines:
 - If an open task is marked stuck, or has sat open several days without being flagged, ask about it directly by name rather than letting it pass unmentioned.
 - If a recurring priority is flagged slipping (its streak just broke), mention it directly when relevant — but only when it's genuinely notable, not as routine commentary on ordinary progress.
 - If today's Pulse Check shows a category clearly down, ask about it directly rather than letting it pass unmentioned — name which one (physical, mental, or spiritual) and what they noted, if anything. A category that's notably strong is worth acknowledging too. Don't force commentary on every check-in — only when it's genuinely notable, the same restraint as the slipping-priority guideline above.
-- If this week's Sphere check-in shows a category (Family, Yourself, Community, Provide, or Lead) clearly down, or the trend shows it's been down for multiple weeks running, bring it up — but start general ("how's things been going with your health lately" rather than naming a specific struggle they haven't raised themselves) and let them steer how far into it you go. Don't dodge what's actually true, though — if they open the door, walk through it honestly rather than staying vague to be polite. Use their note if they left one, and never open by naming a sensitive specific (e.g. never lead with "what's the addiction you're still struggling with") — that's for them to bring up, not you to assume. A category that's notably strong, or one that just turned a corner after a rough stretch, is worth acknowledging too. Same restraint as Pulse Check: only when genuinely notable, not routine commentary on every check-in.
+- If this week's Sphere check-in shows a category (Family, Yourself, Community, Provision, or Leadership) clearly down, or the trend shows it's been down for multiple weeks running, bring it up — but start general ("how's things been going with your health lately" rather than naming a specific struggle they haven't raised themselves) and let them steer how far into it you go. Don't dodge what's actually true, though — if they open the door, walk through it honestly rather than staying vague to be polite. Use their note if they left one, and never open by naming a sensitive specific (e.g. never lead with "what's the addiction you're still struggling with") — that's for them to bring up, not you to assume. A category that's notably strong, or one that just turned a corner after a rough stretch, is worth acknowledging too. Same restraint as Pulse Check: only when genuinely notable, not routine commentary on every check-in.
 - Hold them accountable to commitments they've made to the people who matter most to them, by name where you know it — the same way you'd hold a brother to a promise.
 - If an open commitment is flagged overdue or due soon, or has sat logged a week or more with no due date, ask about it directly by name and who it was made to — the same restraint as the stuck-task guideline above, not routine commentary on every commitment.
 - Encourage real relationships and real action, never foster dependence on the app.${doNotSuggest}${alwaysRemind}${toneDelivery}
@@ -548,10 +548,31 @@ router.get('/sphere', async (req: Request, res: Response) => {
   }
 });
 
+// Loosely sanitizes the optional itemized walkthrough answers — an opaque
+// per-category array (see sphereChecks.answers's comment in the schema),
+// not validated against a fixed question schema server-side since the
+// question set itself is application code that can change; just bounded
+// so a malformed or oversized payload can't bloat the row indefinitely.
+const MAX_SPHERE_ANSWERS = 20;
+function sanitizeSphereAnswers(raw: unknown): Record<string, unknown>[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) return undefined;
+  return raw.slice(0, MAX_SPHERE_ANSWERS).map((entry) => {
+    const e = (entry && typeof entry === 'object') ? entry as Record<string, unknown> : {};
+    return {
+      questionIndex: typeof e.questionIndex === 'number' ? e.questionIndex : null,
+      answer: typeof e.answer === 'string' ? e.answer.slice(0, 20) : null,
+      note: typeof e.note === 'string' ? e.note.slice(0, MAX_SPHERE_NOTE_LENGTH) : '',
+      followup: typeof e.followup === 'string' ? e.followup.slice(0, MAX_SPHERE_NOTE_LENGTH) : '',
+      subAnswer: typeof e.subAnswer === 'string' ? e.subAnswer.slice(0, 20) : null,
+    };
+  });
+}
+
 // POST /api/sphere
 router.post('/sphere', async (req: Request, res: Response) => {
   try {
-    const { week, category, state, note } = req.body;
+    const { week, category, state, note, answers } = req.body;
     if (typeof week !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(week)) {
       res.status(400).json({ error: 'week (YYYY-MM-DD) is required' });
       return;
@@ -559,11 +580,18 @@ router.post('/sphere', async (req: Request, res: Response) => {
     if (!isSphereCategory(category)) { res.status(400).json({ error: 'Invalid category' }); return; }
     if (!isSphereState(state)) { res.status(400).json({ error: 'Invalid state' }); return; }
     const cleanNote = typeof note === 'string' ? note.slice(0, MAX_SPHERE_NOTE_LENGTH) : '';
+    // Manually tapping a battery icon omits `answers` entirely — that must
+    // leave any previously-saved walkthrough answers untouched, not null
+    // them out, so this key is only included when the client actually sent it.
+    const cleanAnswers = sanitizeSphereAnswers(answers);
+    const values: typeof sphereChecks.$inferInsert = { userId: req.user!.id, weekStart: week, category, state, note: cleanNote };
+    const updateSet: Partial<typeof sphereChecks.$inferInsert> = { state, note: cleanNote };
+    if (cleanAnswers !== undefined) { values.answers = cleanAnswers; updateSet.answers = cleanAnswers; }
     await db.insert(sphereChecks)
-      .values({ userId: req.user!.id, weekStart: week, category, state, note: cleanNote })
+      .values(values)
       .onConflictDoUpdate({
         target: [sphereChecks.userId, sphereChecks.weekStart, sphereChecks.category],
-        set: { state, note: cleanNote },
+        set: updateSet,
       });
     res.json({ success: true });
   } catch (err) {
@@ -607,24 +635,47 @@ router.get('/sphere/dashboard', async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/sphere/history — one blended score per calendar month, most
-// recent last, only for months that actually have at least one logged entry
-// — never padded out to 6 months of empty history (per #82's settled spec).
+// Same up/mid/down bucketing the Dashboard's ghost-fade chart and the
+// history render use client-side — kept here too so the monthly rollup's
+// per-category state matches what the rest of the feature calls "up".
+function scoreToState(avg: number): SphereState {
+  return avg >= 0.66 ? 'up' : avg >= 0.4 ? 'mid' : 'down';
+}
+
+// GET /api/sphere/history — one blended score per calendar month plus each
+// category's own state for that month, most recent last, only for months
+// that actually have at least one logged entry — never padded out to 6
+// months of empty history (per #82's settled spec).
 router.get('/sphere/history', async (req: Request, res: Response) => {
   try {
-    const rows = await db.select({ weekStart: sphereChecks.weekStart, state: sphereChecks.state })
+    const rows = await db.select({ weekStart: sphereChecks.weekStart, category: sphereChecks.category, state: sphereChecks.state })
       .from(sphereChecks).where(eq(sphereChecks.userId, req.user!.id));
 
-    const byMonth = new Map<string, { sum: number; count: number }>();
+    const overallByMonth = new Map<string, { sum: number; count: number }>();
+    const categoryByMonth = new Map<string, Map<string, { sum: number; count: number }>>();
     for (const row of rows) {
       const month = row.weekStart.slice(0, 7); // YYYY-MM
       const score = SPHERE_STATE_SCORE[row.state as SphereState] ?? 0.5;
-      const bucket = byMonth.get(month) ?? { sum: 0, count: 0 };
-      bucket.sum += score; bucket.count += 1;
-      byMonth.set(month, bucket);
+
+      const overall = overallByMonth.get(month) ?? { sum: 0, count: 0 };
+      overall.sum += score; overall.count += 1;
+      overallByMonth.set(month, overall);
+
+      const byCategory = categoryByMonth.get(month) ?? new Map<string, { sum: number; count: number }>();
+      const catBucket = byCategory.get(row.category) ?? { sum: 0, count: 0 };
+      catBucket.sum += score; catBucket.count += 1;
+      byCategory.set(row.category, catBucket);
+      categoryByMonth.set(month, byCategory);
     }
-    const months = Array.from(byMonth.entries())
-      .map(([month, { sum, count }]) => ({ month, score: sum / count }))
+    const months = Array.from(overallByMonth.entries())
+      .map(([month, { sum, count }]) => {
+        const byCategory = categoryByMonth.get(month);
+        const categories = SPHERE_CATEGORIES.map((category) => {
+          const bucket = byCategory?.get(category);
+          return { category, state: bucket ? scoreToState(bucket.sum / bucket.count) : null };
+        });
+        return { month, score: sum / count, categories };
+      })
       .sort((a, b) => a.month.localeCompare(b.month))
       .slice(-SPHERE_HISTORY_MAX_MONTHS);
     res.json({ months });
