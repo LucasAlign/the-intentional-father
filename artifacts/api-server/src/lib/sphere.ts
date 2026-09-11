@@ -12,9 +12,10 @@ export const SPHERE_CATEGORY_LABEL: Record<SphereCategory, string> = {
   family: "Family", yourself: "Yourself", community: "Community", provide: "Provide", lead: "Lead",
 };
 // "Family"/"Yourself"/"Community" render grouped under a "Protect" heading in
-// the UI; "Provide" and "Lead" stand alone — see #82's settled spec.
-export const SPHERE_CATEGORY_GROUP: Record<SphereCategory, string | null> = {
-  family: "Protect", yourself: "Protect", community: "Protect", provide: null, lead: null,
+// the UI; "Provide" and "Lead" each get their own single-item section
+// heading the same way, so every category sits under a visible heading.
+export const SPHERE_CATEGORY_GROUP: Record<SphereCategory, string> = {
+  family: "Protect", yourself: "Protect", community: "Protect", provide: "Provide", lead: "Lead",
 };
 
 export const SPHERE_STATES = ["up", "mid", "down"] as const;

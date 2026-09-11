@@ -63,8 +63,8 @@ const SPHERE_CATEGORIES: { id: SphereCategory; label: string; group: string | nu
   { id: "family", label: "Family", group: "Protect" },
   { id: "yourself", label: "Yourself", group: "Protect" },
   { id: "community", label: "Community", group: "Protect" },
-  { id: "provide", label: "Provide", group: null },
-  { id: "lead", label: "Lead", group: null },
+  { id: "provide", label: "Provide", group: "Provide" },
+  { id: "lead", label: "Lead", group: "Lead" },
 ];
 interface SphereWeek { weekStart: string; state: PulseState | "none"; note: string; }
 interface SphereDashboardCategory { category: SphereCategory; weeks: SphereWeek[]; }
@@ -2507,6 +2507,7 @@ function SphereHistoryModal({ onClose }: { onClose: () => void }) {
             <div style={{ ...S.empty, marginTop: 14 }}>Showing {months.length} of up to 6 months — only months with data appear.</div>
           </div>
         )}
+        <button style={M.cancel} onClick={onClose}>Close</button>
       </ModalSheet>
     </div>
   );
