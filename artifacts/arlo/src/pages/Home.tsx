@@ -3,42 +3,7 @@ import type { CSSProperties, ReactElement, ReactNode, PointerEvent } from "react
 import { useAuth } from "@workspace/replit-auth-web";
 import { useLocation } from "wouter";
 import { apiFetch } from "../lib/apiFetch";
-
-declare global {
-  interface Window {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    SpeechRecognition: new () => any;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    webkitSpeechRecognition: new () => any;
-  }
-}
-
-function useSpeech(onResult: (text: string) => void) {
-  const [listening, setListening] = useState(false);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const recRef = useRef<any>(null);
-  const toggle = useCallback(() => {
-    if (listening) { recRef.current?.stop(); return; }
-    const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
-    if (!SR) return;
-    const rec = new SR();
-    rec.continuous = false;
-    rec.interimResults = true;
-    rec.lang = "en-US";
-    rec.onstart = () => setListening(true);
-    rec.onend = () => setListening(false);
-    rec.onerror = () => setListening(false);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    rec.onresult = (e: any) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const transcript = Array.from(e.results as any[]).map((r: any) => r[0].transcript as string).join("");
-      onResult(transcript);
-    };
-    recRef.current = rec;
-    rec.start();
-  }, [listening, onResult]);
-  return { listening, toggle };
-}
+import { useSpeech } from "../hooks/use-speech";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Task {
