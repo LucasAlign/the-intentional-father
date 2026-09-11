@@ -54,6 +54,22 @@ const PULSE_CATEGORIES: { id: PulseCategory; label: string }[] = [
   { id: "spiritual", label: "Spiritual" },
 ];
 
+// #82 — "The Sphere": a weekly (not daily) self-examination, otherwise the
+// same up/mid/down + note shape as Pulse Check (PulseState is reused as-is,
+// same 3-value vocabulary and color mapping).
+type SphereCategory = "family" | "yourself" | "community" | "provide" | "lead";
+interface SphereCheckEntry { category: SphereCategory; state: PulseState; note: string; }
+const SPHERE_CATEGORIES: { id: SphereCategory; label: string; group: string | null }[] = [
+  { id: "family", label: "Family", group: "Protect" },
+  { id: "yourself", label: "Yourself", group: "Protect" },
+  { id: "community", label: "Community", group: "Protect" },
+  { id: "provide", label: "Provide", group: null },
+  { id: "lead", label: "Lead", group: null },
+];
+interface SphereWeek { weekStart: string; state: PulseState | "none"; note: string; }
+interface SphereDashboardCategory { category: SphereCategory; weeks: SphereWeek[]; }
+interface SphereMonth { month: string; score: number; }
+
 const TONE_LABEL: Record<ToneVoice, string> = { straight_talk: "Straight Talk", middle_of_the_road: "Middle of the Road", take_it_easy: "Take it Easy" };
 function isToneVoice(v: unknown): v is ToneVoice { return v === "straight_talk" || v === "middle_of_the_road" || v === "take_it_easy"; }
 
@@ -215,7 +231,7 @@ function TapError({ message }: { message: string | null }) {
 }
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
-type IconName = "book" | "heart" | "target" | "cal" | "clock" | "pen" | "chat" | "sun" | "work" | "user" | "send" | "mic";
+type IconName = "book" | "heart" | "target" | "cal" | "clock" | "pen" | "chat" | "sun" | "work" | "user" | "send" | "mic" | "compass";
 function Icon({ name, size = 15, color = C.brassSoft, stroke = 1.6 }: { name: IconName; size?: number; color?: string; stroke?: number }) {
   const p = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: color, strokeWidth: stroke, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
   const m: Record<IconName, ReactElement> = {
@@ -231,6 +247,7 @@ function Icon({ name, size = 15, color = C.brassSoft, stroke = 1.6 }: { name: Ic
     user: <><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></>,
     send: <path d="M3 11l18-8-8 18-2-7-8-3z" fill={color} stroke="none" />,
     mic: <><path d="M12 1a3 3 0 0 1 3 3v8a3 3 0 0 1-6 0V4a3 3 0 0 1 3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" /></>,
+    compass: <><circle cx="12" cy="12" r="9" /><path d="M15.5 8.5l-2 5-5 2 2-5z" /></>,
   };
   // Every icon in the app is decorative — paired with a visible label, or
   // sitting inside a button that carries its own aria-label — so it's
@@ -246,10 +263,11 @@ const NAV: { id: TabId; icon: IconName | "stewardIcon"; label: string }[] = [
   { id: "today", icon: "sun", label: "Today" },
   { id: "her", icon: "heart", label: "Tribe" },
   { id: "work", icon: "work", label: "Work" },
+  { id: "sphere", icon: "compass", label: "Sphere" },
   { id: "steward", icon: "stewardIcon", label: "Chat" },
   { id: "week", icon: "cal", label: "Week" },
 ];
-type TabId = "today" | "her" | "work" | "steward" | "week";
+type TabId = "today" | "her" | "work" | "sphere" | "steward" | "week";
 
 const BIZ_PALETTE = ["#8AB46A", "#6AAEC8", "#C89840", "#B080C0", "#C87060", "#60A8B4", "#A890C0"];
 function pursuitColor(pursuitId: number | null, ids: number[]) {
@@ -356,6 +374,15 @@ function FirstVisitTip({ id, children }: { id: string; children: ReactNode }) {
 
 // ── Date helpers ───────────────────────────────────────────────────────────────
 const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+// Monday of the local week containing `d`, as YYYY-MM-DD — the client is the
+// source of truth for "what week is it" (#82, same reasoning as `?today=`
+// elsewhere in this file: no per-user timezone anywhere in the schema).
+function weekStartYmd(d: Date): string {
+  const diffToMonday = (d.getDay() + 6) % 7;
+  const monday = new Date(d);
+  monday.setDate(d.getDate() - diffToMonday);
+  return ymd(monday);
+}
 function weekDays() {
   const now = new Date();
   const dow = (now.getDay() + 6) % 7; // Monday = 0
@@ -719,6 +746,7 @@ export default function Home() {
         {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} onOpenJournalHistory={() => setJournalHistoryOpen(true)} onToggleVerseFavorite={toggleVerseFavorite} onOpenVerseHistory={() => setVerseHistoryOpen(true)} onOpenVerseFavorites={() => setVerseFavoritesOpen(true)} />}
         {tab === "her" && <Relationships relationships={relationships} refreshRelationships={refreshRelationships} commits={commits} refreshCommits={refreshCommits} />}
         {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} onOpenClosed={() => setClosedPursuitsOpen(true)} />}
+        {tab === "sphere" && <Sphere />}
         {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} remindersEnabled={profile?.remindersEnabled ?? true} onSetRemindersEnabled={setRemindersEnabled} onSendTestReminder={sendTestReminder} />}
         {tab === "week" && <WeekView events={week} jobs={jobs} pursuits={pursuits} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await apiFetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
       </main>
@@ -2328,6 +2356,281 @@ function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit, onOp
       )}
       <button style={{ ...S.intakeBtn, marginTop: 12 }} onClick={onAddPursuit}>＋  Add pursuit</button>
       <button style={{ ...S.intakeBtn, marginTop: 8 }} onClick={onJob}>＋  Add new job</button>
+      <div style={{ height: 32 }} />
+    </div>
+  );
+}
+
+// ── Sphere ───────────────────────────────────────────────────────────────────
+// #82 — weekly self-examination across Protect (Family/Yourself/Community),
+// Provide, and Lead. "Sphere Landscape" was chosen after three rendered
+// prototypes were reviewed live — see issue #82's grilling resolution and
+// the prototype/sphere-dashboard-visual-options branch (never merged,
+// kept as a primary source per this project's prototype convention).
+const SPHERE_STATE_SCORE: Record<PulseState, number> = { down: 0, mid: 0.5, up: 1 };
+
+// The "ghost fade" mechanic: a week's visual weight blends how recent it is
+// with how long that state persisted, so a state held for many consecutive
+// weeks leaves a longer-lingering (fainter but real) mark than a one-week
+// blip — a genuine recent turnaround should visibly outweigh a stretch
+// that's already faded, not look identical to one that just happened to end.
+function sphereGhostOpacity(weeks: SphereWeek[]): number[] {
+  const n = weeks.length;
+  const runLen: number[] = new Array(n).fill(0);
+  for (let i = 0; i < n; i++) {
+    if (weeks[i].state === "none") { runLen[i] = 0; continue; }
+    runLen[i] = i > 0 && weeks[i - 1].state === weeks[i].state ? runLen[i - 1] + 1 : 1;
+  }
+  return weeks.map((w, i) => {
+    if (w.state === "none") return 0;
+    if (i === n - 1) return 1;
+    const age = (n - 1) - i;
+    const recency = Math.max(0.15, 1 - age / n);
+    const persistence = Math.min(1, runLen[i] / 6);
+    return Math.min(1, recency * (0.35 + 0.65 * persistence));
+  });
+}
+
+// All 5 categories as one layered ridgeline chart — each ribbon's height is
+// that category's state, its fill fading toward the ghost weight above.
+function SphereLandscapeChart({ categories }: { categories: SphereDashboardCategory[] }) {
+  const W = 320, rowH = 34;
+  const H = rowH * categories.length;
+  return (
+    <svg viewBox={`0 0 ${W} ${H + 4}`} width="100%" height={H + 4} role="img" aria-label="The Sphere, trend over the last 3 months">
+      {categories.map((cat, ci) => {
+        const n = cat.weeks.length;
+        if (n < 2) return null;
+        const baseY = rowH * ci + rowH * 0.72, amp = rowH * 0.6;
+        const opac = sphereGhostOpacity(cat.weeks);
+        const top = cat.weeks.map((w, i) => {
+          const x = (i / (n - 1)) * W;
+          const score = w.state === "none" ? 0.5 : SPHERE_STATE_SCORE[w.state];
+          const y = baseY - score * amp;
+          return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+        }).join(" ");
+        const bottom = cat.weeks.map((_w, ri) => {
+          const i = n - 1 - ri;
+          const x = (i / (n - 1)) * W;
+          return `L${x.toFixed(1)},${(baseY + 6).toFixed(1)}`;
+        }).join(" ");
+        const cur = cat.weeks[n - 1]!;
+        const curState: PulseState = cur.state === "none" ? "mid" : cur.state;
+        const avgOpacity = opac.reduce((a, o) => a + o, 0) / n * 0.5 + 0.12;
+        const label = SPHERE_CATEGORIES.find(c => c.id === cat.category)?.label ?? cat.category;
+        return (
+          <g key={cat.category}>
+            <path d={`${top} ${bottom} Z`} fill={PULSE_STATE_COLOR[curState]} opacity={Math.min(0.85, avgOpacity)} />
+            <circle cx={W} cy={(baseY - SPHERE_STATE_SCORE[curState] * amp).toFixed(1)} r={4} fill={PULSE_STATE_COLOR[curState]} />
+            <text x={6} y={rowH * ci + 13} fontSize={10} fill={C.parchmentDim} letterSpacing="0.04em">{label.toUpperCase()}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+// Small sparkline-with-dots version of the same idea, for the 4-week window
+// shown under each category's own heading.
+function SphereMiniMeter({ weeks }: { weeks: SphereWeek[] }) {
+  const n = weeks.length;
+  if (n < 2) return null;
+  const w = 100, h = 26;
+  const opac = sphereGhostOpacity(weeks);
+  const pts = weeks.map((wk, i) => {
+    const x = (i / (n - 1)) * w;
+    const score = wk.state === "none" ? 0.5 : SPHERE_STATE_SCORE[wk.state];
+    return [x, h - 4 - score * (h - 8)] as const;
+  });
+  const linePath = pts.map((p, i) => `${i === 0 ? "M" : "L"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <svg viewBox={`0 0 ${w} ${h}`} width={w} height={h} aria-hidden="true">
+        <path d={linePath} fill="none" stroke={C.brassSoft} strokeWidth={1.6} opacity={0.85} />
+        {weeks.map((wk, i) => {
+          const [x, y] = pts[i]!;
+          if (wk.state === "none") return <circle key={i} cx={x} cy={y} r={2.2} fill="none" stroke={C.parchmentLow} strokeDasharray="1.5,1.5" opacity={0.6} />;
+          return <circle key={i} cx={x} cy={y} r={i === n - 1 ? 3 : 2.2} fill={PULSE_STATE_COLOR[wk.state]} opacity={i === n - 1 ? 1 : opac[i]} />;
+        })}
+      </svg>
+      <span style={{ fontSize: 10, color: C.parchmentLow }}>4-wk trend</span>
+    </div>
+  );
+}
+
+function sphereScoreColor(score: number): string {
+  return score >= 0.66 ? "#8FAE6E" : score >= 0.4 ? C.brassSoft : "#C87060";
+}
+function sphereMonthLabel(month: string): string {
+  const [y, mo] = month.split("-").map(Number);
+  return new Date(y!, (mo ?? 1) - 1, 1).toLocaleDateString("en-US", { month: "long" });
+}
+
+// 6-month-max monthly browser (#82) — a brass medallion showing one blended
+// score per month, prev/next arrows. Only ever shows months that actually
+// have data; never padded out with empty ones.
+function SphereHistoryModal({ onClose }: { onClose: () => void }) {
+  const [months, setMonths] = useState<SphereMonth[] | null>(null);
+  const [idx, setIdx] = useState(0);
+  useEffect(() => {
+    getJson(`${API}/sphere/history`, null).then(d => {
+      const list = isRecord(d) && Array.isArray(d.months) ? d.months as SphereMonth[] : [];
+      setMonths(list);
+      setIdx(Math.max(0, list.length - 1));
+    });
+  }, []);
+  const m = months && months.length > 0 ? months[idx] : null;
+  return (
+    <div style={M.overlay}>
+      <ModalSheet title="Sphere History" onClose={onClose}>
+        {months === null ? (
+          <div style={S.empty}>Loading…</div>
+        ) : !m ? (
+          <div style={S.empty}>Nothing to show yet — check in for a few weeks first.</div>
+        ) : (
+          <div style={{ textAlign: "center" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 18, marginBottom: 16 }}>
+              <button style={{ ...S.prioLogLink, ...(idx === 0 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => setIdx(i => i - 1)} aria-label="Previous month">‹</button>
+              <div style={{ fontSize: 16, color: C.parchment, fontWeight: 600, minWidth: 100 }}>{sphereMonthLabel(m.month)}</div>
+              <button style={{ ...S.prioLogLink, ...(idx === months.length - 1 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => setIdx(i => i + 1)} aria-label="Next month">›</button>
+            </div>
+            <div style={{
+              width: 150, height: 150, borderRadius: "50%", margin: "0 auto",
+              border: `3px solid ${C.brassDeep}`,
+              background: "radial-gradient(circle at 35% 30%, rgba(216,170,62,0.18), rgba(0,0,0,0.4))",
+              boxShadow: `0 0 24px ${C.brassGlow}, inset 0 0 20px rgba(0,0,0,0.5)`,
+              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+            }}>
+              <div style={{ fontSize: 13, letterSpacing: "0.08em", textTransform: "uppercase", color: C.brassSoft, marginBottom: 6 }}>Overall</div>
+              <div style={{ fontSize: 26, color: sphereScoreColor(m.score), fontWeight: 600 }}>{Math.round(m.score * 100)}%</div>
+            </div>
+            <div style={{ ...S.empty, marginTop: 14 }}>Showing {months.length} of up to 6 months — only months with data appear.</div>
+          </div>
+        )}
+      </ModalSheet>
+    </div>
+  );
+}
+
+function Sphere() {
+  const [checks, setChecks] = useState<SphereCheckEntry[]>([]);
+  const [dashboard, setDashboard] = useState<SphereDashboardCategory[] | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [drafts, setDrafts] = useState<Partial<Record<SphereCategory, string>>>({});
+  const [pendingState, setPendingState] = useState<Partial<Record<SphereCategory, PulseState>>>({});
+  const { error: tapError, flash } = useTapError();
+  const noteSave = useKeyedSaveStatus<SphereCategory>();
+  const byCategory = new Map(checks.map(c => [c.category, c]));
+  const dashByCategory = new Map((dashboard ?? []).map(d => [d.category, d]));
+
+  const refreshChecks = useCallback(() => {
+    getList<SphereCheckEntry>(`${API}/sphere?week=${weekStartYmd(new Date())}`).then(setChecks);
+  }, []);
+  const refreshDashboard = useCallback(() => {
+    getJson(`${API}/sphere/dashboard`, null).then(d => {
+      setDashboard(isRecord(d) && Array.isArray(d.categories) ? d.categories as SphereDashboardCategory[] : []);
+    });
+  }, []);
+  useEffect(() => { refreshChecks(); refreshDashboard(); }, [refreshChecks, refreshDashboard]);
+
+  async function saveCheck(category: SphereCategory, state: PulseState, note: string): Promise<boolean> {
+    try {
+      const r = await apiFetch(`${API}/sphere`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ week: weekStartYmd(new Date()), category, state, note }),
+      });
+      if (r.ok) { setChecks(prev => [...prev.filter(c => c.category !== category), { category, state, note }]); return true; }
+      return false;
+    } catch { return false; }
+  }
+  async function tapState(category: SphereCategory, state: PulseState) {
+    const existing = byCategory.get(category);
+    setPendingState(prev => ({ ...prev, [category]: state }));
+    const ok = await saveCheck(category, state, existing?.note ?? "");
+    setPendingState(prev => { const next = { ...prev }; delete next[category]; return next; });
+    if (ok) refreshDashboard();
+    else flash("Couldn't save — try again");
+  }
+  function saveNote(category: SphereCategory, entry: SphereCheckEntry) {
+    const note = drafts[category] ?? entry.note;
+    if (note === entry.note) return;
+    noteSave.save(category, () => saveCheck(category, entry.state, note));
+  }
+
+  const groups: { name: string | null; items: typeof SPHERE_CATEGORIES }[] = [];
+  for (const cat of SPHERE_CATEGORIES) {
+    const g = groups.find(g => g.name === cat.group);
+    if (g) g.items.push(cat); else groups.push({ name: cat.group, items: [cat] });
+  }
+  const dashboardEmpty = dashboard !== null && dashboard.every(d => d.weeks.every(w => w.state === "none"));
+
+  const scrollFade = useBottomScrollFade<HTMLDivElement>();
+  return (
+    <div ref={scrollFade.ref} style={S.scroll}>
+      {scrollFade.showFade && <div style={S.scrollFadeCue} />}
+      <div style={S.pageTitle}>The Sphere</div>
+      <div style={S.pageSub}>Own your Sphere of Influence.</div>
+      <FirstVisitTip id="sphere">A weekly check-in on how you're protecting, providing for, and leading the people around you.</FirstVisitTip>
+
+      <div style={S.card}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+          <div style={S.eyeText}>SPHERE DASHBOARD</div>
+          <button style={S.prioLogLink} onClick={() => setHistoryOpen(true)}>History ›</button>
+        </div>
+        {dashboard === null ? (
+          <div style={S.empty}>Loading…</div>
+        ) : dashboardEmpty ? (
+          <div style={S.empty}>Your Sphere history builds here — check in weekly to watch it grow.</div>
+        ) : (
+          <SphereLandscapeChart categories={dashboard} />
+        )}
+        <div style={{ fontSize: 12, color: C.parchmentDim, marginTop: 10, lineHeight: 1.5 }}>Five currents, one Sphere — each area&apos;s height is this week&apos;s state; older weeks fade unless they held for a while, so a real turnaround still outweighs a stretch that&apos;s already passed.</div>
+      </div>
+
+      {groups.map(group => (
+        <div key={group.name ?? "ungrouped"}>
+          {group.name && <div style={{ ...S.eyeText, margin: "22px 0 10px" }}>{group.name.toUpperCase()}</div>}
+          {group.items.map(cat => {
+            const entry = byCategory.get(cat.id);
+            const displayState = pendingState[cat.id] ?? entry?.state;
+            const dashCat = dashByCategory.get(cat.id);
+            return (
+              <div key={cat.id} style={S.card}>
+                <div style={S.pulseRowTop}>
+                  <div style={{ fontSize: 16, color: C.parchment, fontWeight: 600 }}>{cat.label}</div>
+                  <div style={S.pulseBtns}>
+                    {(["down", "mid", "up"] as PulseState[]).map(s => (
+                      <button
+                        key={s}
+                        style={{ ...S.pulseBtn, width: 44, height: 44, ...(displayState === s ? { borderColor: PULSE_STATE_COLOR[s], color: PULSE_STATE_COLOR[s], boxShadow: `0 0 8px ${PULSE_STATE_COLOR[s]}55` } : {}) }}
+                        onClick={() => tapState(cat.id, s)}
+                        aria-label={`${cat.label}: ${s}`}
+                      >
+                        <PulseGaugeIcon state={s} />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {entry && (
+                  <>
+                    <input
+                      style={S.pulseNoteInput}
+                      value={drafts[cat.id] ?? entry.note}
+                      placeholder="Add a note (optional)…"
+                      onChange={e => { setDrafts(prev => ({ ...prev, [cat.id]: e.target.value })); if (noteSave.get(cat.id) === "error") noteSave.reset(cat.id); }}
+                      onBlur={() => saveNote(cat.id, entry)}
+                    />
+                    <SaveStatus status={noteSave.get(cat.id)} onRetry={() => saveNote(cat.id, entry)} />
+                  </>
+                )}
+                {dashCat && <div style={{ marginTop: 10 }}><SphereMiniMeter weeks={dashCat.weeks.slice(-4)} /></div>}
+              </div>
+            );
+          })}
+        </div>
+      ))}
+      <TapError message={tapError} />
+      {historyOpen && <SphereHistoryModal onClose={() => setHistoryOpen(false)} />}
       <div style={{ height: 32 }} />
     </div>
   );

@@ -1,7 +1,8 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
-import { db, journalEntries, tasks, taskCompletions, pulseChecks, commits, commitRelationshipTargets, relationships, type Relationship } from "@workspace/db";
+import { db, journalEntries, tasks, taskCompletions, pulseChecks, commits, commitRelationshipTargets, relationships, type Relationship, sphereChecks } from "@workspace/db";
 import { isSlipping, type RecurrencePeriod } from "./priorityPeriods";
 import { PULSE_STATE_LABEL, type PulseState } from "./pulseCheck";
+import { SPHERE_CATEGORY_LABEL, SPHERE_STATE_LABEL, getWeekStart, type SphereCategory, type SphereState } from "./sphere";
 
 export const RELATIONSHIP_CATEGORY_LABEL: Record<string, string> = { spouse: "Spouse", child: "Child", family: "Family", friend: "Friend", other: "Other" };
 function relationshipLabel(r: Pick<Relationship, "name" | "type" | "category">): string {
@@ -49,11 +50,12 @@ export async function resolveCommitWhoLabels(
 // today (see #12/#22's resolution: interview.ts isn't wired in yet, and
 // relationships context is dropped until #13 ships real data).
 export async function buildTodayContext(userId: string, today: string): Promise<string> {
-  const [recentJournal, openTasks, todayPulse, openCommits] = await Promise.all([
+  const [recentJournal, openTasks, todayPulse, openCommits, thisWeekSphere] = await Promise.all([
     db.select().from(journalEntries).where(eq(journalEntries.userId, userId)).orderBy(desc(journalEntries.date)).limit(3),
     db.select().from(tasks).where(and(eq(tasks.userId, userId), eq(tasks.done, false), eq(tasks.deleted, false))).orderBy(desc(tasks.createdAt)).limit(5),
     db.select().from(pulseChecks).where(and(eq(pulseChecks.userId, userId), eq(pulseChecks.date, today))),
     db.select().from(commits).where(and(eq(commits.userId, userId), eq(commits.done, false), eq(commits.deleted, false))).orderBy(desc(commits.createdAt)).limit(5),
+    db.select().from(sphereChecks).where(and(eq(sphereChecks.userId, userId), eq(sphereChecks.weekStart, getWeekStart(new Date(today))))),
   ]);
 
   let context = '';
@@ -101,6 +103,15 @@ export async function buildTodayContext(userId: string, today: string): Promise<
     todayPulse.forEach((p) => {
       const note = p.note ? ` — note: "${p.note.slice(0, 150)}"` : '';
       context += `- ${p.category}: ${PULSE_STATE_LABEL[p.state as PulseState] ?? p.state}${note}\n`;
+    });
+    context += '\n';
+  }
+
+  if (thisWeekSphere.length > 0) {
+    context += "## This week's Sphere check-in:\n";
+    thisWeekSphere.forEach((s) => {
+      const note = s.note ? ` — note: "${s.note.slice(0, 150)}"` : '';
+      context += `- ${SPHERE_CATEGORY_LABEL[s.category as SphereCategory] ?? s.category}: ${SPHERE_STATE_LABEL[s.state as SphereState] ?? s.state}${note}\n`;
     });
     context += '\n';
   }

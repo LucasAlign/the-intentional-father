@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { db, withUserSession } from "@workspace/db";
-import { journalEntries, chatMessages, tasks, taskCompletions, commits, commitRelationshipTargets, type Commit, jobs, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit, verseFavorites } from "@workspace/db";
+import { journalEntries, chatMessages, tasks, taskCompletions, commits, commitRelationshipTargets, type Commit, jobs, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit, verseFavorites, sphereChecks } from "@workspace/db";
 import { eq, desc, asc, gte, lte, and, isNull, inArray, notInArray, sql } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
 import { normalizeProfileData, isToneVoice, DEFAULT_TONE_VOICE, type ProfileData, type ToneVoice } from "../lib/profile";
@@ -9,12 +9,14 @@ import { SCRIPTURE_GROUNDING, getVerseOfTheDay, getVerseForUser, getVerseHistory
 import { computeCurrentPeriodStats, computeStreak, isSlipping, type RecurrencePeriod } from "../lib/priorityPeriods";
 import { buildTodayContext } from "../lib/stewardContext";
 import { isPulseCategory, isPulseState } from "../lib/pulseCheck";
+import { SPHERE_CATEGORIES, isSphereCategory, isSphereState, getWeekStart, SPHERE_STATE_SCORE, type SphereState } from "../lib/sphere";
 import { isRelationshipCategory, RELATIONSHIP_RANK_SQL, RELATIONSHIP_CATEGORY_RANK, type RelationshipCategory } from "../lib/relationships";
 import { isPursuitCategory } from "../lib/pursuits";
 import { sendTestReminderDigest } from "../lib/reminders";
 import { testReminderRateLimit } from "../middlewares/testReminderRateLimit";
 
 const MAX_PULSE_NOTE_LENGTH = 500;
+const MAX_SPHERE_NOTE_LENGTH = 500;
 
 const router = Router();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
@@ -118,6 +120,7 @@ Guidelines:
 - If an open task is marked stuck, or has sat open several days without being flagged, ask about it directly by name rather than letting it pass unmentioned.
 - If a recurring priority is flagged slipping (its streak just broke), mention it directly when relevant — but only when it's genuinely notable, not as routine commentary on ordinary progress.
 - If today's Pulse Check shows a category clearly down, ask about it directly rather than letting it pass unmentioned — name which one (physical, mental, or spiritual) and what they noted, if anything. A category that's notably strong is worth acknowledging too. Don't force commentary on every check-in — only when it's genuinely notable, the same restraint as the slipping-priority guideline above.
+- If this week's Sphere check-in shows a category (Family, Yourself, Community, Provide, or Lead) clearly down, name it directly and ask what's going on, using their note if they left one. A category that's notably strong is worth acknowledging too. Same restraint as Pulse Check: only when genuinely notable, not routine commentary on every check-in.
 - Hold them accountable to commitments they've made to the people who matter most to them, by name where you know it — the same way you'd hold a brother to a promise.
 - If an open commitment is flagged overdue or due soon, or has sat logged a week or more with no due date, ask about it directly by name and who it was made to — the same restraint as the stuck-task guideline above, not routine commentary on every commitment.
 - Encourage real relationships and real action, never foster dependence on the app.${doNotSuggest}${alwaysRemind}${toneDelivery}
@@ -528,6 +531,106 @@ router.post('/pulse-checks', async (req: Request, res: Response) => {
   } catch (err) {
     req.log?.error({ err }, 'Error saving pulse check');
     res.status(500).json({ error: 'Failed to save pulse check' });
+  }
+});
+
+// GET /api/sphere?week=YYYY-MM-DD — this week's up-to-5 entries.
+router.get('/sphere', async (req: Request, res: Response) => {
+  try {
+    const week = typeof req.query.week === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.week)
+      ? req.query.week
+      : getWeekStart(new Date());
+    const rows = await db.select().from(sphereChecks).where(and(eq(sphereChecks.userId, req.user!.id), eq(sphereChecks.weekStart, week)));
+    res.json(rows);
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching Sphere checks');
+    res.status(500).json({ error: 'Failed to fetch Sphere checks' });
+  }
+});
+
+// POST /api/sphere
+router.post('/sphere', async (req: Request, res: Response) => {
+  try {
+    const { week, category, state, note } = req.body;
+    if (typeof week !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(week)) {
+      res.status(400).json({ error: 'week (YYYY-MM-DD) is required' });
+      return;
+    }
+    if (!isSphereCategory(category)) { res.status(400).json({ error: 'Invalid category' }); return; }
+    if (!isSphereState(state)) { res.status(400).json({ error: 'Invalid state' }); return; }
+    const cleanNote = typeof note === 'string' ? note.slice(0, MAX_SPHERE_NOTE_LENGTH) : '';
+    await db.insert(sphereChecks)
+      .values({ userId: req.user!.id, weekStart: week, category, state, note: cleanNote })
+      .onConflictDoUpdate({
+        target: [sphereChecks.userId, sphereChecks.weekStart, sphereChecks.category],
+        set: { state, note: cleanNote },
+      });
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error saving Sphere check');
+    res.status(500).json({ error: 'Failed to save Sphere check' });
+  }
+});
+
+const SPHERE_DASHBOARD_WEEKS = 12; // ~3 months, per #82's settled spec
+const SPHERE_HISTORY_MAX_MONTHS = 6;
+
+// GET /api/sphere/dashboard — last 12 weeks per category, gaps filled with an
+// explicit "none" state (never silently omitted or carried forward, per #82's
+// Q12) so the client's ghost-fade math has one honest row per category per
+// week to work with.
+router.get('/sphere/dashboard', async (req: Request, res: Response) => {
+  try {
+    const weekStarts: string[] = [];
+    const cursor = new Date();
+    for (let i = SPHERE_DASHBOARD_WEEKS - 1; i >= 0; i--) {
+      const d = new Date(cursor);
+      d.setUTCDate(d.getUTCDate() - i * 7);
+      weekStarts.push(getWeekStart(d));
+    }
+    const earliest = weekStarts[0]!;
+    const rows = await db.select().from(sphereChecks)
+      .where(and(eq(sphereChecks.userId, req.user!.id), gte(sphereChecks.weekStart, earliest)));
+    const byKey = new Map(rows.map((r) => [`${r.weekStart}:${r.category}`, r]));
+
+    const categories = SPHERE_CATEGORIES.map((category) => ({
+      category,
+      weeks: weekStarts.map((weekStart) => {
+        const row = byKey.get(`${weekStart}:${category}`);
+        return { weekStart, state: (row?.state as SphereState | undefined) ?? 'none', note: row?.note ?? '' };
+      }),
+    }));
+    res.json({ categories });
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching Sphere dashboard');
+    res.status(500).json({ error: 'Failed to fetch Sphere dashboard' });
+  }
+});
+
+// GET /api/sphere/history — one blended score per calendar month, most
+// recent last, only for months that actually have at least one logged entry
+// — never padded out to 6 months of empty history (per #82's settled spec).
+router.get('/sphere/history', async (req: Request, res: Response) => {
+  try {
+    const rows = await db.select({ weekStart: sphereChecks.weekStart, state: sphereChecks.state })
+      .from(sphereChecks).where(eq(sphereChecks.userId, req.user!.id));
+
+    const byMonth = new Map<string, { sum: number; count: number }>();
+    for (const row of rows) {
+      const month = row.weekStart.slice(0, 7); // YYYY-MM
+      const score = SPHERE_STATE_SCORE[row.state as SphereState] ?? 0.5;
+      const bucket = byMonth.get(month) ?? { sum: 0, count: 0 };
+      bucket.sum += score; bucket.count += 1;
+      byMonth.set(month, bucket);
+    }
+    const months = Array.from(byMonth.entries())
+      .map(([month, { sum, count }]) => ({ month, score: sum / count }))
+      .sort((a, b) => a.month.localeCompare(b.month))
+      .slice(-SPHERE_HISTORY_MAX_MONTHS);
+    res.json({ months });
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching Sphere history');
+    res.status(500).json({ error: 'Failed to fetch Sphere history' });
   }
 });
 
