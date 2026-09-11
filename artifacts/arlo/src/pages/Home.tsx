@@ -74,7 +74,9 @@ const SPHERE_CATEGORIES: { id: SphereCategory; label: string; group: string | nu
 ];
 interface SphereWeek { weekStart: string; state: PulseState | "none"; note: string; }
 interface SphereDashboardCategory { category: SphereCategory; weeks: SphereWeek[]; }
-interface SphereMonth { month: string; score: number; categories: { category: SphereCategory; state: PulseState | null }[]; }
+interface SphereMonthWeek { weekStart: string; state: PulseState; note: string; }
+interface SphereMonthCategory { category: SphereCategory; state: PulseState | null; weeks: SphereMonthWeek[]; }
+interface SphereMonth { month: string; score: number; categories: SphereMonthCategory[]; }
 
 // ── Sphere walkthrough content ──────────────────────────────────────────────
 // Every question + every answer branch's follow-up, per the grilled/reviewed
@@ -2554,12 +2556,139 @@ function sphereMonthLabel(month: string): string {
   return new Date(y!, (mo ?? 1) - 1, 1).toLocaleDateString("en-US", { month: "long" });
 }
 
+function SphereStatePill({ state }: { state: PulseState | null }) {
+  if (!state) return <div style={{ fontSize: 11, color: C.parchmentLow, fontStyle: "italic" }}>not logged</div>;
+  return (
+    <div style={{ fontSize: 10.5, letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 700, padding: "3px 10px", borderRadius: 20, border: `1px solid ${PULSE_STATE_COLOR[state]}`, color: PULSE_STATE_COLOR[state] }}>
+      {PULSE_STATE_LABEL[state]}
+    </div>
+  );
+}
+
+// Small expand/collapse section, same idea as CommitRow's expand panel —
+// used inside the Details drill-downs so a category's Answers/Notes stay
+// out of the way until asked for.
+function SphereCollapsible({ label, children }: { label: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ marginTop: 4 }}>
+      <button style={S.sphereDropdownBtn} onClick={() => setOpen(o => !o)}>
+        {label} {open ? "▴" : "▾"}
+      </button>
+      {open && <div style={S.sphereDropdownPanel}>{children}</div>}
+    </div>
+  );
+}
+
+// Full drill-down for one week's check-ins — every category's itemized
+// walkthrough answers (if any) and every bit of free text the user actually
+// typed, each behind its own collapsible section per #82 follow-up.
+function SphereWeekDetailModal({ checks, onClose }: { checks: SphereCheckEntry[]; onClose: () => void }) {
+  const byCategory = new Map(checks.map(c => [c.category, c]));
+  return (
+    <div style={M.overlay}>
+      <ModalSheet title="This Week — Details" onClose={onClose}>
+        {SPHERE_CATEGORIES.map(cat => {
+          const entry = byCategory.get(cat.id);
+          const questions = SPHERE_QUESTIONS[cat.id];
+          const answers = entry?.answers ?? null;
+          const hasAnswers = !!answers && answers.some(a => a.answer !== null);
+          const freeText: { q: string; text: string }[] = [];
+          if (entry?.note) freeText.push({ q: "Note", text: entry.note });
+          answers?.forEach((a, i) => {
+            const text = [a.note, a.followup].filter(Boolean).join(" — ");
+            if (text) freeText.push({ q: questions[i]?.text ?? `Question ${i + 1}`, text });
+          });
+          return (
+            <div key={cat.id} style={{ marginBottom: 16, paddingBottom: 14, borderBottom: "1px solid rgba(210,190,130,0.1)" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                <div style={{ fontSize: 15, color: C.parchment, fontWeight: 600 }}>{cat.label}</div>
+                <SphereStatePill state={entry?.state ?? null} />
+              </div>
+              {!entry ? (
+                <div style={{ fontSize: 12, color: C.parchmentLow, fontStyle: "italic" }}>Not checked in yet this week.</div>
+              ) : (
+                <>
+                  <SphereCollapsible label="Answers">
+                    {hasAnswers ? questions.map((q, i) => {
+                      const a = answers![i];
+                      const mark = a.answer === "up" ? "✓" : a.answer === "mid" ? "±" : a.answer === "down" ? "✕" : "○";
+                      const color = a.answer === "up" ? "#8FAE6E" : a.answer === "mid" ? C.brassSoft : a.answer === "down" ? "#C87060" : C.parchmentLow;
+                      return (
+                        <div key={i} style={{ marginBottom: 8, fontSize: 12.5, color: C.parchmentMid }}>
+                          <span style={{ color }}>{mark}</span> {q.text}
+                        </div>
+                      );
+                    }) : <div style={{ fontSize: 12, color: C.parchmentLow, fontStyle: "italic" }}>No walkthrough this week — set with the battery icons instead.</div>}
+                  </SphereCollapsible>
+                  <SphereCollapsible label="Notes">
+                    {freeText.length > 0 ? freeText.map((f, i) => (
+                      <div key={i} style={{ marginBottom: 8, fontSize: 12.5 }}>
+                        <div style={{ color: C.parchmentLow, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.04em" }}>{f.q}</div>
+                        <div style={{ color: C.parchmentMid }}>{f.text}</div>
+                      </div>
+                    )) : <div style={{ fontSize: 12, color: C.parchmentLow, fontStyle: "italic" }}>Nothing written down.</div>}
+                  </SphereCollapsible>
+                </>
+              )}
+            </div>
+          );
+        })}
+        <button style={M.cancel} onClick={onClose}>Close</button>
+      </ModalSheet>
+    </div>
+  );
+}
+
+// Brief per-category recap for one month — the week-by-week state sequence
+// plus only the notes the user actually wrote that month, truncated. Not a
+// full itemized replay like SphereWeekDetailModal — a month can span 4+
+// weeks of walkthrough answers, so this stays to the big picture.
+function SphereMonthDetailModal({ month, onClose }: { month: SphereMonth; onClose: () => void }) {
+  return (
+    <div style={M.overlay}>
+      <ModalSheet title={`${sphereMonthLabel(month.month)} — Details`} onClose={onClose}>
+        {month.categories.map(c => {
+          const label = SPHERE_CATEGORIES.find(sc => sc.id === c.category)?.label ?? c.category;
+          const notedWeeks = c.weeks.filter(w => w.note);
+          return (
+            <div key={c.category} style={{ marginBottom: 14, paddingBottom: 12, borderBottom: "1px solid rgba(210,190,130,0.1)" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                <div style={{ fontSize: 14, color: C.parchment, fontWeight: 600 }}>{label}</div>
+                <SphereStatePill state={c.state} />
+              </div>
+              {c.weeks.length === 0 ? (
+                <div style={{ fontSize: 12, color: C.parchmentLow, fontStyle: "italic" }}>Not logged this month.</div>
+              ) : (
+                <>
+                  <div style={{ fontSize: 11.5, color: C.parchmentDim }}>{c.weeks.map(w => PULSE_STATE_LABEL[w.state]).join(" → ")}</div>
+                  {notedWeeks.length > 0 && (
+                    <div style={{ marginTop: 6 }}>
+                      {notedWeeks.map((w, i) => (
+                        <div key={i} style={{ fontSize: 12, color: C.parchmentMid, marginTop: 4 }}>&ldquo;{w.note.slice(0, 140)}&rdquo;</div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })}
+        <button style={M.cancel} onClick={onClose}>Close</button>
+      </ModalSheet>
+    </div>
+  );
+}
+
 // 6-month-max monthly browser (#82) — a brass medallion showing one blended
 // score per month, prev/next arrows. Only ever shows months that actually
-// have data; never padded out with empty ones.
-function SphereHistoryModal({ onClose }: { onClose: () => void }) {
+// have data; never padded out with empty ones. "This Week" sits above it as
+// its own always-current section, each with its own Details drill-down.
+function SphereHistoryModal({ onClose, thisWeekChecks }: { onClose: () => void; thisWeekChecks: SphereCheckEntry[] }) {
   const [months, setMonths] = useState<SphereMonth[] | null>(null);
   const [idx, setIdx] = useState(0);
+  const [weekDetailOpen, setWeekDetailOpen] = useState(false);
+  const [monthDetailOpen, setMonthDetailOpen] = useState(false);
   useEffect(() => {
     getJson(`${API}/sphere/history`, null).then(d => {
       const list = isRecord(d) && Array.isArray(d.months) ? d.months as SphereMonth[] : [];
@@ -2568,9 +2697,22 @@ function SphereHistoryModal({ onClose }: { onClose: () => void }) {
     });
   }, []);
   const m = months && months.length > 0 ? months[idx] : null;
+  const thisWeekByCategory = new Map(thisWeekChecks.map(c => [c.category, c]));
   return (
     <div style={M.overlay}>
       <ModalSheet title="Sphere History" onClose={onClose}>
+        <div style={{ marginBottom: 18, paddingBottom: 16, borderBottom: "1px solid rgba(210,190,130,0.12)" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+            <div style={S.eyeText}>THIS WEEK</div>
+            <button style={S.prioLogLink} onClick={() => setWeekDetailOpen(true)}>Details ›</button>
+          </div>
+          {SPHERE_CATEGORIES.map(cat => (
+            <div key={cat.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 2px" }}>
+              <div style={{ fontSize: 13.5, color: C.parchmentMid }}>{cat.label}</div>
+              <SphereStatePill state={thisWeekByCategory.get(cat.id)?.state ?? null} />
+            </div>
+          ))}
+        </div>
         {months === null ? (
           <div style={S.empty}>Loading…</div>
         ) : !m ? (
@@ -2587,13 +2729,7 @@ function SphereHistoryModal({ onClose }: { onClose: () => void }) {
               return (
                 <div key={c.category} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 2px", borderBottom: "1px solid rgba(210,190,130,0.08)" }}>
                   <div style={{ fontSize: 13.5, color: C.parchmentMid }}>{label}</div>
-                  {c.state ? (
-                    <div style={{ fontSize: 10.5, letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 700, padding: "3px 10px", borderRadius: 20, border: `1px solid ${PULSE_STATE_COLOR[c.state]}`, color: PULSE_STATE_COLOR[c.state] }}>
-                      {PULSE_STATE_LABEL[c.state]}
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: 11, color: C.parchmentLow, fontStyle: "italic" }}>not logged</div>
-                  )}
+                  <SphereStatePill state={c.state} />
                 </div>
               );
             })}
@@ -2601,11 +2737,14 @@ function SphereHistoryModal({ onClose }: { onClose: () => void }) {
               <div style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: C.brassSoft, fontWeight: 700 }}>Overall</div>
               <div style={{ fontSize: 18, color: C.parchment, fontWeight: 600 }}>{Math.round(m.score * 100)}%</div>
             </div>
+            <button style={{ ...S.prioLogLink, marginTop: 10 }} onClick={() => setMonthDetailOpen(true)}>Details ›</button>
             <div style={{ ...S.empty, marginTop: 14 }}>Showing {months.length} of up to 6 months — only months with data appear.</div>
           </div>
         )}
         <button style={M.cancel} onClick={onClose}>Close</button>
       </ModalSheet>
+      {weekDetailOpen && <SphereWeekDetailModal checks={thisWeekChecks} onClose={() => setWeekDetailOpen(false)} />}
+      {monthDetailOpen && m && <SphereMonthDetailModal month={m} onClose={() => setMonthDetailOpen(false)} />}
     </div>
   );
 }
@@ -2826,6 +2965,7 @@ function Sphere() {
           <div style={S.eyeText}>SPHERE DASHBOARD</div>
           <button style={S.prioLogLink} onClick={() => setHistoryOpen(true)}>History ›</button>
         </div>
+        <div style={{ fontSize: 11, color: C.parchmentLow, marginBottom: 10 }}>This week's check-in resets every Monday at midnight.</div>
         {dashboard === null ? (
           <div style={S.empty}>Loading…</div>
         ) : dashboardEmpty ? (
@@ -2880,7 +3020,7 @@ function Sphere() {
         </div>
       ))}
       <TapError message={tapError} />
-      {historyOpen && <SphereHistoryModal onClose={() => setHistoryOpen(false)} />}
+      {historyOpen && <SphereHistoryModal onClose={() => setHistoryOpen(false)} thisWeekChecks={checks} />}
       {walkthroughCategory && (
         <SphereWalkthroughModal
           category={walkthroughCategory}
@@ -4075,6 +4215,8 @@ const S: Record<string, CSSProperties> = {
   sphereWizBtnPrimary: { borderColor: C.brass, color: C.brass, fontWeight: 700 },
   sphereWizBtnDanger: { display: "block", margin: "8px auto 0", borderColor: "rgba(200,112,96,0.4)", color: "#C87060", fontSize: 11.5, padding: "5px 12px" },
   sphereSummaryBox: { fontSize: 12.5, color: C.parchmentMid, lineHeight: 1.7, background: "rgba(0,0,0,0.25)", borderRadius: 10, padding: 12, marginBottom: 16, maxHeight: 260, overflowY: "auto" },
+  sphereDropdownBtn: { background: "none", border: "none", color: C.brassSoft, fontSize: 12.5, fontWeight: 600, padding: "4px 0", cursor: "pointer", fontFamily: F },
+  sphereDropdownPanel: { marginTop: 4, marginBottom: 6, paddingLeft: 4 },
   prioLine: { position: "absolute", left: 19, top: 18, bottom: 20, width: 2, background: `linear-gradient(180deg,${C.walnutLite},${C.walnut})`, boxShadow: "0 0 4px rgba(0,0,0,0.5)" },
   prioRow: { display: "flex", gap: 14, alignItems: "flex-start", position: "relative" },
   // 44x44 (#37) — minimum comfortable tap target for the priority-done toggle; was 40x40.

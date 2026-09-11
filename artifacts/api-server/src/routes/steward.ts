@@ -645,25 +645,32 @@ function scoreToState(avg: number): SphereState {
 // GET /api/sphere/history — one blended score per calendar month plus each
 // category's own state for that month, most recent last, only for months
 // that actually have at least one logged entry — never padded out to 6
-// months of empty history (per #82's settled spec).
+// months of empty history (per #82's settled spec). Each category also
+// carries its raw per-week {weekStart, state, note} rows for that month, so
+// the client's "Details" drill-down can show a brief, extractive recap (the
+// week-by-week state sequence plus whatever the user actually typed) rather
+// than every itemized walkthrough answer — same "their own words, never
+// canned copy" rule the chat context's summarizeFlaggedSphereAnswers uses.
 router.get('/sphere/history', async (req: Request, res: Response) => {
   try {
-    const rows = await db.select({ weekStart: sphereChecks.weekStart, category: sphereChecks.category, state: sphereChecks.state })
+    const rows = await db.select({ weekStart: sphereChecks.weekStart, category: sphereChecks.category, state: sphereChecks.state, note: sphereChecks.note })
       .from(sphereChecks).where(eq(sphereChecks.userId, req.user!.id));
 
     const overallByMonth = new Map<string, { sum: number; count: number }>();
-    const categoryByMonth = new Map<string, Map<string, { sum: number; count: number }>>();
+    const categoryByMonth = new Map<string, Map<string, { sum: number; count: number; weeks: { weekStart: string; state: SphereState; note: string }[] }>>();
     for (const row of rows) {
       const month = row.weekStart.slice(0, 7); // YYYY-MM
-      const score = SPHERE_STATE_SCORE[row.state as SphereState] ?? 0.5;
+      const state = row.state as SphereState;
+      const score = SPHERE_STATE_SCORE[state] ?? 0.5;
 
       const overall = overallByMonth.get(month) ?? { sum: 0, count: 0 };
       overall.sum += score; overall.count += 1;
       overallByMonth.set(month, overall);
 
-      const byCategory = categoryByMonth.get(month) ?? new Map<string, { sum: number; count: number }>();
-      const catBucket = byCategory.get(row.category) ?? { sum: 0, count: 0 };
+      const byCategory = categoryByMonth.get(month) ?? new Map();
+      const catBucket = byCategory.get(row.category) ?? { sum: 0, count: 0, weeks: [] };
       catBucket.sum += score; catBucket.count += 1;
+      catBucket.weeks.push({ weekStart: row.weekStart, state, note: row.note });
       byCategory.set(row.category, catBucket);
       categoryByMonth.set(month, byCategory);
     }
@@ -672,7 +679,11 @@ router.get('/sphere/history', async (req: Request, res: Response) => {
         const byCategory = categoryByMonth.get(month);
         const categories = SPHERE_CATEGORIES.map((category) => {
           const bucket = byCategory?.get(category);
-          return { category, state: bucket ? scoreToState(bucket.sum / bucket.count) : null };
+          return {
+            category,
+            state: bucket ? scoreToState(bucket.sum / bucket.count) : null,
+            weeks: (bucket?.weeks ?? []).sort((a, b) => a.weekStart.localeCompare(b.weekStart)),
+          };
         });
         return { month, score: sum / count, categories };
       })
