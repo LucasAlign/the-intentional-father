@@ -1,0 +1,492 @@
+<!--
+  PROTOTYPE — throwaway visual exploration for issue #82 ("The Sphere").
+  Not production code. Three structurally different directions for the
+  Sphere Dashboard's "ghost fade" trend chart, the per-category mini health
+  meters, and the 6-month history browser. Switch variants with the pill
+  at the bottom (arrows or ← → keys) or ?variant=A|B|C in the URL.
+  Sample data only — see SPHERE_DATA below.
+-->
+<title>Sphere Dashboard</title>
+<style>
+  :root{
+    --ink:#0C0E07; --ink-2:#1a1410;
+    --walnut-light:#9C6840; --walnut-med:#7A4E2C; --walnut-dark:#5A3A20;
+    --brass:#D8AA3E; --brass-soft:#C89A34; --brass-deep:#9A7420; --brass-glow:rgba(216,170,62,.55);
+    --parchment:#EEE4C4; --parchment-mid:#D2C7A2; --parchment-dim:#9C9272; --parchment-faint:#6E664C;
+    --up:#8FAE6E; --mid:#C89A34; --down:#C87060; --none:#6E664C;
+    --font:'Calibri','Segoe UI','Gill Sans MT','Helvetica Neue',sans-serif;
+  }
+  body{ background:var(--ink); }
+  .stage{
+    min-height:100dvh; display:flex; justify-content:center;
+    background:linear-gradient(135deg,var(--ink) 0%,var(--ink-2) 50%,var(--ink) 100%);
+    padding-block:24px 120px;
+  }
+  .phone{
+    width:100%; max-width:440px; color:var(--parchment-mid); font-family:var(--font);
+    padding:0 18px; position:relative;
+  }
+  .proto-banner{
+    font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink);
+    background:var(--brass); border-radius:8px; padding:5px 10px; text-align:center;
+    margin-bottom:14px; font-weight:700;
+  }
+  .app-head{ margin-bottom:16px; }
+  .app-head .eyebrow{ display:flex; align-items:center; gap:7px; font-size:11px; letter-spacing:.16em; color:var(--brass-soft); font-weight:600; margin-bottom:4px; }
+  .app-head h1{ font-size:26px; font-weight:400; color:var(--parchment); margin:0 0 4px; text-shadow:0 2px 6px rgba(0,0,0,.5); }
+  .app-head .sub{ font-size:14px; color:var(--parchment-dim); }
+
+  .card{
+    position:relative; overflow:hidden; border-radius:18px;
+    background:linear-gradient(158deg,rgba(46,40,26,.72) 0%,rgba(24,22,13,.82) 100%);
+    border:1px solid rgba(210,190,130,.16);
+    box-shadow:0 6px 22px rgba(0,0,0,.55),0 2px 6px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,240,200,.06);
+    padding:18px 18px 16px; margin-bottom:16px;
+  }
+  .section-heading{ font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--brass-soft); font-weight:700; margin:22px 0 10px; display:flex; align-items:center; gap:8px; }
+  .section-heading::after{ content:""; flex:1; height:1px; background:linear-gradient(90deg,rgba(210,190,130,.28),transparent); }
+  .cat-heading{ display:flex; align-items:baseline; justify-content:space-between; margin-bottom:8px; }
+  .cat-heading .name{ font-size:16px; color:var(--parchment); font-weight:600; }
+  .cat-heading .state-pill{ font-size:11px; letter-spacing:.06em; text-transform:uppercase; font-weight:700; padding:3px 9px; border-radius:20px; border:1px solid currentColor; }
+
+  .hist-btn{ background:none; border:1px solid rgba(210,190,130,.28); color:var(--brass-soft); font-family:var(--font); font-size:12px; font-weight:600; padding:6px 12px; border-radius:20px; cursor:pointer; display:inline-flex; align-items:center; gap:5px; }
+  .hist-btn:hover{ border-color:var(--brass); color:var(--brass); }
+  .dash-top{ display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
+  .dash-top .eyebrow{ font-size:11px; letter-spacing:.16em; color:var(--brass-soft); font-weight:700; }
+  .dash-caption{ font-size:12px; color:var(--parchment-dim); margin-top:10px; line-height:1.5; }
+
+  /* ---- overlay / history panel ---- */
+  .overlay{ position:fixed; inset:0; background:rgba(6,5,2,.72); backdrop-filter:blur(2px); display:flex; align-items:flex-end; justify-content:center; z-index:40; }
+  .overlay[hidden]{ display:none; }
+  .sheet{ width:100%; max-width:440px; background:linear-gradient(180deg,#241d12,#14110a); border:1px solid rgba(210,190,130,.2); border-radius:20px 20px 0 0; padding:20px 20px 26px; box-shadow:0 -10px 30px rgba(0,0,0,.6); }
+  .sheet-title{ font-size:15px; color:var(--parchment); font-weight:600; margin-bottom:14px; }
+  .sheet-close{ float:right; background:none; border:none; color:var(--parchment-dim); font-size:14px; cursor:pointer; font-family:var(--font); }
+
+  /* ---- fake bottom nav ---- */
+  .navbar{ position:fixed; left:0; right:0; bottom:0; display:flex; justify-content:center; background:rgba(12,10,5,.92); border-top:1px solid rgba(210,190,130,.14); backdrop-filter:blur(6px); z-index:20; }
+  .navbar-inner{ width:100%; max-width:440px; display:flex; padding:10px 6px 14px; }
+  .navbar button{ flex:1; background:none; border:none; display:flex; flex-direction:column; align-items:center; gap:3px; color:var(--parchment-faint); font-family:var(--font); font-size:10.5px; cursor:default; padding:4px 0; }
+  .navbar button.on{ color:var(--brass); }
+  .navbar svg{ display:block; }
+
+  /* ---- switcher pill ---- */
+  .switcher{ position:fixed; left:50%; transform:translateX(-50%); bottom:78px; z-index:50; display:flex; align-items:center; gap:10px; background:#000; border:1.5px solid var(--brass); border-radius:999px; padding:8px 8px 8px 14px; box-shadow:0 6px 20px rgba(0,0,0,.6),0 0 16px var(--brass-glow); }
+  .switcher button{ width:30px; height:30px; border-radius:50%; border:1px solid var(--brass-deep); background:rgba(216,170,62,.1); color:var(--brass); font-size:15px; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+  .switcher button:hover{ background:rgba(216,170,62,.25); }
+  .switcher .label{ color:var(--parchment); font-family:var(--font); font-size:12.5px; font-weight:600; white-space:nowrap; }
+  .switcher .label b{ color:var(--brass); }
+
+  svg text{ font-family:var(--font); }
+  .vis-fade-enter{ animation:fadeIn .25s ease both; }
+  @keyframes fadeIn{ from{opacity:0; transform:translateY(4px)} to{opacity:1; transform:translateY(0)} }
+  @media (prefers-reduced-motion:reduce){ .vis-fade-enter{ animation:none; } }
+</style>
+
+<div class="stage">
+  <div class="phone">
+    <div class="proto-banner">Prototype — visual exploration for #82, not final UI</div>
+    <div class="app-head">
+      <div class="eyebrow">◈ SPHERE</div>
+      <h1>The Sphere</h1>
+      <div class="sub">Own your Sphere of Influence</div>
+    </div>
+    <div id="dash-mount"></div>
+    <div id="sections-mount"></div>
+  </div>
+</div>
+
+<div class="overlay" id="hist-overlay" hidden>
+  <div class="sheet">
+    <button class="sheet-close" id="hist-close">Close</button>
+    <div class="sheet-title">Sphere History</div>
+    <div id="hist-mount"></div>
+  </div>
+</div>
+
+<div class="navbar">
+  <div class="navbar-inner" id="navbar-inner"></div>
+</div>
+
+<div class="switcher" id="switcher">
+  <button id="prev-variant" aria-label="Previous variant">‹</button>
+  <div class="label" id="variant-label"></div>
+  <button id="next-variant" aria-label="Next variant">›</button>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---------------------------------------------------------------------
+  // Sample data — 12 weeks (~3 months), oldest → newest. 'none' = not logged.
+  // Chosen to exercise every case: a consistently strong category (Family),
+  // a long bad run that recently turned around (Yourself — the whole point
+  // of the "ghost" mechanic), a category with logging gaps (Community), a
+  // recent dip after a long strong run (Provide), and a volatile one with
+  // no persistent run at all (Lead).
+  // ---------------------------------------------------------------------
+  var CATEGORIES = [
+    { key:'family',    label:'Family',    group:'Protect', states:['up','up','mid','up','up','up','up','mid','up','up','up','up'] },
+    { key:'yourself',  label:'Yourself',  group:'Protect', states:['down','down','down','down','down','down','mid','mid','up','up','up','up'] },
+    { key:'community', label:'Community',group:'Protect', states:['mid','none','mid','down','none','mid','mid','none','up','mid','none','up'] },
+    { key:'provide',   label:'Provide',   group:null,      states:['up','up','up','up','up','up','up','mid','down','down','mid','mid'] },
+    { key:'lead',      label:'Lead',      group:null,      states:['up','down','mid','up','down','up','mid','down','up','mid','down','up'] }
+  ];
+  var MONTHS = [ // sample only — real data would only include months that exist
+    { name:'June',      score:0.42 },
+    { name:'July',      score:0.58 },
+    { name:'August',    score:0.67 },
+    { name:'September', score:0.78 }
+  ];
+  var STATE_COLOR = { up:'var(--up)', mid:'var(--mid)', down:'var(--down)', none:'var(--none)' };
+  var STATE_LABEL = { up:'up', mid:'steady', down:'down' };
+  var STATE_SCORE = { up:1, mid:0.5, down:0 };
+
+  function weekLabel(offsetFromNow){
+    var d = new Date(); var day = d.getDay(); var diffToMon = (day + 6) % 7;
+    d.setDate(d.getDate() - diffToMon + offsetFromNow*7);
+    return d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+  }
+
+  // The "ghost" mechanic: opacity blends recency decay with how long the
+  // state persisted. A single-week blip fades fast; a state that held for
+  // many consecutive weeks stays visibly present (a fainter but real
+  // "ghost") even several weeks after it ended, so a genuine recent
+  // improvement reads as clearly outweighing a long-faded bad stretch
+  // rather than looking identical to one that just happened to end.
+  function computeVisuals(states){
+    var n = states.length, runLen = new Array(n).fill(0);
+    for (var i=0;i<n;i++){
+      if (states[i] === 'none'){ runLen[i]=0; continue; }
+      runLen[i] = (i>0 && states[i-1]===states[i]) ? runLen[i-1]+1 : 1;
+    }
+    return states.map(function(s,i){
+      if (s === 'none') return { state:s, opacity:0, current:i===n-1 };
+      if (i === n-1) return { state:s, opacity:1, current:true };
+      var age = (n-1) - i;
+      var recency = Math.max(0.15, 1 - age/n);
+      var persistence = Math.min(1, runLen[i]/6);
+      return { state:s, opacity: Math.min(1, recency*(0.35+0.65*persistence)), current:false };
+    });
+  }
+
+  function currentState(states){ for (var i=states.length-1;i>=0;i--){ if (states[i]!=='none') return states[i]; } return 'mid'; }
+  function svgEl(tag, attrs){ var e=document.createElementNS('http://www.w3.org/2000/svg',tag); for (var k in attrs) e.setAttribute(k, attrs[k]); return e; }
+  function el(tag, cls, html){ var e=document.createElement(tag); if (cls) e.className=cls; if (html!=null) e.innerHTML=html; return e; }
+
+  // =====================================================================
+  // VARIANT A — Gauge Cluster (fuel-gauge instrument panel, extends the
+  // fuel/battery gauge language already used by Pulse Check in this app)
+  // =====================================================================
+  function gaugeFillY(state){ return {down:{y:19,h:5}, mid:{y:13,h:11}, up:{y:8,h:16}}[state] || {y:13,h:11}; }
+
+  function renderGaugeSVG(state, opacity, size, ghostFills){
+    // ghostFills: array of {y,h,opacity,color} drawn behind the current fill,
+    // most-recent-first, each a progressively fainter past reading.
+    var s = svgEl('svg',{viewBox:'0 0 20 28', width:size, height:size*1.4, 'aria-hidden':'true'});
+    s.appendChild(svgEl('rect',{x:6,y:1,width:8,height:4,rx:1.5,fill:'none',stroke:'var(--parchment-faint)','stroke-width':1.4}));
+    s.appendChild(svgEl('rect',{x:1,y:5,width:18,height:22,rx:4,fill:'none',stroke:'var(--parchment-faint)','stroke-width':1.6}));
+    (ghostFills||[]).forEach(function(g){
+      s.appendChild(svgEl('rect',{x:4,y:g.y,width:12,height:g.h,rx:1.5,fill:g.color,opacity:g.opacity}));
+    });
+    var f = gaugeFillY(state);
+    s.appendChild(svgEl('rect',{x:4,y:f.y,width:12,height:f.h,rx:1.5,fill:STATE_COLOR[state],opacity:opacity}));
+    return s;
+  }
+
+  function renderVariantA(dashMount, sectionsMount){
+    var card = el('div','card vis-fade-enter');
+    var top = el('div','dash-top');
+    top.appendChild(el('div','eyebrow','◈ SPHERE DASHBOARD'));
+    var btn = el('button','hist-btn','History ›'); btn.onclick = openHistory;
+    top.appendChild(btn);
+    card.appendChild(top);
+
+    var grid = el('div'); grid.style.cssText = 'display:grid;grid-template-columns:repeat(5,1fr);gap:6px;align-items:end;';
+    CATEGORIES.forEach(function(cat){
+      var vis = computeVisuals(cat.states);
+      var col = el('div'); col.style.cssText='display:flex;flex-direction:column;align-items:center;gap:6px;';
+      // stack the 4 most recent *past* readings as translucent ghost fills
+      // behind the current gauge fill, oldest at back.
+      var ghosts = vis.slice(-5, -1).map(function(v){ var f=gaugeFillY(v.state); return {y:f.y,h:f.h,opacity:v.opacity*0.9,color:STATE_COLOR[v.state]}; });
+      var cur = vis[vis.length-1];
+      col.appendChild(renderGaugeSVG(cur.state, 1, 30, ghosts));
+      col.appendChild(el('div','',cat.label)).style.cssText='font-size:9.5px;color:var(--parchment-dim);text-align:center;line-height:1.2;';
+      grid.appendChild(col);
+    });
+    card.appendChild(grid);
+    card.appendChild(el('div','dash-caption','Each gauge stacks its last few weekly readings behind the current fill — a longer-held reading stays visible longer, so Yourself’s recent climb still shows the faded weight of the stretch it came out of.'));
+    dashMount.appendChild(card);
+
+    renderSections(sectionsMount, function(cat, mount){
+      var vis = computeVisuals(cat.states.slice(-4));
+      var row = el('div'); row.style.cssText='display:flex;align-items:center;gap:8px;';
+      vis.forEach(function(v){
+        var g = renderGaugeSVG(v.state==='none' ? 'mid' : v.state, v.state==='none'?0.18:Math.max(0.4,v.opacity), 16, []);
+        if (v.state==='none') g.style.filter='grayscale(1)';
+        row.appendChild(g);
+      });
+      row.appendChild(el('span','','4-wk'));
+      row.lastChild.style.cssText='font-size:10px;color:var(--parchment-faint);margin-left:4px;';
+      mount.appendChild(row);
+    });
+  }
+
+  // =====================================================================
+  // VARIANT B — Trend Ledger (a logbook row per category: state pill +
+  // a left-to-right strip of weekly marks, journal/ledger in feel)
+  // =====================================================================
+  function ledgerMark(v, size){
+    var wrap = el('div'); wrap.style.cssText='width:'+size+'px;height:'+size+'px;border-radius:4px;flex-shrink:0;';
+    if (v.state === 'none'){
+      wrap.style.cssText += 'border:1.5px dashed var(--parchment-faint);opacity:.55;';
+    } else {
+      wrap.style.background = STATE_COLOR[v.state];
+      wrap.style.opacity = v.opacity;
+      if (v.current) wrap.style.boxShadow = '0 0 0 1.5px var(--parchment) inset, 0 0 8px '+STATE_COLOR[v.state];
+    }
+    return wrap;
+  }
+
+  function renderVariantB(dashMount, sectionsMount){
+    var card = el('div','card vis-fade-enter');
+    var top = el('div','dash-top');
+    top.appendChild(el('div','eyebrow','◈ SPHERE LEDGER — LAST 12 WEEKS'));
+    var btn = el('button','hist-btn','History ›'); btn.onclick = openHistory;
+    top.appendChild(btn);
+    card.appendChild(top);
+
+    CATEGORIES.forEach(function(cat){
+      var vis = computeVisuals(cat.states);
+      var row = el('div'); row.style.cssText='display:flex;align-items:center;gap:10px;margin-bottom:10px;';
+      var label = el('div',null,cat.label); label.style.cssText='width:66px;flex-shrink:0;font-size:12.5px;color:var(--parchment-mid);font-weight:600;';
+      row.appendChild(label);
+      var marks = el('div'); marks.style.cssText='display:flex;gap:3px;flex:1;';
+      vis.forEach(function(v){ marks.appendChild(ledgerMark(v, 14)); });
+      row.appendChild(marks);
+      var cur = currentState(cat.states);
+      var pill = el('span',null,STATE_LABEL[cur]); pill.style.cssText='font-size:10px;letter-spacing:.04em;text-transform:uppercase;font-weight:700;color:'+STATE_COLOR[cur]+';width:44px;text-align:right;flex-shrink:0;';
+      row.appendChild(pill);
+      card.appendChild(row);
+    });
+    card.appendChild(el('div','dash-caption','Every square is one week, oldest to newest. A square’s brightness reflects both how recent it is and how long that reading held — a run of many down weeks leaves a faint but visible mark long after it ends.'));
+    dashMount.appendChild(card);
+
+    renderSections(sectionsMount, function(cat, mount){
+      var vis = computeVisuals(cat.states.slice(-4));
+      var row = el('div'); row.style.cssText='display:flex;gap:4px;align-items:center;';
+      vis.forEach(function(v){ row.appendChild(ledgerMark(v, 12)); });
+      var lbl = el('span','','last 4 wks'); lbl.style.cssText='font-size:10px;color:var(--parchment-faint);margin-left:6px;';
+      row.appendChild(lbl);
+      mount.appendChild(row);
+    });
+  }
+
+  // =====================================================================
+  // VARIANT C — Sphere Landscape (one shared ridgeline chart: 5 translucent
+  // ribbons layered together, ghost trail per ribbon; radial dial for history)
+  // =====================================================================
+  function renderVariantC(dashMount, sectionsMount){
+    var W = 340, H = 190, rowH = H/CATEGORIES.length;
+    var card = el('div','card vis-fade-enter');
+    var top = el('div','dash-top');
+    top.appendChild(el('div','eyebrow','◈ THE SPHERE — 3 MONTHS'));
+    var btn = el('button','hist-btn','History ›'); btn.onclick = openHistory;
+    top.appendChild(btn);
+    card.appendChild(top);
+
+    var svg = svgEl('svg',{viewBox:'0 0 '+W+' '+(H+16), width:'100%', height:H+16});
+    CATEGORIES.forEach(function(cat, ci){
+      var vis = computeVisuals(cat.states);
+      var n = vis.length, baseY = rowH*ci + rowH*0.72, amp = rowH*0.6;
+      var pathTop=[], pathBottom=[];
+      vis.forEach(function(v,i){
+        var x = (i/(n-1))*W;
+        var score = v.state==='none' ? 0.5 : STATE_SCORE[v.state];
+        var y = baseY - score*amp;
+        pathTop.push((i===0?'M':'L')+x.toFixed(1)+','+y.toFixed(1));
+      });
+      for (var i=n-1;i>=0;i--){ var x=(i/(n-1))*W; pathBottom.push('L'+x.toFixed(1)+','+(baseY+6).toFixed(1)); }
+      var d = pathTop.join(' ') + ' ' + pathBottom.join(' ') + ' Z';
+      var avgOpacity = vis.reduce(function(a,v){return a+(v.current?0.5:v.opacity*0.5);},0)/n + 0.12;
+      var cur = vis[vis.length-1];
+      svg.appendChild(svgEl('path',{d:d, fill:STATE_COLOR[cur.state], opacity:Math.min(0.85,avgOpacity)}));
+      // current-edge glow marker
+      svg.appendChild(svgEl('circle',{cx:W, cy:(baseY-STATE_SCORE[cur.state]*amp).toFixed(1), r:4, fill:STATE_COLOR[cur.state]}));
+      svg.appendChild(svgEl('text',{x:6, y:(rowH*ci+13).toFixed(1), 'font-size':10, fill:'var(--parchment-dim)','letter-spacing':'.04em'})).textContent = cat.label.toUpperCase();
+    });
+    card.appendChild(svg);
+    card.appendChild(el('div','dash-caption','Five currents, one Sphere. Each ribbon’s height is that area’s state; its fill fades toward parchment the further a reading recedes — unless it held for weeks, in which case the ribbon stays richer there, so a real turnaround visibly outweighs a stretch that has already faded.'));
+    dashMount.appendChild(card);
+
+    renderSections(sectionsMount, function(cat, mount){
+      var vis = computeVisuals(cat.states.slice(-4));
+      var w=100,h=26;
+      var svg2 = svgEl('svg',{viewBox:'0 0 '+w+' '+h, width:w, height:h});
+      var pts = vis.map(function(v,i){ var x=(i/(vis.length-1))*w; var score=v.state==='none'?0.5:STATE_SCORE[v.state]; return [x, h-4-score*(h-8)]; });
+      var linePath = pts.map(function(p,i){ return (i===0?'M':'L')+p[0].toFixed(1)+','+p[1].toFixed(1); }).join(' ');
+      svg2.appendChild(svgEl('path',{d:linePath, fill:'none', stroke:'var(--brass-soft)', 'stroke-width':1.6, opacity:0.85}));
+      vis.forEach(function(v,i){
+        var p = pts[i];
+        svg2.appendChild(svgEl('circle',{cx:p[0],cy:p[1],r:v.current?3:2.2, fill: v.state==='none'?'none':STATE_COLOR[v.state], stroke: v.state==='none'?'var(--parchment-faint)':'none', 'stroke-dasharray':v.state==='none'?'1.5,1.5':'none', opacity: v.state==='none'?0.6:v.opacity}));
+      });
+      var wrap = el('div'); wrap.style.cssText='display:flex;align-items:center;gap:8px;';
+      wrap.appendChild(svg2);
+      var lbl = el('span','','4-wk trend'); lbl.style.cssText='font-size:10px;color:var(--parchment-faint);';
+      wrap.appendChild(lbl);
+      mount.appendChild(wrap);
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Shared: category sections (Protect > Family/Yourself/Community,
+  // Provide, Lead) with each variant supplying its own mini-meter renderer.
+  // ---------------------------------------------------------------------
+  function renderSections(mount, miniRenderer){
+    mount.innerHTML = '';
+    var groups = {};
+    CATEGORIES.forEach(function(cat){
+      var g = cat.group || cat.label;
+      if (!groups[g]) groups[g] = [];
+      groups[g].push(cat);
+    });
+    Object.keys(groups).forEach(function(g){
+      mount.appendChild(el('div','section-heading', g));
+      groups[g].forEach(function(cat){
+        var card = el('div','card vis-fade-enter');
+        var head = el('div','cat-heading');
+        head.appendChild(el('div','name', cat.label));
+        var cur = currentState(cat.states);
+        var pill = el('div','state-pill', STATE_LABEL[cur]); pill.style.color = STATE_COLOR[cur];
+        head.appendChild(pill);
+        card.appendChild(head);
+        miniRenderer(cat, card);
+        mount.appendChild(card);
+      });
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // History browser — variant-specific shell, shared month data + logic.
+  // Only ever shows months that exist (never past MONTHS.length, capped 6).
+  // ---------------------------------------------------------------------
+  var histIdx = MONTHS.length - 1;
+  function scoreColor(score){ return score>=0.66 ? 'var(--up)' : score>=0.4 ? 'var(--mid)' : 'var(--down)'; }
+
+  function renderHistoryFor(variant){
+    var mount = document.getElementById('hist-mount');
+    mount.innerHTML = '';
+    var m = MONTHS[histIdx];
+    if (variant === 'A'){
+      var wrap = el('div'); wrap.style.cssText='text-align:center;';
+      var nav = el('div'); nav.style.cssText='display:flex;align-items:center;justify-content:center;gap:18px;margin-bottom:10px;';
+      nav.appendChild(navBtn('‹', histIdx>0, function(){ histIdx--; renderHistoryFor(variant); }));
+      nav.appendChild(el('div','',m.name)).style.cssText='font-size:15px;color:var(--parchment);font-weight:600;min-width:90px;';
+      nav.appendChild(navBtn('›', histIdx<MONTHS.length-1, function(){ histIdx++; renderHistoryFor(variant); }));
+      wrap.appendChild(nav);
+      var s = svgEl('svg',{viewBox:'0 0 120 120', width:140, height:140});
+      s.appendChild(svgEl('circle',{cx:60,cy:60,r:50,fill:'none',stroke:'rgba(210,190,130,.18)','stroke-width':10}));
+      var circumf = 2*Math.PI*50;
+      var arc = svgEl('circle',{cx:60,cy:60,r:50,fill:'none',stroke:scoreColor(m.score),'stroke-width':10,'stroke-linecap':'round','stroke-dasharray':circumf,'stroke-dashoffset':circumf*(1-m.score),transform:'rotate(-90 60 60)'});
+      s.appendChild(arc);
+      s.appendChild(svgEl('text',{x:60,y:66,'text-anchor':'middle','font-size':22,fill:'var(--parchment)','font-weight':700})).textContent = Math.round(m.score*100)+'%';
+      wrap.appendChild(s);
+      mount.appendChild(wrap);
+    } else if (variant === 'B'){
+      var page = el('div');
+      page.appendChild(el('div','',m.name)).style.cssText='font-size:16px;font-style:italic;color:var(--parchment);margin-bottom:12px;';
+      MONTHS.forEach(function(mm, i){
+        var row = el('div'); row.style.cssText='display:flex;align-items:center;gap:10px;margin-bottom:7px;'+(i===histIdx?'':'opacity:.45;');
+        row.appendChild(el('div','',mm.name)).style.cssText='width:76px;font-size:12.5px;color:var(--parchment-mid);';
+        var bar = el('div'); bar.style.cssText='flex:1;height:9px;background:rgba(210,190,130,.12);border-radius:5px;overflow:hidden;';
+        var fill = el('div'); fill.style.cssText='height:100%;width:'+(mm.score*100)+'%;background:'+scoreColor(mm.score)+';';
+        bar.appendChild(fill); row.appendChild(bar);
+        row.appendChild(el('div','',Math.round(mm.score*100)+'%')).style.cssText='width:34px;font-size:11px;color:var(--parchment-dim);text-align:right;';
+        page.appendChild(row);
+      });
+      var nav = el('div'); nav.style.cssText='display:flex;justify-content:space-between;margin-top:14px;';
+      nav.appendChild(navBtn('‹ Prev', histIdx>0, function(){ histIdx--; renderHistoryFor(variant); }));
+      nav.appendChild(navBtn('Next ›', histIdx<MONTHS.length-1, function(){ histIdx++; renderHistoryFor(variant); }));
+      page.appendChild(nav);
+      mount.appendChild(page);
+    } else {
+      var wrap2 = el('div'); wrap2.style.cssText='display:flex;align-items:center;justify-content:center;gap:14px;';
+      wrap2.appendChild(navBtn('‹', histIdx>0, function(){ histIdx--; renderHistoryFor(variant); }));
+      var medal = el('div'); medal.style.cssText='width:150px;height:150px;border-radius:50%;border:3px solid var(--brass-deep);background:radial-gradient(circle at 35% 30%,rgba(216,170,62,.18),rgba(0,0,0,.4));display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:0 0 24px var(--brass-glow),inset 0 0 20px rgba(0,0,0,.5);';
+      medal.appendChild(el('div','',m.name)).style.cssText='font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--brass-soft);margin-bottom:6px;';
+      medal.appendChild(el('div','',Math.round(m.score*100)+'%')).style.cssText='font-size:26px;color:var(--parchment);font-weight:600;';
+      wrap2.appendChild(medal);
+      wrap2.appendChild(navBtn('›', histIdx<MONTHS.length-1, function(){ histIdx++; renderHistoryFor(variant); }));
+      mount.appendChild(wrap2);
+    }
+    mount.appendChild(el('div','dash-caption','Showing '+MONTHS.length+' of up to 6 possible months — only months that actually have data ever appear.'));
+  }
+  function navBtn(label, enabled, onClick){
+    var b = el('button', null, label);
+    b.style.cssText = 'background:none;border:1px solid rgba(210,190,130,.28);color:var(--brass-soft);font-family:var(--font);font-size:13px;padding:6px 12px;border-radius:20px;cursor:pointer;'+(enabled?'':'opacity:.3;pointer-events:none;');
+    b.onclick = onClick;
+    return b;
+  }
+  function openHistory(){
+    histIdx = MONTHS.length - 1;
+    document.getElementById('hist-overlay').hidden = false;
+    renderHistoryFor(currentVariant);
+  }
+  document.getElementById('hist-close').onclick = function(){ document.getElementById('hist-overlay').hidden = true; };
+  document.getElementById('hist-overlay').addEventListener('click', function(e){ if (e.target.id==='hist-overlay') e.currentTarget.hidden = true; });
+
+  // ---------------------------------------------------------------------
+  // Fake bottom nav (Today / Tribe / Work / Steward / Sphere / Week) —
+  // just enough real chrome that the dashboard isn't judged in a vacuum.
+  // ---------------------------------------------------------------------
+  (function(){
+    var tabs = [['Today','☉'],['Tribe','♥'],['Work','⚒'],['Steward','●'],['Sphere','◉'],['Week','☷']];
+    var bar = document.getElementById('navbar-inner');
+    tabs.forEach(function(t){
+      var b = document.createElement('button');
+      if (t[0]==='Sphere') b.className = 'on';
+      b.innerHTML = '<span style="font-size:17px">'+t[1]+'</span><span>'+t[0]+'</span>';
+      bar.appendChild(b);
+    });
+  })();
+
+  // ---------------------------------------------------------------------
+  // Variant switcher
+  // ---------------------------------------------------------------------
+  var VARIANTS = [
+    { key:'A', name:'Gauge Cluster', render:renderVariantA },
+    { key:'B', name:'Trend Ledger', render:renderVariantB },
+    { key:'C', name:'Sphere Landscape', render:renderVariantC }
+  ];
+  var currentVariant = (new URLSearchParams(location.search).get('variant') || 'A').toUpperCase();
+  if (!VARIANTS.some(function(v){return v.key===currentVariant;})) currentVariant = 'A';
+
+  function render(){
+    var v = VARIANTS.filter(function(x){return x.key===currentVariant;})[0];
+    var dashMount = document.getElementById('dash-mount');
+    var sectionsMount = document.getElementById('sections-mount');
+    dashMount.innerHTML = '';
+    v.render(dashMount, sectionsMount);
+    document.getElementById('variant-label').innerHTML = '<b>'+v.key+'</b> — '+v.name;
+    var params = new URLSearchParams(location.search); params.set('variant', v.key);
+    history.replaceState(null, '', location.pathname + '?' + params.toString());
+    if (!document.getElementById('hist-overlay').hidden) renderHistoryFor(v.key);
+  }
+  function cycle(dir){
+    var i = VARIANTS.findIndex(function(v){return v.key===currentVariant;});
+    i = (i + dir + VARIANTS.length) % VARIANTS.length;
+    currentVariant = VARIANTS[i].key;
+    render();
+  }
+  document.getElementById('prev-variant').onclick = function(){ cycle(-1); };
+  document.getElementById('next-variant').onclick = function(){ cycle(1); };
+  document.addEventListener('keydown', function(e){
+    var t = e.target;
+    if (t && (t.tagName==='INPUT' || t.tagName==='TEXTAREA' || t.isContentEditable)) return;
+    if (e.key === 'ArrowLeft') cycle(-1);
+    if (e.key === 'ArrowRight') cycle(1);
+  });
+
+  render();
+})();
+</script>
