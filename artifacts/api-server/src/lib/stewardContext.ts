@@ -1,7 +1,8 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
-import { db, journalEntries, tasks, taskCompletions, pulseChecks, commits, commitRelationshipTargets, relationships, type Relationship } from "@workspace/db";
+import { and, desc, eq, gte, inArray, lt } from "drizzle-orm";
+import { db, journalEntries, tasks, taskCompletions, pulseChecks, commits, commitRelationshipTargets, relationships, type Relationship, sphereChecks } from "@workspace/db";
 import { isSlipping, type RecurrencePeriod } from "./priorityPeriods";
 import { PULSE_STATE_LABEL, type PulseState } from "./pulseCheck";
+import { SPHERE_CATEGORIES, SPHERE_CATEGORY_LABEL, SPHERE_STATE_LABEL, getWeekStart, summarizeFlaggedSphereAnswers, type SphereCategory, type SphereState } from "./sphere";
 
 export const RELATIONSHIP_CATEGORY_LABEL: Record<string, string> = { spouse: "Spouse", child: "Child", family: "Family", friend: "Friend", other: "Other" };
 function relationshipLabel(r: Pick<Relationship, "name" | "type" | "category">): string {
@@ -49,11 +50,26 @@ export async function resolveCommitWhoLabels(
 // today (see #12/#22's resolution: interview.ts isn't wired in yet, and
 // relationships context is dropped until #13 ships real data).
 export async function buildTodayContext(userId: string, today: string): Promise<string> {
-  const [recentJournal, openTasks, todayPulse, openCommits] = await Promise.all([
+  const currentWeekStart = getWeekStart(new Date(today));
+  // 5 completed weeks strictly before this one, for a short trend line —
+  // separate from thisWeekSphere below so "this week" (with notes) never
+  // duplicates into the trend, and vice versa.
+  const SPHERE_TREND_WEEKS = 5;
+  const earliestTrendDate = new Date(currentWeekStart);
+  earliestTrendDate.setUTCDate(earliestTrendDate.getUTCDate() - SPHERE_TREND_WEEKS * 7);
+  const earliestTrendWeekStart = getWeekStart(earliestTrendDate);
+
+  const [recentJournal, openTasks, todayPulse, openCommits, thisWeekSphere, priorSphereWeeks] = await Promise.all([
     db.select().from(journalEntries).where(eq(journalEntries.userId, userId)).orderBy(desc(journalEntries.date)).limit(3),
     db.select().from(tasks).where(and(eq(tasks.userId, userId), eq(tasks.done, false), eq(tasks.deleted, false))).orderBy(desc(tasks.createdAt)).limit(5),
     db.select().from(pulseChecks).where(and(eq(pulseChecks.userId, userId), eq(pulseChecks.date, today))),
     db.select().from(commits).where(and(eq(commits.userId, userId), eq(commits.done, false), eq(commits.deleted, false))).orderBy(desc(commits.createdAt)).limit(5),
+    db.select().from(sphereChecks).where(and(eq(sphereChecks.userId, userId), eq(sphereChecks.weekStart, currentWeekStart))),
+    db.select().from(sphereChecks).where(and(
+      eq(sphereChecks.userId, userId),
+      gte(sphereChecks.weekStart, earliestTrendWeekStart),
+      lt(sphereChecks.weekStart, currentWeekStart),
+    )),
   ]);
 
   let context = '';
@@ -103,6 +119,45 @@ export async function buildTodayContext(userId: string, today: string): Promise<
       context += `- ${p.category}: ${PULSE_STATE_LABEL[p.state as PulseState] ?? p.state}${note}\n`;
     });
     context += '\n';
+  }
+
+  if (thisWeekSphere.length > 0) {
+    context += "## This week's Sphere check-in:\n";
+    thisWeekSphere.forEach((s) => {
+      const note = s.note ? ` — note: "${s.note.slice(0, 150)}"` : '';
+      context += `- ${SPHERE_CATEGORY_LABEL[s.category as SphereCategory] ?? s.category}: ${SPHERE_STATE_LABEL[s.state as SphereState] ?? s.state}${note}\n`;
+      // Itemized "Walk through this" answers, when they used it — only the
+      // ones worth flagging (not a clean up/agree) and only their own
+      // words, never the canned follow-up prompt text.
+      summarizeFlaggedSphereAnswers(s.category as SphereCategory, s.answers).forEach((line) => {
+        context += `  ↳ ${line}\n`;
+      });
+    });
+    context += '\n';
+  }
+
+  if (priorSphereWeeks.length > 0) {
+    // Compact state-only trend (no notes — those would bloat the prompt
+    // fast) so the model can notice a pattern building or breaking over
+    // time, not just react to a single week in isolation. Oldest first;
+    // "this week" (above) is deliberately the next point after this.
+    const byCategory = new Map<string, Map<string, SphereState>>();
+    for (const s of priorSphereWeeks) {
+      if (!byCategory.has(s.category)) byCategory.set(s.category, new Map());
+      byCategory.get(s.category)!.set(s.weekStart, s.state as SphereState);
+    }
+    const trendLines: string[] = [];
+    for (const category of SPHERE_CATEGORIES) {
+      const weekMap = byCategory.get(category);
+      if (!weekMap || weekMap.size === 0) continue;
+      const sequence = [...weekMap.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([, state]) => SPHERE_STATE_LABEL[state] ?? state);
+      trendLines.push(`- ${SPHERE_CATEGORY_LABEL[category]}: ${sequence.join(' → ')}`);
+    }
+    if (trendLines.length > 0) {
+      context += `## Sphere trend (up to ${SPHERE_TREND_WEEKS} prior weeks, oldest → newest, leading into this week above):\n${trendLines.join('\n')}\n\n`;
+    }
   }
 
   if (openCommits.length > 0) {

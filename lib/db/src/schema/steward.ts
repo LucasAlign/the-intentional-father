@@ -267,6 +267,36 @@ export const insertPulseCheckSchema = createInsertSchema(pulseChecks).omit({ id:
 export type InsertPulseCheck = z.infer<typeof insertPulseCheckSchema>;
 export type PulseCheck = typeof pulseChecks.$inferSelect;
 
+// #82 — "The Sphere": a weekly (not daily, unlike Pulse Check) self-examination
+// across five fixed categories (family/yourself/community/provide/lead — see
+// lib/sphere.ts). `weekStart` is the Monday of the ISO week the entry belongs
+// to, the same role `date` plays on pulseChecks but week- rather than
+// day-grained, so a user gets at most one row per category per week.
+export const sphereChecks = pgTable("sphere_checks", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  weekStart: text("week_start").notNull(),
+  category: text("category").notNull(),
+  state: text("state").notNull(),
+  note: text("note").notNull().default(""),
+  // Optional itemized answers from the guided "Walk through this" review —
+  // one entry per question in that category's fixed question list (see
+  // artifacts/arlo/src/pages/Home.tsx's SPHERE_QUESTIONS), each holding
+  // {questionIndex, answer, note, followup, subAnswer}. Null when the state
+  // was set manually (tapping a battery icon) rather than via the
+  // walkthrough — the two are independent ways to set the same state/note,
+  // per #82's settled spec. Opaque JSON rather than a separate table since
+  // the question set itself is fixed application code, not user data.
+  answers: jsonb("answers"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  unique("sphere_checks_user_week_category_unique").on(table.userId, table.weekStart, table.category),
+]);
+
+export const insertSphereCheckSchema = createInsertSchema(sphereChecks).omit({ id: true, createdAt: true });
+export type InsertSphereCheck = z.infer<typeof insertSphereCheckSchema>;
+export type SphereCheck = typeof sphereChecks.$inferSelect;
+
 // #77 — a user's favorited Verse of the Day entries. Keyed by the verse's
 // reference string (e.g. "Ephesians 5:25"), not an array index into
 // lib/verses.ts's VERSES — an index would silently break if that list is
