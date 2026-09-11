@@ -3,6 +3,7 @@ import type { CSSProperties } from "react";
 import { useLocation } from "wouter";
 import { useAuth } from "@workspace/replit-auth-web";
 import { apiFetch } from "../lib/apiFetch";
+import { useSpeech } from "../hooks/use-speech";
 
 // ── Palette (matches Home.tsx) ────────────────────────────────────────────────
 const C = {
@@ -25,33 +26,6 @@ const API = "/api";
 const WOOD = `${import.meta.env.BASE_URL}woodgrain.png`;
 
 interface Message { role: "user" | "assistant"; content: string; }
-
-function useSpeech(onResult: (text: string) => void) {
-  const [listening, setListening] = useState(false);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const recRef = useRef<any>(null);
-  const toggle = useCallback(() => {
-    if (listening) { recRef.current?.stop(); return; }
-    const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
-    if (!SR) return;
-    const rec = new SR();
-    rec.continuous = false;
-    rec.interimResults = true;
-    rec.lang = "en-US";
-    rec.onstart = () => setListening(true);
-    rec.onend = () => setListening(false);
-    rec.onerror = () => setListening(false);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    rec.onresult = (e: any) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const t = Array.from(e.results as any[]).map((r: any) => r[0].transcript as string).join("");
-      onResult(t);
-    };
-    recRef.current = rec;
-    rec.start();
-  }, [listening, onResult]);
-  return { listening, toggle };
-}
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
 function SendIcon() {
