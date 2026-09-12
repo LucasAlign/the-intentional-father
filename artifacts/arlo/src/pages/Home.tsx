@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback, useId, useContext, createContext } from "react";
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, useId, useContext, createContext } from "react";
 import type { CSSProperties, ReactElement, ReactNode, PointerEvent } from "react";
 import { useAuth } from "@workspace/replit-auth-web";
 import { useLocation } from "wouter";
@@ -3743,6 +3743,7 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
   const todayMonthKey = days.find(d => d.key === todayKey)?.monthKey ?? months[0]?.key ?? "";
   const [currentMonthKey, setCurrentMonthKey] = useState(todayMonthKey);
   const dayRefs = useRef(new Map<string, HTMLDivElement>());
+  const headerRef = useRef<HTMLDivElement>(null);
 
   // Tracks which month is "current" (the last month-start row that's
   // scrolled past the sticky header), so the month label and prev/next
@@ -3768,14 +3769,33 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [months]);
 
-  function scrollToDay(key: string) {
-    dayRefs.current.get(key)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  // Manual offset instead of scrollIntoView: the sticky header sits inside
+  // this same scroll container, so a plain scrollIntoView(block:"start")
+  // lands the target row right underneath it (still hidden) rather than
+  // just below it.
+  function scrollToDay(key: string, behavior: ScrollBehavior = "smooth") {
+    const el = scrollFade.ref.current;
+    const target = dayRefs.current.get(key);
+    if (!el || !target) return;
+    const headerHeight = headerRef.current?.getBoundingClientRect().height ?? 0;
+    const targetTop = target.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
+    el.scrollTo({ top: targetTop - headerHeight, behavior });
   }
   const currentMonthIndex = months.findIndex(m => m.key === currentMonthKey);
   function jumpMonth(delta: number) {
     const target = months[currentMonthIndex + delta];
     if (target) scrollToDay(target.firstDayKey);
   }
+
+  // Opening the Calendar tab previously left the list scrolled to the very
+  // top of the whole window (1 month back) even though the header already
+  // correctly labeled the current month — jump to today's row immediately
+  // on mount instead. useLayoutEffect (not useEffect) so this happens
+  // before paint and there's no visible flash of the wrong month.
+  useLayoutEffect(() => {
+    scrollToDay(todayKey, "auto");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Spins the sync icon for at least 1s so the tap always reads as an
   // action, even when the underlying refresh resolves near-instantly.
@@ -3789,7 +3809,7 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
   return (
     <div ref={scrollFade.ref} style={S.scroll}>
       {scrollFade.showFade && <div style={S.scrollFadeCue} />}
-      <div style={S.calendarHeader}>
+      <div ref={headerRef} style={S.calendarHeader}>
         <div style={S.calendarMonthBar}>
           <button style={{ ...S.calendarMonthArrow, ...(currentMonthIndex <= 0 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => jumpMonth(-1)} aria-label="Previous month">‹</button>
           <div style={S.calendarMonthLabel}>{months[currentMonthIndex]?.label ?? ""}</div>
@@ -5541,28 +5561,36 @@ const S: Record<string, CSSProperties> = {
   // #115 — sticky calendar header: the month bar, title, subtitle, and
   // visibility toggles all stay pinned to the top of the tab's own scroll
   // container (S.scroll) as the day list scrolls beneath them, instead of
-  // scrolling away with the content.
+  // scrolling away with the content. The negative top margin (matching
+  // S.scroll's own 16px top padding) makes the header's background hug the
+  // very top edge of the scroll container instead of leaving a dead,
+  // unstuck gap above it — same bleed technique the horizontal
+  // -18px margin already used, just extended to the top. Background uses
+  // the app's own `glass` gradient recipe (walnut-toned, not flat black)
+  // so it reads as consistent chrome rather than a washed-out overlay.
   calendarHeader: {
-    position: "sticky", top: 0, zIndex: 2,
-    background: "rgba(10,9,5,0.92)", backdropFilter: "blur(6px)",
-    margin: "0 -18px 14px", padding: "10px 18px 14px",
-    borderBottom: "1px solid rgba(210,190,130,0.14)",
+    position: "sticky", top: -16, zIndex: 2,
+    background: "linear-gradient(158deg, rgba(46,40,26,0.96) 0%, rgba(20,18,11,0.98) 100%)",
+    backdropFilter: "blur(8px)",
+    margin: "-16px -18px 14px", padding: "16px 18px 14px",
+    borderBottom: "1px solid rgba(210,190,130,0.22)",
+    boxShadow: "0 6px 18px rgba(0,0,0,0.45)",
   },
   calendarMonthBar: { display: "flex", alignItems: "center", gap: 10, marginBottom: 10 },
   calendarMonthArrow: {
-    background: "none", border: "1px solid rgba(210,190,130,0.28)", borderRadius: "50%",
+    background: "rgba(255,255,255,0.04)", border: "1px solid rgba(210,190,130,0.35)", borderRadius: "50%",
     width: 30, height: 30, color: C.brassSoft, fontSize: 16, cursor: "pointer", fontFamily: F,
     display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
   },
   calendarMonthLabel: { flex: 1, textAlign: "center", fontSize: 15, fontWeight: 700, color: C.parchment },
   calendarSyncBtn: {
-    background: "none", border: "1px solid rgba(210,190,130,0.28)", borderRadius: "50%",
+    background: "rgba(255,255,255,0.04)", border: "1px solid rgba(210,190,130,0.35)", borderRadius: "50%",
     width: 30, height: 30, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
   },
   // Lives in the month bar next to the arrows/sync button (moved out of
   // its earlier spot as a button floating over the day list).
   calendarTodayBtn: {
-    background: "none", border: `1px solid ${C.brass}`, borderRadius: 14,
+    background: "rgba(216,170,62,0.12)", border: `1px solid ${C.brass}`, borderRadius: 14,
     color: C.brass, fontSize: 12, fontWeight: 700, padding: "0 12px", height: 30,
     cursor: "pointer", fontFamily: F, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
   },
