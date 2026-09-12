@@ -937,7 +937,7 @@ export default function Home() {
   return (
     <HintsContext.Provider value={{ enabled: profile?.hintsEnabled === true, dismissed: profile?.dismissedHints ?? [], dismiss: dismissHint }}>
     <div style={R.root}>
-      <style>{`*{box-sizing:border-box}::-webkit-scrollbar{display:none}input::placeholder,textarea::placeholder{color:${C.parchmentLow}}@keyframes micPulse{0%,100%{box-shadow:0 0 14px ${C.brassGlow}}50%{box-shadow:0 0 26px ${C.brassGlow},0 0 40px rgba(216,170,62,0.2)}}`}</style>
+      <style>{`*{box-sizing:border-box}::-webkit-scrollbar{display:none}input::placeholder,textarea::placeholder{color:${C.parchmentLow}}@keyframes micPulse{0%,100%{box-shadow:0 0 14px ${C.brassGlow}}50%{box-shadow:0 0 26px ${C.brassGlow},0 0 40px rgba(216,170,62,0.2)}}@keyframes calendarSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
       <div style={R.woodLayer} />
       <div style={R.ambient} />
 
@@ -3742,12 +3742,11 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
   }, [days]);
   const todayMonthKey = days.find(d => d.key === todayKey)?.monthKey ?? months[0]?.key ?? "";
   const [currentMonthKey, setCurrentMonthKey] = useState(todayMonthKey);
-  const [showJumpToday, setShowJumpToday] = useState(false);
   const dayRefs = useRef(new Map<string, HTMLDivElement>());
 
   // Tracks which month is "current" (the last month-start row that's
-  // scrolled past the sticky header) and whether today's row is off-screen,
-  // so the jump-to-today button only shows up when it's actually useful.
+  // scrolled past the sticky header), so the month label and prev/next
+  // arrows stay in sync with what's actually on screen.
   useEffect(() => {
     const el = scrollFade.ref.current;
     if (!el) return;
@@ -3762,12 +3761,6 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
         else break;
       }
       setCurrentMonthKey(current);
-      const todayEl = dayRefs.current.get(todayKey);
-      if (todayEl) {
-        const rect = todayEl.getBoundingClientRect();
-        const elRect = el.getBoundingClientRect();
-        setShowJumpToday(rect.top < elRect.top || rect.bottom > elRect.bottom);
-      }
     }
     update();
     el.addEventListener("scroll", update, { passive: true });
@@ -3784,34 +3777,42 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
     if (target) scrollToDay(target.firstDayKey);
   }
 
+  // Spins the sync icon for at least 1s so the tap always reads as an
+  // action, even when the underlying refresh resolves near-instantly.
   const [syncing, setSyncing] = useState(false);
   async function handleSync() {
     setSyncing(true);
-    try { await onRefresh(); } finally { setSyncing(false); }
+    const minSpin = new Promise(resolve => setTimeout(resolve, 1000));
+    try { await Promise.all([onRefresh(), minSpin]); } finally { setSyncing(false); }
   }
 
   return (
     <div ref={scrollFade.ref} style={S.scroll}>
       {scrollFade.showFade && <div style={S.scrollFadeCue} />}
-      <div style={S.calendarMonthBar}>
-        <button style={{ ...S.calendarMonthArrow, ...(currentMonthIndex <= 0 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => jumpMonth(-1)} aria-label="Previous month">‹</button>
-        <div style={S.calendarMonthLabel}>{months[currentMonthIndex]?.label ?? ""}</div>
-        <button style={{ ...S.calendarMonthArrow, ...(currentMonthIndex >= months.length - 1 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => jumpMonth(1)} aria-label="Next month">›</button>
-        <button style={S.calendarSyncBtn} onClick={handleSync} disabled={syncing} aria-label="Refresh calendar" title="Refresh calendar">
-          <Icon name="sync" size={15} color={C.parchmentMid} stroke={1.8} />
-        </button>
+      <div style={S.calendarHeader}>
+        <div style={S.calendarMonthBar}>
+          <button style={{ ...S.calendarMonthArrow, ...(currentMonthIndex <= 0 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => jumpMonth(-1)} aria-label="Previous month">‹</button>
+          <div style={S.calendarMonthLabel}>{months[currentMonthIndex]?.label ?? ""}</div>
+          <button style={{ ...S.calendarMonthArrow, ...(currentMonthIndex >= months.length - 1 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => jumpMonth(1)} aria-label="Next month">›</button>
+          <button style={S.calendarSyncBtn} onClick={handleSync} disabled={syncing} aria-label="Refresh calendar" title="Refresh calendar">
+            <span style={{ display: "flex", animation: syncing ? "calendarSpin 0.6s linear infinite" : undefined }}>
+              <Icon name="sync" size={15} color={C.parchmentMid} stroke={1.8} />
+            </span>
+          </button>
+          <button style={S.calendarTodayBtn} onClick={() => scrollToDay(todayKey)} aria-label="Jump to today">Today</button>
+        </div>
+        <div style={S.pageTitle}>Calendar</div>
+        <div style={S.pageSub}>Work, commitments, and calendar events — scroll ahead or back.</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button style={{ ...E.chip, ...(hideCommitments ? { opacity: 0.5 } : { borderColor: C.brass, color: C.brass }) }} onClick={toggleCommitments}>
+            Commitments {hideCommitments ? "hidden" : "shown"}
+          </button>
+          <button style={{ ...E.chip, ...(hideExternal ? { opacity: 0.5 } : { borderColor: C.brass, color: C.brass }) }} onClick={toggleExternal}>
+            External calendars {hideExternal ? "hidden" : "shown"}
+          </button>
+        </div>
       </div>
-      <div style={S.pageTitle}>Calendar</div>
-      <div style={S.pageSub}>Work, commitments, and calendar events — scroll ahead or back.</div>
       <FirstVisitTip id="week">See what's ahead — work, commitments, and calendar events together, scroll to see more.</FirstVisitTip>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
-        <button style={{ ...E.chip, ...(hideCommitments ? { opacity: 0.5 } : { borderColor: C.brass, color: C.brass }) }} onClick={toggleCommitments}>
-          Commitments {hideCommitments ? "hidden" : "shown"}
-        </button>
-        <button style={{ ...E.chip, ...(hideExternal ? { opacity: 0.5 } : { borderColor: C.brass, color: C.brass }) }} onClick={toggleExternal}>
-          External calendars {hideExternal ? "hidden" : "shown"}
-        </button>
-      </div>
       {days.map(d => {
         const items = calendarEvents.filter(e => e.date === d.key);
         const isToday = d.key === todayKey;
@@ -3845,9 +3846,6 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
         <button style={S.calendarSmallBtn} onClick={onConnectCalendar}>Add Google Calendar</button>
       </div>
       <div style={{ height: 32 }} />
-      {showJumpToday && (
-        <button style={S.calendarJumpToday} onClick={() => scrollToDay(todayKey)}>Today</button>
-      )}
     </div>
   );
 }
@@ -5431,14 +5429,17 @@ const S: Record<string, CSSProperties> = {
   calendarBottom: { borderTop: "1px solid rgba(210,190,130,0.12)", marginTop: 8, paddingTop: 14, display: "flex", flexDirection: "column", gap: 8, alignItems: "stretch" },
   calendarAccount: { display: "flex", justifyContent: "space-between", alignItems: "center", color: C.parchmentDim, fontSize: 14 },
   calendarSmallBtn: { alignSelf: "stretch", background: "rgba(30,26,16,0.62)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 10, color: C.parchmentMid, fontSize: 14, fontWeight: 700, padding: "10px 12px", cursor: "pointer", fontFamily: F },
-  // #115 — sticky month header: stays pinned to the top of the tab's own
-  // scroll container (S.scroll) as the day list scrolls beneath it.
-  calendarMonthBar: {
-    position: "sticky", top: 0, zIndex: 2, display: "flex", alignItems: "center", gap: 10,
+  // #115 — sticky calendar header: the month bar, title, subtitle, and
+  // visibility toggles all stay pinned to the top of the tab's own scroll
+  // container (S.scroll) as the day list scrolls beneath them, instead of
+  // scrolling away with the content.
+  calendarHeader: {
+    position: "sticky", top: 0, zIndex: 2,
     background: "rgba(10,9,5,0.92)", backdropFilter: "blur(6px)",
-    margin: "0 -18px 14px", padding: "10px 18px",
+    margin: "0 -18px 14px", padding: "10px 18px 14px",
     borderBottom: "1px solid rgba(210,190,130,0.14)",
   },
+  calendarMonthBar: { display: "flex", alignItems: "center", gap: 10, marginBottom: 10 },
   calendarMonthArrow: {
     background: "none", border: "1px solid rgba(210,190,130,0.28)", borderRadius: "50%",
     width: 30, height: 30, color: C.brassSoft, fontSize: 16, cursor: "pointer", fontFamily: F,
@@ -5449,14 +5450,12 @@ const S: Record<string, CSSProperties> = {
     background: "none", border: "1px solid rgba(210,190,130,0.28)", borderRadius: "50%",
     width: 30, height: 30, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
   },
-  // Floats fixed within the scroll viewport (same technique as
-  // scrollFadeCue — an absolutely-positioned child of S.scroll's own
-  // position:relative box doesn't move with the scrolled content).
-  calendarJumpToday: {
-    position: "absolute", bottom: 90, right: 18, zIndex: 3,
-    background: `linear-gradient(135deg,${C.brass},${C.brassDeep})`, border: "none",
-    borderRadius: 20, color: C.ink, fontSize: 13, fontWeight: 700, padding: "10px 18px",
-    cursor: "pointer", fontFamily: F, boxShadow: `0 4px 16px ${C.brassGlow}`,
+  // Lives in the month bar next to the arrows/sync button (moved out of
+  // its earlier spot as a button floating over the day list).
+  calendarTodayBtn: {
+    background: "none", border: `1px solid ${C.brass}`, borderRadius: 14,
+    color: C.brass, fontSize: 12, fontWeight: 700, padding: "0 12px", height: 30,
+    cursor: "pointer", fontFamily: F, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
   },
 };
 const M: Record<string, CSSProperties> = {
