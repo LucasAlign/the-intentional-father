@@ -46,7 +46,18 @@ interface Relationship {
 const RELATIONSHIP_CATEGORIES: RelationshipCategory[] = ["spouse", "child", "family", "friend", "other"];
 const RELATIONSHIP_CATEGORY_LABEL: Record<RelationshipCategory, string> = { spouse: "Spouse", child: "Child", family: "Family", friend: "Friend", other: "Other" };
 type ToneVoice = "straight_talk" | "middle_of_the_road" | "take_it_easy";
-interface ProfileData { name?: string | null; season_of_life?: string | null; voice?: ToneVoice | null; remindersEnabled?: boolean | null; hintsEnabled?: boolean | null; dismissedHints?: string[] | null; }
+// #92 — the onboarding-derived fields, editable via "Edit My Answers" or
+// re-filled by "Redo the Interview" (both in ProfileMenu). Relationships
+// and pursuits are deliberately not part of this shape — they live in
+// their own tables (Tribe/Work), never in profile.data.
+interface CoreIdentity { worldview?: string | null; top_priority?: string | null; values?: string[] | null; }
+interface PlanningProfile { decision_drain?: string | null; common_failure_point?: string | null; ideal_rhythm?: string | null; where_ai_helps_most?: string | null; }
+interface Guardrails { do_not_suggest?: string[] | null; always_remind_of?: string | null; }
+interface ProfileData {
+  name?: string | null; season_of_life?: string | null;
+  core_identity?: CoreIdentity | null; planning_profile?: PlanningProfile | null; guardrails?: Guardrails | null;
+  voice?: ToneVoice | null; remindersEnabled?: boolean | null; hintsEnabled?: boolean | null; dismissedHints?: string[] | null;
+}
 interface VerseEntry { ref: string; text: string; favorited: boolean; custom?: boolean; id?: number; }
 interface VerseHistoryEntry extends VerseEntry { date: string; }
 interface MyVerse { id: number; ref: string; text: string; favorited: boolean; }
@@ -645,6 +656,7 @@ export default function Home() {
   const [calendarAccounts, setCalendarAccounts] = useState<string[]>([]);
   const [isAdmin, setIsAdmin] = useState(false);
   const [profileMenu, setProfileMenu] = useState(false);
+  const [myAnswersOpen, setMyAnswersOpen] = useState(false);
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [priorityDetail, setPriorityDetail] = useState<Task | null>(null);
   const [completedLogOpen, setCompletedLogOpen] = useState(false);
@@ -687,6 +699,18 @@ export default function Home() {
     } catch { /* optimistic update already applied; a stale read on next load self-corrects */ }
   }
 
+  // #92 — clears the old interview transcript server-side, then sends the
+  // user into the same Interview screen first-time onboarding uses.
+  // ?restart=1 tells that screen to skip its normal "already onboarded,
+  // bounce home" redirect for this one visit.
+  async function redoInterview() {
+    try {
+      await apiFetch(`${API}/interview/restart`, { method: "POST" });
+    } finally {
+      setLocation("/interview?restart=1");
+    }
+  }
+
   async function sendTestReminder(): Promise<boolean> {
     try {
       const res = await apiFetch(`${API}/reminders/test`, { method: "POST" });
@@ -698,6 +722,10 @@ export default function Home() {
 
   const refreshVerse = useCallback(() => {
     return getJson(`${API}/verse`, null).then((v) => v && setVerse(v as VerseEntry));
+  }, []);
+
+  const refreshProfile = useCallback(() => {
+    return getJson(`${API}/profile`, null).then((d) => { if (isRecord(d) && isRecord(d.data)) setProfile(d.data as unknown as ProfileData); });
   }, []);
 
   async function toggleVerseFavorite(ref: string, favorite: boolean, customId?: number): Promise<boolean> {
@@ -798,9 +826,9 @@ export default function Home() {
     getList<Event>(`${API}/coming-up?start=${start}&end=${end}`).then(setWeek);
     getList<Message>(`${API}/chat-history`).then((m) => setChat(prev => prev.length ? prev : m));
     getJson(`${API}/admin/is-admin`, { isAdmin: false }).then((d) => setIsAdmin(isRecord(d) && d.isAdmin === true));
-    getJson(`${API}/profile`, null).then((d) => { if (isRecord(d) && isRecord(d.data)) setProfile(d.data as unknown as ProfileData); });
+    refreshProfile();
     refreshTasks(); refreshCommits(); refreshJobs(); refreshCalendarStatus(); refreshPulseChecks(); refreshRelationships(); refreshPursuits();
-  }, [isAuthenticated, setLocation, refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus, refreshPulseChecks, refreshRelationships, refreshPursuits, refreshJournal]);
+  }, [isAuthenticated, setLocation, refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus, refreshPulseChecks, refreshRelationships, refreshPursuits, refreshJournal, refreshProfile]);
 
   async function saveJournal(next: Journal): Promise<boolean> {
     try {
@@ -922,7 +950,23 @@ export default function Home() {
           onClosed={() => { setClosePursuitPrompt(null); refreshPursuits(); }}
         />
       )}
-      {profileMenu && <ProfileMenu name={user?.firstName} email={user?.email} onClose={() => setProfileMenu(false)} onLogout={logout} hintsEnabled={profile?.hintsEnabled === true} onSetHintsEnabled={setHintsEnabled} />}
+      {profileMenu && (
+        <ProfileMenu
+          name={user?.firstName} email={user?.email} onClose={() => setProfileMenu(false)} onLogout={logout}
+          hintsEnabled={profile?.hintsEnabled === true} onSetHintsEnabled={setHintsEnabled}
+          hasInterviewed={Boolean(profile?.name)}
+          onOpenMyAnswers={() => { setProfileMenu(false); setMyAnswersOpen(true); }}
+          onRedoInterview={() => { setProfileMenu(false); redoInterview(); }}
+        />
+      )}
+      {myAnswersOpen && (
+        <MyAnswersModal
+          profile={profile} relationshipCount={relationships.length} pursuitCount={pursuits.length}
+          onClose={() => setMyAnswersOpen(false)} onSaved={refreshProfile}
+          onOpenTribe={() => { setMyAnswersOpen(false); setTab("her"); }}
+          onOpenWork={() => { setMyAnswersOpen(false); setTab("work"); }}
+        />
+      )}
       {priorityDetail && <PriorityDetailModal task={priorityDetail} onClose={() => setPriorityDetail(null)} onChanged={refreshTasks} />}
       {completedLogOpen && <CompletedLogModal onClose={() => setCompletedLogOpen(false)} onChanged={refreshTasks} />}
       {journalHistoryOpen && <JournalHistoryModal onClose={() => setJournalHistoryOpen(false)} onSaved={refreshJournal} />}
@@ -934,7 +978,12 @@ export default function Home() {
   );
 }
 
-function ProfileMenu({ name, email, onClose, onLogout, hintsEnabled, onSetHintsEnabled }: { name?: string | null; email?: string | null; onClose: () => void; onLogout: () => void; hintsEnabled: boolean; onSetHintsEnabled: (enabled: boolean) => void }) {
+function ProfileMenu({ name, email, onClose, onLogout, hintsEnabled, onSetHintsEnabled, hasInterviewed, onOpenMyAnswers, onRedoInterview }: {
+  name?: string | null; email?: string | null; onClose: () => void; onLogout: () => void;
+  hintsEnabled: boolean; onSetHintsEnabled: (enabled: boolean) => void;
+  hasInterviewed: boolean; onOpenMyAnswers: () => void; onRedoInterview: () => void;
+}) {
+  const [confirmRedo, setConfirmRedo] = useState(false);
   return (
     <div style={M.overlay} onClick={onClose}>
       <ModalSheet title={name || email || "Profile"} onClose={onClose} sheetOnClick={e => e.stopPropagation()}>
@@ -944,12 +993,149 @@ function ProfileMenu({ name, email, onClose, onLogout, hintsEnabled, onSetHintsE
         <button style={{ ...M.statusOpt, ...(hintsEnabled ? M.statusOptOn : {}) }} onClick={() => onSetHintsEnabled(!hintsEnabled)}>
           Helpful Hints: {hintsEnabled ? "On" : "Off"}
         </button>
+        {/* #92 — a direct form over the onboarding-derived fields, no AI
+            conversation. Works even if the interview was skipped (blank
+            fields, fillable directly). */}
+        <button style={{ ...M.next, background: "none", border: "1px solid rgba(210,190,130,0.18)", color: C.parchmentMid, boxShadow: "none" }} onClick={onOpenMyAnswers}>
+          Edit My Answers
+        </button>
+        {confirmRedo ? (
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ ...S.prioSub, color: C.brass, marginBottom: 8, textAlign: "center" }}>
+              {hasInterviewed
+                ? "Redo the full interview? Anything the new conversation doesn't cover keeps its current answer."
+                : "Take the full interview now?"}
+            </div>
+            <button style={M.next} onClick={onRedoInterview}>Yes, {hasInterviewed ? "redo it" : "let's go"}</button>
+            <button style={M.cancel} onClick={() => setConfirmRedo(false)}>Cancel</button>
+          </div>
+        ) : (
+          <button style={{ ...M.next, background: "none", border: "1px solid rgba(210,190,130,0.18)", color: C.parchmentMid, boxShadow: "none" }} onClick={() => setConfirmRedo(true)}>
+            {hasInterviewed ? "Redo the Interview" : "Take the Full Interview"}
+          </button>
+        )}
         <a style={{ ...M.next, textDecoration: "none", display: "block", textAlign: "center" }} href="mailto:admin@lucasalign.com?subject=Steward%20feedback">Contact Support / Feedback</a>
         <button style={{ ...M.next, background: "none", border: "1px solid rgba(210,190,130,0.18)", color: C.parchmentDim, boxShadow: "none" }} onClick={onLogout}>Log Out</button>
         {/* Moved here from the signed-out gate (#35) — offered once someone's
             actually using Steward and looking for it, not pushed on every
             visitor before they've seen the product. */}
         <AddToHomeScreen />
+        <button style={M.cancel} onClick={onClose}>Close</button>
+      </ModalSheet>
+    </div>
+  );
+}
+
+// #92 — "Edit My Answers": a direct form over the onboarding-derived
+// fields, no AI conversation. Works even when profile is empty (skipped
+// interview) — every field just starts blank and fillable. Relationships
+// and pursuits are shown as a read-only count with a link to their own
+// tabs, never edited here — they live in their own tables, and giving this
+// screen a second, disconnected editor for them would just get them out
+// of sync with Tribe/Work.
+function MyAnswersModal({ profile, relationshipCount, pursuitCount, onClose, onSaved, onOpenTribe, onOpenWork }: {
+  profile: ProfileData | null; relationshipCount: number; pursuitCount: number;
+  onClose: () => void; onSaved: () => void; onOpenTribe: () => void; onOpenWork: () => void;
+}) {
+  const [name, setName] = useState(profile?.name ?? "");
+  const [seasonOfLife, setSeasonOfLife] = useState(profile?.season_of_life ?? "");
+  const [topPriority, setTopPriority] = useState(profile?.core_identity?.top_priority ?? "");
+  const [valuesText, setValuesText] = useState((profile?.core_identity?.values ?? []).join("\n"));
+  const [decisionDrain, setDecisionDrain] = useState(profile?.planning_profile?.decision_drain ?? "");
+  const [commonFailurePoint, setCommonFailurePoint] = useState(profile?.planning_profile?.common_failure_point ?? "");
+  const [idealRhythm, setIdealRhythm] = useState(profile?.planning_profile?.ideal_rhythm ?? "");
+  const [whereAiHelpsMost, setWhereAiHelpsMost] = useState(profile?.planning_profile?.where_ai_helps_most ?? "");
+  const [doNotSuggestText, setDoNotSuggestText] = useState((profile?.guardrails?.do_not_suggest ?? []).join("\n"));
+  const [alwaysRemindOf, setAlwaysRemindOf] = useState(profile?.guardrails?.always_remind_of ?? "");
+  const saveStatus = useSaveStatus();
+
+  async function save() {
+    await saveStatus.save(async () => {
+      const res = await apiFetch(`${API}/profile/answers`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          season_of_life: seasonOfLife.trim(),
+          core_identity: {
+            worldview: profile?.core_identity?.worldview ?? null,
+            top_priority: topPriority.trim() || null,
+            values: valuesText.split("\n").map(v => v.trim()).filter(Boolean),
+          },
+          planning_profile: {
+            decision_drain: decisionDrain.trim() || null,
+            common_failure_point: commonFailurePoint.trim() || null,
+            ideal_rhythm: idealRhythm.trim() || null,
+            where_ai_helps_most: whereAiHelpsMost.trim() || null,
+          },
+          guardrails: {
+            do_not_suggest: doNotSuggestText.split("\n").map(v => v.trim()).filter(Boolean),
+            always_remind_of: alwaysRemindOf.trim() || null,
+          },
+        }),
+      });
+      if (res.ok) { onSaved(); return true; }
+      return false;
+    });
+  }
+
+  return (
+    <div style={M.overlay}>
+      <ModalSheet title="My Answers" onClose={onClose}>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>NAME</div>
+          <input style={M.input} value={name} onChange={e => setName(e.target.value)} placeholder="Your name" />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>SEASON OF LIFE</div>
+          <input style={M.input} value={seasonOfLife} onChange={e => setSeasonOfLife(e.target.value)} placeholder="e.g. married, father of 3, running a business" />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>TOP PRIORITY</div>
+          <textarea style={M.input} rows={2} value={topPriority} onChange={e => setTopPriority(e.target.value)} placeholder="What comes first? What's non-negotiable?" />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>VALUES (ONE PER LINE)</div>
+          <textarea style={M.input} rows={3} value={valuesText} onChange={e => setValuesText(e.target.value)} placeholder={"e.g. faithfulness\nplanning\nexecution"} />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>WHERE DECISIONS DRAIN YOU</div>
+          <textarea style={M.input} rows={2} value={decisionDrain} onChange={e => setDecisionDrain(e.target.value)} />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>WHERE EXECUTION BREAKS DOWN</div>
+          <textarea style={M.input} rows={2} value={commonFailurePoint} onChange={e => setCommonFailurePoint(e.target.value)} />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>YOUR IDEAL PLANNING RHYTHM</div>
+          <textarea style={M.input} rows={2} value={idealRhythm} onChange={e => setIdealRhythm(e.target.value)} />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>WHERE STEWARD HELPS MOST</div>
+          <textarea style={M.input} rows={2} value={whereAiHelpsMost} onChange={e => setWhereAiHelpsMost(e.target.value)} />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>NEVER SUGGEST (ONE PER LINE)</div>
+          <textarea style={M.input} rows={2} value={doNotSuggestText} onChange={e => setDoNotSuggestText(e.target.value)} />
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>ALWAYS KEEP IN VIEW</div>
+          <textarea style={M.input} rows={2} value={alwaysRemindOf} onChange={e => setAlwaysRemindOf(e.target.value)} />
+        </div>
+
+        <div style={{ ...S.card, marginTop: 4 }}>
+          <div style={S.eyebrow}><span style={S.eyeText}>PEOPLE &amp; PURSUITS</span></div>
+          <div style={S.prioSub}>Managed from their own tabs, not here.</div>
+          <div style={{ display: "flex", gap: 16, marginTop: 8 }}>
+            <button style={S.prioLogLink} onClick={onOpenTribe}>{relationshipCount} {relationshipCount === 1 ? "person" : "people"} in Tribe ›</button>
+            <button style={S.prioLogLink} onClick={onOpenWork}>{pursuitCount} in Work ›</button>
+          </div>
+        </div>
+
+        <SaveStatus status={saveStatus.status} onRetry={save} />
+        <button style={M.next} disabled={saveStatus.status === "saving"} onClick={save}>
+          {saveStatus.status === "saving" ? "Saving…" : "Save"}
+        </button>
         <button style={M.cancel} onClick={onClose}>Close</button>
       </ModalSheet>
     </div>
