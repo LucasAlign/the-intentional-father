@@ -27,14 +27,23 @@ declare global {
   }
 }
 
+// #108 — a failed refresh here must never end the app session. This stored
+// access/refresh token isn't actually consumed by anything (Google Calendar
+// keeps its own independent connection + tokens in googleCalendarConnections,
+// refreshed separately in routes/googleCalendar.ts), so there's nothing lost
+// by leaving it stale on a refresh failure — only something to lose (the
+// user's entire login) by treating that failure as fatal. Before this fix,
+// any transient refresh error (provider hiccup, revoked consent, network
+// blip) logged a Google/Microsoft user out entirely, far short of the
+// 90-day SESSION_TTL the session row and cookie both otherwise honor.
 async function refreshIfExpired(
   sid: string,
   session: SessionData,
-): Promise<SessionData | null> {
+): Promise<SessionData> {
   const now = Math.floor(Date.now() / 1000);
   if (session.provider === "demo" || session.provider === "email" || !session.expires_at || now <= session.expires_at) return session;
 
-  if (!session.refresh_token) return null;
+  if (!session.refresh_token) return session;
 
   try {
     const config = await getOidcConfig(session.provider);
@@ -48,10 +57,10 @@ async function refreshIfExpired(
       ? now + tokens.expiresIn()!
       : session.expires_at;
     await updateSession(sid, session);
-    return session;
   } catch {
-    return null;
+    // Leave the session's stale access/refresh_token/expires_at as-is.
   }
+  return session;
 }
 
 export async function authMiddleware(
@@ -78,11 +87,6 @@ export async function authMiddleware(
     }
 
     const refreshed = await refreshIfExpired(sid, session);
-    if (!refreshed) {
-      await clearSession(res, sid);
-      next();
-      return;
-    }
 
     req.user = refreshed.user;
     // Sliding expiration keeps active users signed in across normal app use.
