@@ -1,11 +1,11 @@
 import { Router, Request, Response } from "express";
 import { db, withUserSession } from "@workspace/db";
-import { journalEntries, chatMessages, tasks, taskCompletions, commits, commitRelationshipTargets, type Commit, jobs, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit, verseFavorites, sphereChecks } from "@workspace/db";
+import { journalEntries, chatMessages, tasks, taskCompletions, commits, commitRelationshipTargets, type Commit, jobs, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit, verseFavorites, customVerses, sphereChecks } from "@workspace/db";
 import { eq, desc, asc, gte, lte, and, ne, isNull, isNotNull, inArray, notInArray, sql } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
 import { normalizeProfileData, isToneVoice, DEFAULT_TONE_VOICE, type ProfileData, type ToneVoice } from "../lib/profile";
 import { aiRateLimit } from "../middlewares/aiRateLimit";
-import { SCRIPTURE_GROUNDING, getVerseOfTheDay, getVerseForUser, getVerseHistoryForUser, parseVerse, verseTextForRef, isValidVerseRef, favoriteVersesPromptBlock } from "../lib/verses";
+import { SCRIPTURE_GROUNDING, getVerseOfTheDay, getVerseForUser, getVerseHistoryForUser, parseVerse, verseTextForRef, isValidVerseRef, favoriteVersesPromptBlock, type ResolvedVerse } from "../lib/verses";
 import { computeCurrentPeriodStats, computeStreak, isSlipping, type RecurrencePeriod } from "../lib/priorityPeriods";
 import { buildTodayContext, resolveCommitWhoLabels } from "../lib/stewardContext";
 import { isPulseCategory, isPulseState } from "../lib/pulseCheck";
@@ -17,6 +17,8 @@ import { testReminderRateLimit } from "../middlewares/testReminderRateLimit";
 
 const MAX_PULSE_NOTE_LENGTH = 500;
 const MAX_SPHERE_NOTE_LENGTH = 500;
+const MAX_CUSTOM_VERSE_REF_LENGTH = 100;
+const MAX_CUSTOM_VERSE_TEXT_LENGTH = 1000;
 
 const router = Router();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
@@ -138,18 +140,36 @@ async function loadFavoriteRefs(userId: string): Promise<string[]> {
   return rows.map((r) => r.verseRef);
 }
 
+// #96 — bank favorites + favorited custom verses, merged in the order
+// favorited across both tables. Used for the UI-facing rotation/history
+// only — Steward's chat context stays on loadFavoriteRefs (bank-only, see
+// buildStewardSystemPrompt above) since a custom verse is never vetted the
+// way the curated bank is.
+async function loadFavoriteVerses(userId: string): Promise<ResolvedVerse[]> {
+  const [bankRows, customRows] = await Promise.all([
+    db.select({ verseRef: verseFavorites.verseRef, createdAt: verseFavorites.createdAt }).from(verseFavorites).where(eq(verseFavorites.userId, userId)),
+    db.select().from(customVerses).where(and(eq(customVerses.userId, userId), eq(customVerses.favorited, true))),
+  ]);
+  const merged = [
+    ...bankRows.map((r) => ({ ref: r.verseRef, text: verseTextForRef(r.verseRef) ?? '', custom: false, id: undefined as number | undefined, createdAt: r.createdAt })),
+    ...customRows.map((r) => ({ ref: r.ref, text: r.text, custom: true, id: r.id as number | undefined, createdAt: r.createdAt })),
+  ].filter((v) => v.custom || v.text);
+  merged.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  return merged.map(({ ref, text, custom, id }) => ({ ref, text, custom, id }));
+}
+
 // GET /api/verse
 router.get('/verse', async (req: Request, res: Response) => {
   try {
     const [profileRow] = await db.select().from(profileTable).where(eq(profileTable.userId, req.user!.id)).limit(1);
     const profileData = normalizeProfileData(profileRow?.data ?? null);
-    const favoriteRefs = await loadFavoriteRefs(req.user!.id);
-    const { ref, text } = parseVerse(getVerseForUser(profileData, favoriteRefs));
-    res.json({ ref, text, favorited: favoriteRefs.includes(ref) });
+    const favorites = await loadFavoriteVerses(req.user!.id);
+    const { ref, text, custom, id } = getVerseForUser(profileData, favorites);
+    res.json({ ref, text, custom, id, favorited: favorites.some((f) => f.ref === ref) });
   } catch (err) {
     req.log?.error({ err }, 'Error fetching verse of the day');
     const { ref, text } = parseVerse(getVerseOfTheDay(null));
-    res.json({ ref, text, favorited: false });
+    res.json({ ref, text, custom: false, favorited: false });
   }
 });
 
@@ -159,9 +179,9 @@ router.get('/verse/history', async (req: Request, res: Response) => {
   try {
     const [profileRow] = await db.select().from(profileTable).where(eq(profileTable.userId, req.user!.id)).limit(1);
     const profileData = normalizeProfileData(profileRow?.data ?? null);
-    const favoriteRefs = await loadFavoriteRefs(req.user!.id);
-    const favSet = new Set(favoriteRefs);
-    const history = getVerseHistoryForUser(profileData, favoriteRefs).map((entry) => ({ ...entry, favorited: favSet.has(entry.ref) }));
+    const favorites = await loadFavoriteVerses(req.user!.id);
+    const favRefs = new Set(favorites.map((f) => f.ref));
+    const history = getVerseHistoryForUser(profileData, favorites).map((entry) => ({ ...entry, favorited: favRefs.has(entry.ref) }));
     res.json(history);
   } catch (err) {
     req.log?.error({ err }, 'Error fetching verse history');
@@ -169,11 +189,22 @@ router.get('/verse/history', async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/verse-favorites
+// GET /api/verse-favorites — bank favorites + favorited custom verses (#96),
+// merged newest-favorited-first. Custom entries carry their `id` so the
+// client knows to un-favorite them via PATCH /my-verses/:id rather than
+// DELETE /verse-favorites (which only ever addresses the bank's ref space).
 router.get('/verse-favorites', async (req: Request, res: Response) => {
   try {
-    const rows = await db.select().from(verseFavorites).where(eq(verseFavorites.userId, req.user!.id)).orderBy(desc(verseFavorites.createdAt));
-    res.json(rows.map((r) => ({ ref: r.verseRef, text: verseTextForRef(r.verseRef) ?? '' })));
+    const [bankRows, customRows] = await Promise.all([
+      db.select().from(verseFavorites).where(eq(verseFavorites.userId, req.user!.id)),
+      db.select().from(customVerses).where(and(eq(customVerses.userId, req.user!.id), eq(customVerses.favorited, true))),
+    ]);
+    const merged = [
+      ...bankRows.map((r) => ({ ref: r.verseRef, text: verseTextForRef(r.verseRef) ?? '', custom: false as const, id: null as number | null, createdAt: r.createdAt })),
+      ...customRows.map((r) => ({ ref: r.ref, text: r.text, custom: true as const, id: r.id, createdAt: r.createdAt })),
+    ];
+    merged.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    res.json(merged.map(({ ref, text, custom, id }) => ({ ref, text, custom, id })));
   } catch (err) {
     req.log?.error({ err }, 'Error fetching verse favorites');
     res.status(500).json({ error: 'Failed to fetch favorites' });
@@ -210,6 +241,101 @@ router.delete('/verse-favorites', async (req: Request, res: Response) => {
   } catch (err) {
     req.log?.error({ err }, 'Error removing verse favorite');
     res.status(500).json({ error: 'Failed to remove favorite' });
+  }
+});
+
+// #96 — a user's own verses (manual text entry, not the curated bank).
+// GET /api/my-verses — every custom verse the user has saved, newest first.
+router.get('/my-verses', async (req: Request, res: Response) => {
+  try {
+    const rows = await db.select().from(customVerses).where(eq(customVerses.userId, req.user!.id)).orderBy(desc(customVerses.createdAt));
+    res.json(rows.map((r) => ({ id: r.id, ref: r.ref, text: r.text, favorited: r.favorited })));
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching custom verses');
+    res.status(500).json({ error: 'Failed to fetch My Verses' });
+  }
+});
+
+// POST /api/my-verses — favorited defaults true (matches the app's
+// "automatically favorited" original intent), but the caller can opt out.
+router.post('/my-verses', async (req: Request, res: Response) => {
+  try {
+    const { ref, text, favorited } = req.body as { ref?: unknown; text?: unknown; favorited?: unknown };
+    const trimmedRef = typeof ref === 'string' ? ref.trim() : '';
+    const trimmedText = typeof text === 'string' ? text.trim() : '';
+    if (!trimmedRef || !trimmedText || trimmedRef.length > MAX_CUSTOM_VERSE_REF_LENGTH || trimmedText.length > MAX_CUSTOM_VERSE_TEXT_LENGTH) {
+      res.status(400).json({ error: 'A reference and verse text are required' });
+      return;
+    }
+    const [row] = await db.insert(customVerses).values({
+      userId: req.user!.id,
+      ref: trimmedRef,
+      text: trimmedText,
+      favorited: favorited === false ? false : true,
+    }).returning();
+    res.json({ id: row!.id, ref: row!.ref, text: row!.text, favorited: row!.favorited });
+  } catch (err) {
+    req.log?.error({ err }, 'Error adding custom verse');
+    res.status(500).json({ error: 'Failed to add verse' });
+  }
+});
+
+// PATCH /api/my-verses/:id — edit ref/text and/or toggle favorited.
+router.patch('/my-verses/:id', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      res.status(400).json({ error: 'Invalid id' });
+      return;
+    }
+    const { ref, text, favorited } = req.body as { ref?: unknown; text?: unknown; favorited?: unknown };
+    const updates: Partial<typeof customVerses.$inferInsert> = { updatedAt: new Date() };
+    if (ref !== undefined) {
+      const trimmedRef = typeof ref === 'string' ? ref.trim() : '';
+      if (!trimmedRef || trimmedRef.length > MAX_CUSTOM_VERSE_REF_LENGTH) {
+        res.status(400).json({ error: 'Invalid reference' });
+        return;
+      }
+      updates.ref = trimmedRef;
+    }
+    if (text !== undefined) {
+      const trimmedText = typeof text === 'string' ? text.trim() : '';
+      if (!trimmedText || trimmedText.length > MAX_CUSTOM_VERSE_TEXT_LENGTH) {
+        res.status(400).json({ error: 'Invalid verse text' });
+        return;
+      }
+      updates.text = trimmedText;
+    }
+    if (favorited !== undefined) updates.favorited = Boolean(favorited);
+
+    const [row] = await db.update(customVerses).set(updates)
+      .where(and(eq(customVerses.id, id), eq(customVerses.userId, req.user!.id))).returning();
+    if (!row) {
+      res.status(404).json({ error: 'Verse not found' });
+      return;
+    }
+    res.json({ id: row.id, ref: row.ref, text: row.text, favorited: row.favorited });
+  } catch (err) {
+    req.log?.error({ err }, 'Error updating custom verse');
+    res.status(500).json({ error: 'Failed to update verse' });
+  }
+});
+
+// DELETE /api/my-verses/:id — permanent (the client gates this behind a
+// confirm dialog; a custom verse is low-stakes, easily-retyped text, not
+// comparable to the Jobs/Relationships data that gets a soft-delete tier).
+router.delete('/my-verses/:id', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      res.status(400).json({ error: 'Invalid id' });
+      return;
+    }
+    await db.delete(customVerses).where(and(eq(customVerses.id, id), eq(customVerses.userId, req.user!.id)));
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error deleting custom verse');
+    res.status(500).json({ error: 'Failed to delete verse' });
   }
 });
 

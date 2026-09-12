@@ -147,14 +147,33 @@ export function verseTextForRef(ref: string): string | null {
 // getVerseHistoryForUser below.
 const FAVORITE_CYCLE_DAYS = 5;
 
-export function getVerseForUser(profile: VerseProfileContext | null, favoriteRefs: string[], date: Date = new Date()): string {
+// #96 — a favorite eligible for the rotation, either a bank verse (resolved
+// via REF_TO_VERSE) or a user's own custom verse. `custom` flows through to
+// the UI so it can show a "My Verse" label wherever this ends up displayed.
+export interface ResolvedVerse extends ParsedVerse {
+  custom: boolean;
+  // Only set for custom verses — lets the client address PATCH/DELETE
+  // /my-verses/:id directly, without guessing at ref uniqueness.
+  id?: number;
+}
+
+function toResolvedVerse(v: string, custom = false): ResolvedVerse {
+  return { ...parseVerse(v), custom };
+}
+
+// favorites must already be resolved (ref+text known) and in the stable
+// "order favorited" — callers merge verseFavorites + favorited customVerses
+// by createdAt before calling this, since only they know both tables.
+export function getVerseForUser(profile: VerseProfileContext | null, favorites: ResolvedVerse[], date: Date = new Date()): ResolvedVerse {
   const pool = filteredPool(profile);
   const doy = dayOfYear(date);
-  const normalPick = pool[doy % pool.length]!;
-  if (favoriteRefs.length === 0 || doy % FAVORITE_CYCLE_DAYS !== 0) return normalPick;
+  const normalPick = toResolvedVerse(pool[doy % pool.length]!);
+  if (favorites.length === 0 || doy % FAVORITE_CYCLE_DAYS !== 0) return normalPick;
 
+  // Bank favorites still have to pass the profile filter (married/parenting-
+  // only refs); custom verses have no such tagging and are always eligible.
   const poolRefs = new Set(pool.map(verseRef));
-  const eligibleFavorites = favoriteRefs.filter((ref) => poolRefs.has(ref)).map((ref) => REF_TO_VERSE.get(ref)).filter((v): v is string => Boolean(v));
+  const eligibleFavorites = favorites.filter((f) => f.custom || poolRefs.has(f.ref));
   if (eligibleFavorites.length === 0) return normalPick;
 
   const cycleIndex = Math.floor(doy / FAVORITE_CYCLE_DAYS) % eligibleFavorites.length;
@@ -165,18 +184,18 @@ function ymdLocal(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-export interface VerseHistoryEntry extends ParsedVerse {
+export interface VerseHistoryEntry extends ResolvedVerse {
   date: string;
 }
 
 // Recomputed live from getVerseForUser, not logged anywhere — see #77's
 // resolution. Newest first (today included as entry 0).
-export function getVerseHistoryForUser(profile: VerseProfileContext | null, favoriteRefs: string[], days = 5, from: Date = new Date()): VerseHistoryEntry[] {
+export function getVerseHistoryForUser(profile: VerseProfileContext | null, favorites: ResolvedVerse[], days = 5, from: Date = new Date()): VerseHistoryEntry[] {
   const entries: VerseHistoryEntry[] = [];
   for (let i = 0; i < days; i++) {
     const d = new Date(from);
     d.setDate(d.getDate() - i);
-    entries.push({ date: ymdLocal(d), ...parseVerse(getVerseForUser(profile, favoriteRefs, d)) });
+    entries.push({ date: ymdLocal(d), ...getVerseForUser(profile, favorites, d) });
   }
   return entries;
 }
