@@ -4,6 +4,7 @@ import { useAuth } from "@workspace/replit-auth-web";
 import { useLocation } from "wouter";
 import { apiFetch } from "../lib/apiFetch";
 import { useSpeech } from "../hooks/use-speech";
+import { AppTour } from "../components/AppTour";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Task {
@@ -666,6 +667,7 @@ export default function Home() {
   const [profileMenu, setProfileMenu] = useState(false);
   const [myAnswersOpen, setMyAnswersOpen] = useState(false);
   const [remindersOpen, setRemindersOpen] = useState(false);
+  const [tourOpen, setTourOpen] = useState(false);
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [priorityDetail, setPriorityDetail] = useState<Task | null>(null);
   const [completedLogOpen, setCompletedLogOpen] = useState(false);
@@ -967,8 +969,10 @@ export default function Home() {
           onOpenMyAnswers={() => { setProfileMenu(false); setMyAnswersOpen(true); }}
           onRedoInterview={() => { setProfileMenu(false); redoInterview(); }}
           onOpenReminders={() => { setProfileMenu(false); setRemindersOpen(true); }}
+          onOpenTour={() => { setProfileMenu(false); setTourOpen(true); }}
         />
       )}
+      {tourOpen && <AppTour onClose={() => setTourOpen(false)} />}
       {myAnswersOpen && (
         <MyAnswersModal
           profile={profile} relationshipCount={relationships.length} pursuitCount={pursuits.length}
@@ -994,10 +998,10 @@ export default function Home() {
   );
 }
 
-function ProfileMenu({ name, email, onClose, onLogout, hintsEnabled, onSetHintsEnabled, hasInterviewed, onOpenMyAnswers, onRedoInterview, onOpenReminders }: {
+function ProfileMenu({ name, email, onClose, onLogout, hintsEnabled, onSetHintsEnabled, hasInterviewed, onOpenMyAnswers, onRedoInterview, onOpenReminders, onOpenTour }: {
   name?: string | null; email?: string | null; onClose: () => void; onLogout: () => void;
   hintsEnabled: boolean; onSetHintsEnabled: (enabled: boolean) => void;
-  hasInterviewed: boolean; onOpenMyAnswers: () => void; onRedoInterview: () => void; onOpenReminders: () => void;
+  hasInterviewed: boolean; onOpenMyAnswers: () => void; onRedoInterview: () => void; onOpenReminders: () => void; onOpenTour: () => void;
 }) {
   const [confirmRedo, setConfirmRedo] = useState(false);
   return (
@@ -1019,6 +1023,10 @@ function ProfileMenu({ name, email, onClose, onLogout, hintsEnabled, onSetHintsE
             fields, fillable directly). */}
         <button style={{ ...M.next, background: "none", border: "1px solid rgba(210,190,130,0.18)", color: C.parchmentMid, boxShadow: "none" }} onClick={onOpenMyAnswers}>
           Edit My Answers
+        </button>
+        {/* #95 — replays the same post-onboarding app tour on demand. */}
+        <button style={{ ...M.next, background: "none", border: "1px solid rgba(210,190,130,0.18)", color: C.parchmentMid, boxShadow: "none" }} onClick={onOpenTour}>
+          Replay App Tour
         </button>
         {confirmRedo ? (
           <div style={{ marginBottom: 10 }}>

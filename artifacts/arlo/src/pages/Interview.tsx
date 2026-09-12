@@ -4,6 +4,7 @@ import { useLocation, useSearch } from "wouter";
 import { useAuth } from "@workspace/replit-auth-web";
 import { apiFetch } from "../lib/apiFetch";
 import { useSpeech } from "../hooks/use-speech";
+import { AppTour } from "../components/AppTour";
 
 // ── Palette (matches Home.tsx) ────────────────────────────────────────────────
 const C = {
@@ -59,6 +60,10 @@ export default function Interview() {
   const [complete, setComplete] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [booted, setBooted] = useState(false);
+  // #95 — the app tour only follows a genuine first-time completion, not a
+  // "Redo the Interview" rerun (isRestart) — a returning user doesn't need
+  // the map again.
+  const [showTour, setShowTour] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
 
   const { listening, toggle: toggleMic } = useSpeech(setInput);
@@ -153,8 +158,12 @@ export default function Interview() {
   }
 
   function confirm() {
-    setConfirming(true);
-    setTimeout(() => setLocation("/"), 600);
+    if (isRestart) {
+      setConfirming(true);
+      setTimeout(() => setLocation("/"), 600);
+      return;
+    }
+    setShowTour(true);
   }
 
   async function skip() {
@@ -232,7 +241,7 @@ export default function Interview() {
       </div>
 
       {/* Confirm screen overlay */}
-      {complete && (
+      {complete && !showTour && (
         <div style={R.confirmOverlay}>
           <div style={R.confirmSheet}>
             <div style={R.confirmStrip} />
@@ -251,6 +260,9 @@ export default function Interview() {
           </div>
         </div>
       )}
+
+      {/* #95 — one-time post-onboarding app tour, first-time completion only */}
+      {showTour && <AppTour onClose={() => setLocation("/")} />}
 
       {/* Input bar */}
       {!complete && (
