@@ -37,23 +37,43 @@ export function useAuth(): AuthState {
   useEffect(() => {
     let cancelled = false;
 
-    fetch("/api/auth/user", { credentials: "include" })
-      .then((res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json() as Promise<{ user: AuthUser | null }>;
-      })
-      .then((data) => {
-        if (!cancelled) {
-          setUser(data.user ?? null);
-          setIsLoading(false);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
+    // Replit's autoscale deployment has no persistent process — after a
+    // period of inactivity the instance spins down, so reopening the app
+    // can hit a cold start on this very first request. Without a retry,
+    // a single timed-out or proxy-bounced request here reads as "logged
+    // out" and shows the full sign-in screen even though the session
+    // cookie/row are still perfectly valid server-side. This endpoint
+    // always returns 200 with `{user: null}` for a genuinely logged-out
+    // visitor (see routes/auth.ts), so any thrown/non-ok response here is
+    // an infra hiccup, not a real "not authenticated" — safe to retry
+    // with a generous backoff before giving up.
+    const RETRY_DELAYS_MS = [1000, 2000, 4000];
+
+    async function checkAuth() {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const res = await fetch("/api/auth/user", { credentials: "include" });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = (await res.json()) as { user: AuthUser | null };
+          if (!cancelled) {
+            setUser(data.user ?? null);
+            setIsLoading(false);
+          }
+          return;
+        } catch {
+          if (cancelled) return;
+          if (attempt < RETRY_DELAYS_MS.length) {
+            await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
+            continue;
+          }
           setUser(null);
           setIsLoading(false);
+          return;
         }
-      });
+      }
+    }
+
+    checkAuth();
 
     return () => {
       cancelled = true;
