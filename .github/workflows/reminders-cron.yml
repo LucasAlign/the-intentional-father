@@ -1,0 +1,17 @@
+name: Reminders cron
+
+on:
+  schedule:
+    # 13:00 UTC daily — issue #75's commitment-reminder digest.
+    - cron: "0 13 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  run-reminders:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call POST /api/reminders/run
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer ${{ secrets.REMINDERS_CRON_SECRET }}" \
+            "https://1arlo.replit.app/api/reminders/run"
