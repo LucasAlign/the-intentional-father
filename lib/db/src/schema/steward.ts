@@ -191,6 +191,10 @@ export const jobs = pgTable("jobs", {
   materials: text("materials").notNull().default(""),
   budget: text("budget").notNull().default(""),
   risk: text("risk").notNull().default(""),
+  // Soft-delete (#89), matching pursuits — "Delete Job" now closes rather
+  // than permanently removing, with a Deleted-jobs list to Reopen from.
+  deleted: boolean("deleted").notNull().default(false),
+  deletedAt: timestamp("deleted_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

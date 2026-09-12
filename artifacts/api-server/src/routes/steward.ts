@@ -1,13 +1,13 @@
 import { Router, Request, Response } from "express";
 import { db, withUserSession } from "@workspace/db";
 import { journalEntries, chatMessages, tasks, taskCompletions, commits, commitRelationshipTargets, type Commit, jobs, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit, verseFavorites, sphereChecks } from "@workspace/db";
-import { eq, desc, asc, gte, lte, and, isNull, inArray, notInArray, sql } from "drizzle-orm";
+import { eq, desc, asc, gte, lte, and, isNull, isNotNull, inArray, notInArray, sql } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
 import { normalizeProfileData, isToneVoice, DEFAULT_TONE_VOICE, type ProfileData, type ToneVoice } from "../lib/profile";
 import { aiRateLimit } from "../middlewares/aiRateLimit";
 import { SCRIPTURE_GROUNDING, getVerseOfTheDay, getVerseForUser, getVerseHistoryForUser, parseVerse, verseTextForRef, isValidVerseRef, favoriteVersesPromptBlock } from "../lib/verses";
 import { computeCurrentPeriodStats, computeStreak, isSlipping, type RecurrencePeriod } from "../lib/priorityPeriods";
-import { buildTodayContext } from "../lib/stewardContext";
+import { buildTodayContext, resolveCommitWhoLabels } from "../lib/stewardContext";
 import { isPulseCategory, isPulseState } from "../lib/pulseCheck";
 import { SPHERE_CATEGORIES, isSphereCategory, isSphereState, getWeekStart, SPHERE_STATE_SCORE, type SphereState } from "../lib/sphere";
 import { isRelationshipCategory, RELATIONSHIP_RANK_SQL, RELATIONSHIP_CATEGORY_RANK, type RelationshipCategory } from "../lib/relationships";
@@ -1179,10 +1179,23 @@ async function resolvePursuitId(userId: string, pursuitId: unknown, res: Respons
 // GET /api/jobs
 router.get('/jobs', async (req: Request, res: Response) => {
   try {
-    const rows = await db.select().from(jobs).where(eq(jobs.userId, req.user!.id)).orderBy(asc(jobs.createdAt));
+    const rows = await db.select().from(jobs).where(and(eq(jobs.userId, req.user!.id), eq(jobs.deleted, false))).orderBy(asc(jobs.createdAt));
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch jobs' });
+  }
+});
+
+// GET /api/jobs/deleted
+router.get('/jobs/deleted', async (req: Request, res: Response) => {
+  try {
+    const items = await db.select().from(jobs)
+      .where(and(eq(jobs.userId, req.user!.id), eq(jobs.deleted, true)))
+      .orderBy(desc(jobs.deletedAt)).limit(200);
+    res.json({ items });
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching deleted jobs');
+    res.status(500).json({ error: 'Failed to fetch deleted jobs' });
   }
 });
 
@@ -1211,7 +1224,7 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    const { name, stage, due, pct, pursuitId, materials, budget, risk } = req.body;
+    const { name, stage, due, pct, pursuitId, materials, budget, risk, deleted } = req.body;
     const updates: Partial<typeof jobs.$inferInsert> = {};
     if (name !== undefined) updates.name = name;
     if (stage !== undefined) updates.stage = stage;
@@ -1220,6 +1233,10 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
     if (typeof materials === 'string') updates.materials = materials;
     if (typeof budget === 'string') updates.budget = budget;
     if (typeof risk === 'string') updates.risk = risk;
+    if (typeof deleted === 'boolean') {
+      updates.deleted = deleted;
+      updates.deletedAt = deleted ? new Date() : null;
+    }
     if (pursuitId !== undefined) {
       const resolved = await resolvePursuitId(req.user!.id, pursuitId, res);
       if (!resolved.ok) return; // resolvePursuitId already responded
@@ -1271,7 +1288,31 @@ router.get('/coming-up', async (req: Request, res: Response) => {
     } catch (err) {
       req.log?.warn({ err }, 'Failed to merge Google Calendar events');
     }
-    res.json([...rows, ...calendarRows].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time)));
+
+    // #97 — open commitments with a due date in this range show up here too,
+    // alongside manual entries and connected-calendar events. tag:
+    // "Commitment" lets This Week's visibility toggles filter these out
+    // independently, the same way tag: "Google Calendar" already
+    // identifies external events for its own toggle.
+    const dueCommits = await db.select().from(commits).where(and(
+      eq(commits.userId, req.user!.id), eq(commits.done, false), eq(commits.deleted, false),
+      isNotNull(commits.dueDate), gte(commits.dueDate, rangeStart), lte(commits.dueDate, rangeEnd),
+    ));
+    const whoByCommit = await resolveCommitWhoLabels(db, dueCommits);
+    const commitRows: CalendarEvent[] = dueCommits.map((c) => ({
+      // Negative, offset well clear of comingUp's positive serial ids and
+      // the Google Calendar hash's typical range — this is only ever used
+      // as a display/list key, not a real foreign key.
+      id: -(1_000_000 + c.id),
+      date: c.dueDate!,
+      time: 'All day',
+      title: c.text.slice(0, 80),
+      sub: `To ${whoByCommit.get(c.id) ?? 'someone'}`,
+      tag: 'Commitment',
+      kind: 'commitment',
+    }));
+
+    res.json([...rows, ...calendarRows, ...commitRows].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time)));
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch coming up' });
   }
