@@ -3358,9 +3358,6 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
   const [validationErr, setValidationErr] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [delErr, setDelErr] = useState("");
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [closing, setClosing] = useState(false);
-  const [closeErr, setCloseErr] = useState("");
 
   async function save() {
     if (!name.trim()) { setValidationErr("Name is required."); return; }
@@ -3375,23 +3372,17 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
     });
   }
 
-  // Soft — reversible from the Deleted Jobs list (#89), same as
-  // PursuitModal's "Close Pursuit".
-  async function close() {
-    setClosing(true);
-    try {
-      const r = await apiFetch(`${API}/jobs/${job.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: true }) });
-      if (r.ok) { onDeleted(); onClose(); }
-      else { setCloseErr("Couldn't close. Try again."); setClosing(false); }
-    } catch { setCloseErr("Couldn't reach the server."); setClosing(false); }
-  }
-
-  // Permanent — gated behind an inline confirm (#89) so a single mistap
-  // can't lose a job with no way back, matching relationships' pattern.
+  // Soft — reversible from the Deleted Jobs list (#89). One "Delete" action
+  // here, no confirm needed, same as relationships' main edit view — the
+  // separate, genuinely-permanent delete only lives inside the Deleted Jobs
+  // list itself (JobsDeletedModal), matching PeopleDeletedModal's pattern.
+  // (An earlier version of this put both a reversible "Close" and a
+  // permanent "Delete" side by side here, which was confusing enough that
+  // someone used the wrong one and lost a job for good — hence the change.)
   async function del() {
     setDeleting(true);
     try {
-      const r = await apiFetch(`${API}/jobs/${job.id}`, { method: "DELETE" });
+      const r = await apiFetch(`${API}/jobs/${job.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: true }) });
       if (r.ok) { onDeleted(); onClose(); }
       else { setDelErr("Couldn't delete. Try again."); setDeleting(false); }
     } catch { setDelErr("Couldn't reach the server."); setDeleting(false); }
@@ -3441,18 +3432,8 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
         <TapError message={validationErr || null} />
         <SaveStatus status={saveStatus.status} onRetry={save} />
         <button style={M.next} disabled={saveStatus.status === "saving"} onClick={save}>{saveStatus.status === "saving" ? "Saving…" : "Save Changes"}</button>
-        <TapError message={closeErr || null} />
-        <button style={M.cancel} disabled={closing} onClick={close}>{closing ? "Closing…" : "Close Job"}</button>
         <TapError message={delErr || null} />
-        {confirmDelete ? (
-          <div style={{ ...S.prioSub, marginTop: 4 }}>
-            Permanently delete this job? This can't be undone.
-            <button style={{ ...S.prioLogLink, color: "#C87060", marginLeft: 8 }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Yes, permanently delete"}</button>
-            <button style={{ ...S.prioLogLink, marginLeft: 12 }} disabled={deleting} onClick={() => setConfirmDelete(false)}>Cancel</button>
-          </div>
-        ) : (
-          <button style={{ ...M.cancel, color: "#C87060" }} onClick={() => setConfirmDelete(true)}>Delete permanently</button>
-        )}
+        <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete Job"}</button>
         <button style={M.cancel} onClick={onClose}>Cancel</button>
       </ModalSheet>
     </div>
@@ -3461,11 +3442,14 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
 
 // Deleted-jobs history view (#89) — mirrors PursuitsClosedModal: a Reopen
 // action only, since "Delete permanently" in JobEditModal already covers
-// permanent removal separately.
+// permanent removal, gated behind its own inline confirm — mirroring
+// PeopleDeletedModal exactly, since "Delete Job" in JobEditModal is now
+// just the soft/reversible action (see its comment for why that changed).
 function JobsDeletedModal({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
   const [deleted, setDeleted] = useState<Job[] | null>(null);
-  const [reopeningIds, setReopeningIds] = useState<number[]>([]);
-  const reopenError = useKeyedTapError<number>();
+  const [busyIds, setBusyIds] = useState<number[]>([]);
+  const [confirmPermanentId, setConfirmPermanentId] = useState<number | null>(null);
+  const rowError = useKeyedTapError<number>();
   const scrollFade = useBottomScrollFade<HTMLDivElement>();
 
   const load = useCallback(() => {
@@ -3474,7 +3458,7 @@ function JobsDeletedModal({ onClose, onChanged }: { onClose: () => void; onChang
   useEffect(() => { load(); }, [load]);
 
   async function reopen(id: number) {
-    setReopeningIds(prev => [...prev, id]);
+    setBusyIds(prev => [...prev, id]);
     try {
       const r = await apiFetch(`${API}/jobs/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: false }) });
       if (r.ok) {
@@ -3483,8 +3467,24 @@ function JobsDeletedModal({ onClose, onChanged }: { onClose: () => void; onChang
         return;
       }
     } catch { /* fall through */ }
-    setReopeningIds(prev => prev.filter(item => item !== id));
-    reopenError.flash(id, "Couldn't reopen — try again");
+    setBusyIds(prev => prev.filter(item => item !== id));
+    rowError.flash(id, "Couldn't reopen — try again");
+  }
+
+  async function permanentlyDelete(id: number) {
+    setBusyIds(prev => [...prev, id]);
+    try {
+      const r = await apiFetch(`${API}/jobs/${id}`, { method: "DELETE" });
+      if (r.ok) {
+        setDeleted(prev => prev ? prev.filter(j => j.id !== id) : prev);
+        setConfirmPermanentId(null);
+        onChanged();
+        return;
+      }
+    } catch { /* fall through */ }
+    setBusyIds(prev => prev.filter(item => item !== id));
+    setConfirmPermanentId(null);
+    rowError.flash(id, "Couldn't permanently delete — try again");
   }
 
   return (
@@ -3499,11 +3499,24 @@ function JobsDeletedModal({ onClose, onChanged }: { onClose: () => void; onChang
                   <div style={S.prioTitle}>{j.name}</div>
                   <div style={S.prioSub}>{[j.stage, j.due].filter(Boolean).join("  •  ") || "No stage or due date"}</div>
                 </div>
-                <button style={S.prioLogLink} disabled={reopeningIds.includes(j.id)} onClick={() => reopen(j.id)}>
-                  {reopeningIds.includes(j.id) ? "Reopening…" : "Reopen"}
+                <button style={S.prioLogLink} disabled={busyIds.includes(j.id)} onClick={() => reopen(j.id)}>
+                  {busyIds.includes(j.id) ? "Reopening…" : "Reopen"}
                 </button>
               </div>
-              <TapError message={reopenError.get(j.id)} />
+              {confirmPermanentId === j.id ? (
+                <div style={{ marginTop: 6 }}>
+                  <div style={{ ...S.prioSub, color: "#C87060", marginBottom: 6 }}>
+                    Permanently delete {j.name}? This can't be undone.
+                  </div>
+                  <button style={{ ...S.prioLogLink, color: "#C87060" }} disabled={busyIds.includes(j.id)} onClick={() => permanentlyDelete(j.id)}>
+                    {busyIds.includes(j.id) ? "Deleting…" : "Yes, permanently delete"}
+                  </button>
+                  <button style={{ ...S.prioLogLink, marginLeft: 12 }} disabled={busyIds.includes(j.id)} onClick={() => setConfirmPermanentId(null)}>Cancel</button>
+                </div>
+              ) : (
+                <button style={{ ...S.prioLogLink, color: "#C87060", marginTop: 4 }} onClick={() => setConfirmPermanentId(j.id)}>Delete permanently</button>
+              )}
+              <TapError message={rowError.get(j.id)} />
             </div>
           ))}
           {deleted && deleted.length === 0 && <div style={S.empty}>Nothing deleted yet.</div>}
