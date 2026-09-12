@@ -247,6 +247,31 @@ export const profile = pgTable("profile", {
 
 export type Profile = typeof profile.$inferSelect;
 
+// #93 — additional email addresses a user can receive commitment reminders
+// at, beyond their account login email. The login email is never stored as
+// a row here — it's always the implicit, non-removable fallback (see
+// resolveActiveReminderEmail in lib/reminders.ts), which is what guarantees
+// a user can never end up with zero usable reminder addresses. At most one
+// row per user has active: true; a freshly-added row starts unverified
+// (codeHash/codeExpiresAt set) until its emailed code is confirmed.
+export const reminderEmails = pgTable("reminder_emails", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  email: text("email").notNull(),
+  verified: boolean("verified").notNull().default(false),
+  active: boolean("active").notNull().default(false),
+  codeHash: text("code_hash"),
+  codeExpiresAt: timestamp("code_expires_at"),
+  codeAttempts: integer("code_attempts").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  unique("reminder_emails_user_email_unique").on(table.userId, table.email),
+]);
+
+export const insertReminderEmailSchema = createInsertSchema(reminderEmails).omit({ id: true, createdAt: true });
+export type InsertReminderEmail = z.infer<typeof insertReminderEmailSchema>;
+export type ReminderEmail = typeof reminderEmails.$inferSelect;
+
 export const interviewMessages = pgTable("interview_messages", {
   id: serial("id").primaryKey(),
   userId: text("user_id").notNull(),

@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { db, withUserSession } from "@workspace/db";
-import { journalEntries, chatMessages, tasks, taskCompletions, commits, commitRelationshipTargets, type Commit, jobs, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit, verseFavorites, customVerses, sphereChecks } from "@workspace/db";
+import { journalEntries, chatMessages, tasks, taskCompletions, commits, commitRelationshipTargets, type Commit, jobs, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit, verseFavorites, customVerses, sphereChecks, reminderEmails } from "@workspace/db";
 import { eq, desc, asc, gte, lte, and, ne, isNull, isNotNull, inArray, notInArray, sql } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
 import { normalizeProfileData, isToneVoice, DEFAULT_TONE_VOICE, type ProfileData, type ToneVoice } from "../lib/profile";
@@ -12,13 +12,19 @@ import { isPulseCategory, isPulseState } from "../lib/pulseCheck";
 import { SPHERE_CATEGORIES, isSphereCategory, isSphereState, getWeekStart, SPHERE_STATE_SCORE, type SphereState } from "../lib/sphere";
 import { isRelationshipCategory, RELATIONSHIP_RANK_SQL, RELATIONSHIP_CATEGORY_RANK, type RelationshipCategory } from "../lib/relationships";
 import { isPursuitCategory } from "../lib/pursuits";
-import { sendTestReminderDigest } from "../lib/reminders";
+import { sendTestReminderDigest, resolveActiveReminderEmail } from "../lib/reminders";
 import { testReminderRateLimit } from "../middlewares/testReminderRateLimit";
+import { reminderEmailAddRateLimit, reminderEmailVerifyRateLimit } from "../middlewares/reminderEmailRateLimit";
+import { generateEmailLoginCode, hashEmailLoginCode, EMAIL_CODE_TTL_MS, EMAIL_CODE_MAX_ATTEMPTS } from "../lib/auth";
+import { sendReminderEmailVerificationCode } from "../lib/email";
 
 const MAX_PULSE_NOTE_LENGTH = 500;
 const MAX_SPHERE_NOTE_LENGTH = 500;
 const MAX_CUSTOM_VERSE_REF_LENGTH = 100;
 const MAX_CUSTOM_VERSE_TEXT_LENGTH = 1000;
+// #93 — additional reminder emails, not counting the account login email
+// (which isn't stored as its own row — see schema/steward.ts).
+const MAX_REMINDER_EMAILS = 3;
 
 const router = Router();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
@@ -1230,7 +1236,9 @@ router.delete('/commits/:id', async (req: Request, res: Response) => {
 // never marks commits as reminded (a test send can't use up the real one).
 router.post('/reminders/test', testReminderRateLimit, async (req: Request, res: Response) => {
   try {
-    const email = req.user!.email;
+    // #93 — the currently-active reminder address, not just the account
+    // login email, so a test send actually previews what a real one does.
+    const email = await resolveActiveReminderEmail(db, req.user!.id, req.user!.email);
     if (!email) { res.status(400).json({ error: 'No email on file for this account' }); return; }
     const digest = await sendTestReminderDigest(db, req.user!.id, email);
     res.json({
@@ -1242,6 +1250,159 @@ router.post('/reminders/test', testReminderRateLimit, async (req: Request, res: 
   } catch (err) {
     req.log?.error({ err }, 'Error sending test reminder');
     res.status(500).json({ error: 'Failed to send test reminder' });
+  }
+});
+
+// #93 — GET /api/reminder-emails: the account's login email as a pinned,
+// always-verified, non-removable first entry, plus any additional emails
+// the user has added (verified or still waiting on their code).
+router.get('/reminder-emails', async (req: Request, res: Response) => {
+  try {
+    const rows = await db.select().from(reminderEmails).where(eq(reminderEmails.userId, req.user!.id)).orderBy(asc(reminderEmails.createdAt));
+    const anyActive = rows.some((r) => r.active);
+    res.json([
+      { id: 'account', email: req.user!.email, verified: true, active: !anyActive, removable: false, pending: false },
+      ...rows.map((r) => ({ id: String(r.id), email: r.email, verified: r.verified, active: r.active, removable: true, pending: !r.verified })),
+    ]);
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching reminder emails');
+    res.status(500).json({ error: 'Failed to fetch reminder emails' });
+  }
+});
+
+// POST /api/reminder-emails — add a new email; sends a verification code,
+// doesn't make it active until confirmed.
+router.post('/reminder-emails', reminderEmailAddRateLimit, async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body as { email?: unknown };
+    const trimmed = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+      res.status(400).json({ error: 'A valid email is required' });
+      return;
+    }
+    if (trimmed === req.user!.email?.toLowerCase()) {
+      res.status(400).json({ error: "That's already your account email" });
+      return;
+    }
+    const existing = await db.select().from(reminderEmails).where(eq(reminderEmails.userId, req.user!.id));
+    if (existing.some((r) => r.email.toLowerCase() === trimmed)) {
+      res.status(400).json({ error: 'That email is already on your list' });
+      return;
+    }
+    if (existing.length >= MAX_REMINDER_EMAILS) {
+      res.status(400).json({ error: `You can add up to ${MAX_REMINDER_EMAILS} additional emails` });
+      return;
+    }
+
+    const code = generateEmailLoginCode();
+    const [row] = await db.insert(reminderEmails).values({
+      userId: req.user!.id,
+      email: trimmed,
+      verified: false,
+      active: false,
+      codeHash: hashEmailLoginCode(code),
+      codeExpiresAt: new Date(Date.now() + EMAIL_CODE_TTL_MS),
+      codeAttempts: 0,
+    }).returning();
+    await sendReminderEmailVerificationCode(trimmed, code);
+    res.json({ id: String(row!.id), email: row!.email, verified: false, active: false, removable: true, pending: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error adding reminder email');
+    res.status(500).json({ error: 'Failed to add email' });
+  }
+});
+
+// POST /api/reminder-emails/:id/resend — a fresh code for a still-pending email.
+router.post('/reminder-emails/:id/resend', reminderEmailAddRateLimit, async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    const [row] = await db.select().from(reminderEmails).where(and(eq(reminderEmails.id, id), eq(reminderEmails.userId, req.user!.id))).limit(1);
+    if (!row) { res.status(404).json({ error: 'Not found' }); return; }
+    if (row.verified) { res.status(400).json({ error: 'Already verified' }); return; }
+
+    const code = generateEmailLoginCode();
+    await db.update(reminderEmails)
+      .set({ codeHash: hashEmailLoginCode(code), codeExpiresAt: new Date(Date.now() + EMAIL_CODE_TTL_MS), codeAttempts: 0 })
+      .where(eq(reminderEmails.id, id));
+    await sendReminderEmailVerificationCode(row.email, code);
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error resending reminder email code');
+    res.status(500).json({ error: 'Failed to resend code' });
+  }
+});
+
+// POST /api/reminder-emails/:id/verify
+router.post('/reminder-emails/:id/verify', reminderEmailVerifyRateLimit, async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    const { code } = req.body as { code?: unknown };
+    if (typeof code !== 'string') { res.status(400).json({ error: 'Code is required' }); return; }
+
+    const [row] = await db.select().from(reminderEmails).where(and(eq(reminderEmails.id, id), eq(reminderEmails.userId, req.user!.id))).limit(1);
+    if (!row) { res.status(404).json({ error: 'Not found' }); return; }
+    if (row.verified) { res.json({ verified: true }); return; }
+    if (!row.codeExpiresAt || row.codeExpiresAt < new Date()) {
+      res.status(400).json({ error: 'That code has expired. Request a new one.' });
+      return;
+    }
+    if (row.codeAttempts >= EMAIL_CODE_MAX_ATTEMPTS) {
+      res.status(400).json({ error: 'Too many attempts. Request a new code.' });
+      return;
+    }
+    if (row.codeHash !== hashEmailLoginCode(code)) {
+      await db.update(reminderEmails).set({ codeAttempts: row.codeAttempts + 1 }).where(eq(reminderEmails.id, id));
+      res.status(400).json({ error: "That code isn't right. Try again." });
+      return;
+    }
+
+    await db.update(reminderEmails).set({ verified: true, codeHash: null, codeExpiresAt: null }).where(eq(reminderEmails.id, id));
+    res.json({ verified: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error verifying reminder email');
+    res.status(500).json({ error: 'Failed to verify email' });
+  }
+});
+
+// POST /api/reminder-emails/:id/activate — :id is the literal "account" for
+// the login email, or a numeric reminder_emails row id. Only ever one
+// active row per user; switching back to "account" just clears all of them.
+router.post('/reminder-emails/:id/activate', async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    if (req.params.id === 'account') {
+      await db.update(reminderEmails).set({ active: false }).where(eq(reminderEmails.userId, userId));
+      res.json({ success: true });
+      return;
+    }
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    const [row] = await db.select().from(reminderEmails).where(and(eq(reminderEmails.id, id), eq(reminderEmails.userId, userId))).limit(1);
+    if (!row) { res.status(404).json({ error: 'Not found' }); return; }
+    if (!row.verified) { res.status(400).json({ error: 'Verify this email before making it active' }); return; }
+
+    await db.update(reminderEmails).set({ active: false }).where(eq(reminderEmails.userId, userId));
+    await db.update(reminderEmails).set({ active: true }).where(eq(reminderEmails.id, id));
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error setting active reminder email');
+    res.status(500).json({ error: 'Failed to set active email' });
+  }
+});
+
+// DELETE /api/reminder-emails/:id — the account email (id "account") isn't
+// a real row and can't be deleted; Number.isInteger below rejects it.
+router.delete('/reminder-emails/:id', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    await db.delete(reminderEmails).where(and(eq(reminderEmails.id, id), eq(reminderEmails.userId, req.user!.id)));
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error deleting reminder email');
+    res.status(500).json({ error: 'Failed to delete email' });
   }
 });
 

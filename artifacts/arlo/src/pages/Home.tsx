@@ -61,6 +61,9 @@ interface ProfileData {
 interface VerseEntry { ref: string; text: string; favorited: boolean; custom?: boolean; id?: number; }
 interface VerseHistoryEntry extends VerseEntry { date: string; }
 interface MyVerse { id: number; ref: string; text: string; favorited: boolean; }
+// #93 — "account" for the pinned, always-verified login email, or a
+// reminder_emails row id (as a string) for anything the user's added.
+interface ReminderEmailEntry { id: string; email: string; verified: boolean; active: boolean; removable: boolean; pending: boolean; }
 type PulseCategory = "physical" | "mental" | "spiritual";
 type PulseState = "up" | "mid" | "down";
 interface PulseCheckEntry { category: PulseCategory; state: PulseState; note: string; }
@@ -572,6 +575,11 @@ function rotatingItem(items: string[]) {
 
 const PRIORITIES_VISIBLE_CAP = 3;
 const KEPT_VISIBLE_CAP = 10;
+// #93 — additional reminder emails, not counting the account login email;
+// matches MAX_REMINDER_EMAILS in routes/steward.ts (the server enforces
+// this — this is just so the "Add email" button disables at the same point
+// instead of letting a user fill the form out only to be rejected).
+const MAX_REMINDER_EMAILS = 3;
 
 function cadenceLabel(t: Task): string {
   if (!t.recurrencePeriod) return "";
@@ -657,6 +665,7 @@ export default function Home() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [profileMenu, setProfileMenu] = useState(false);
   const [myAnswersOpen, setMyAnswersOpen] = useState(false);
+  const [remindersOpen, setRemindersOpen] = useState(false);
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [priorityDetail, setPriorityDetail] = useState<Task | null>(null);
   const [completedLogOpen, setCompletedLogOpen] = useState(false);
@@ -919,7 +928,7 @@ export default function Home() {
         {tab === "her" && <Relationships relationships={relationships} refreshRelationships={refreshRelationships} commits={commits} refreshCommits={refreshCommits} />}
         {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} onOpenClosed={() => setClosedPursuitsOpen(true)} onOpenDeletedJobs={() => setDeletedJobsOpen(true)} />}
         {tab === "sphere" && <Sphere />}
-        {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} remindersEnabled={profile?.remindersEnabled ?? true} onSetRemindersEnabled={setRemindersEnabled} onSendTestReminder={sendTestReminder} />}
+        {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} />}
         {tab === "week" && <WeekView events={week} jobs={jobs} pursuits={pursuits} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await apiFetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
       </main>
 
@@ -957,6 +966,7 @@ export default function Home() {
           hasInterviewed={Boolean(profile?.name)}
           onOpenMyAnswers={() => { setProfileMenu(false); setMyAnswersOpen(true); }}
           onRedoInterview={() => { setProfileMenu(false); redoInterview(); }}
+          onOpenReminders={() => { setProfileMenu(false); setRemindersOpen(true); }}
         />
       )}
       {myAnswersOpen && (
@@ -965,6 +975,12 @@ export default function Home() {
           onClose={() => setMyAnswersOpen(false)} onSaved={refreshProfile}
           onOpenTribe={() => { setMyAnswersOpen(false); setTab("her"); }}
           onOpenWork={() => { setMyAnswersOpen(false); setTab("work"); }}
+        />
+      )}
+      {remindersOpen && (
+        <RemindersModal
+          remindersEnabled={profile?.remindersEnabled ?? true} onSetRemindersEnabled={setRemindersEnabled}
+          onSendTestReminder={sendTestReminder} onClose={() => setRemindersOpen(false)}
         />
       )}
       {priorityDetail && <PriorityDetailModal task={priorityDetail} onClose={() => setPriorityDetail(null)} onChanged={refreshTasks} />}
@@ -978,10 +994,10 @@ export default function Home() {
   );
 }
 
-function ProfileMenu({ name, email, onClose, onLogout, hintsEnabled, onSetHintsEnabled, hasInterviewed, onOpenMyAnswers, onRedoInterview }: {
+function ProfileMenu({ name, email, onClose, onLogout, hintsEnabled, onSetHintsEnabled, hasInterviewed, onOpenMyAnswers, onRedoInterview, onOpenReminders }: {
   name?: string | null; email?: string | null; onClose: () => void; onLogout: () => void;
   hintsEnabled: boolean; onSetHintsEnabled: (enabled: boolean) => void;
-  hasInterviewed: boolean; onOpenMyAnswers: () => void; onRedoInterview: () => void;
+  hasInterviewed: boolean; onOpenMyAnswers: () => void; onRedoInterview: () => void; onOpenReminders: () => void;
 }) {
   const [confirmRedo, setConfirmRedo] = useState(false);
   return (
@@ -992,6 +1008,11 @@ function ProfileMenu({ name, email, onClose, onLogout, hintsEnabled, onSetHintsE
             individually, so they all reappear. */}
         <button style={{ ...M.statusOpt, ...(hintsEnabled ? M.statusOptOn : {}) }} onClick={() => onSetHintsEnabled(!hintsEnabled)}>
           Helpful Hints: {hintsEnabled ? "On" : "Off"}
+        </button>
+        {/* #93 — moved here from the Chat tab: on/off toggle, which email(s)
+            reminders go to, and the test-send button. */}
+        <button style={{ ...M.next, background: "none", border: "1px solid rgba(210,190,130,0.18)", color: C.parchmentMid, boxShadow: "none" }} onClick={onOpenReminders}>
+          Commitment Reminders
         </button>
         {/* #92 — a direct form over the onboarding-derived fields, no AI
             conversation. Works even if the interview was skipped (blank
@@ -1137,6 +1158,195 @@ function MyAnswersModal({ profile, relationshipCount, pursuitCount, onClose, onS
           {saveStatus.status === "saving" ? "Saving…" : "Save"}
         </button>
         <button style={M.cancel} onClick={onClose}>Close</button>
+      </ModalSheet>
+    </div>
+  );
+}
+
+// #93 — moved here from the Chat tab: the on/off toggle, which address
+// reminders currently go to (only one is ever "active" — the account login
+// email by default, or a verified additional one once switched to), and
+// the test-send button.
+function RemindersModal({ remindersEnabled, onSetRemindersEnabled, onSendTestReminder, onClose }: {
+  remindersEnabled: boolean; onSetRemindersEnabled: (enabled: boolean) => void; onSendTestReminder: () => Promise<boolean>;
+  onClose: () => void;
+}) {
+  const [entries, setEntries] = useState<ReminderEmailEntry[] | null>(null);
+  const [newEmail, setNewEmail] = useState("");
+  const addSave = useSaveStatus();
+  const { error: addError, flash: flashAddError } = useTapError();
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [codeInput, setCodeInput] = useState("");
+  const verifySave = useSaveStatus();
+  const { error: verifyError, flash: flashVerifyError } = useTapError();
+  const rowError = useKeyedTapError<string>();
+  const [busyIds, setBusyIds] = useState<string[]>([]);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [sendingTest, setSendingTest] = useState(false);
+  const { error: testMsg, flash: flashTestMsg } = useTapError();
+
+  const load = useCallback(() => { getList<ReminderEmailEntry>(`${API}/reminder-emails`).then(setEntries); }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const additionalCount = (entries ?? []).filter(e => e.removable).length;
+
+  async function addEmail() {
+    const trimmed = newEmail.trim();
+    if (!trimmed) { flashAddError("Enter an email address"); return; }
+    let newId: string | null = null;
+    const ok = await addSave.save(async () => {
+      const res = await apiFetch(`${API}/reminder-emails`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: trimmed }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        flashAddError((isRecord(body) && typeof body.error === "string") ? body.error : "Couldn't add — try again");
+        return false;
+      }
+      const row = await res.json();
+      newId = isRecord(row) && typeof row.id === "string" ? row.id : null;
+      return true;
+    });
+    if (ok) {
+      setNewEmail("");
+      load();
+      setVerifyingId(newId);
+      setCodeInput("");
+    }
+  }
+
+  async function resend(id: string) {
+    setBusyIds(prev => [...prev, id]);
+    const res = await apiFetch(`${API}/reminder-emails/${id}/resend`, { method: "POST" });
+    if (!res.ok) rowError.flash(id, "Couldn't resend — try again");
+    setBusyIds(prev => prev.filter(x => x !== id));
+  }
+
+  async function verifyCode() {
+    if (!verifyingId) return;
+    const ok = await verifySave.save(async () => {
+      const res = await apiFetch(`${API}/reminder-emails/${verifyingId}/verify`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: codeInput.trim() }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        flashVerifyError((isRecord(body) && typeof body.error === "string") ? body.error : "That code isn't right. Try again.");
+        return false;
+      }
+      return true;
+    });
+    if (ok) { setVerifyingId(null); setCodeInput(""); load(); }
+  }
+
+  async function activate(id: string) {
+    setBusyIds(prev => [...prev, id]);
+    const res = await apiFetch(`${API}/reminder-emails/${id}/activate`, { method: "POST" });
+    if (res.ok) load();
+    else rowError.flash(id, "Couldn't switch — try again");
+    setBusyIds(prev => prev.filter(x => x !== id));
+  }
+
+  async function del(id: string) {
+    setBusyIds(prev => [...prev, id]);
+    const res = await apiFetch(`${API}/reminder-emails/${id}`, { method: "DELETE" });
+    if (res.ok) { setConfirmDeleteId(null); load(); }
+    else rowError.flash(id, "Couldn't remove — try again");
+    setBusyIds(prev => prev.filter(x => x !== id));
+  }
+
+  async function handleSendTest() {
+    setSendingTest(true);
+    const ok = await onSendTestReminder();
+    setSendingTest(false);
+    flashTestMsg(ok ? "Test reminder sent — check your inbox" : "Couldn't send — try again");
+  }
+
+  return (
+    <div style={M.overlay}>
+      <ModalSheet title="Commitment Reminders" onClose={onClose}>
+        <button style={{ ...M.statusOpt, ...(remindersEnabled ? M.statusOptOn : {}) }} onClick={() => onSetRemindersEnabled(!remindersEnabled)}>
+          Commitment reminders: {remindersEnabled ? "On" : "Off"}
+        </button>
+
+        {remindersEnabled && (
+          <>
+            <div style={{ marginTop: 16 }}>
+              <div style={S.eyebrow}><span style={S.eyeText}>SENDS TO</span></div>
+              {(entries ?? []).map(entry => (
+                <div key={entry.id} style={{ ...S.card, marginTop: 8 }}>
+                  <div style={S.prioHeadRow}>
+                    <div style={{ flex: 1 }}>
+                      <div style={S.prioTitle}>{entry.email}</div>
+                      <div style={S.prioSub}>
+                        {entry.pending ? "Pending verification" : entry.active ? "Active — receiving reminders" : !entry.removable ? "Account email" : "Verified"}
+                      </div>
+                    </div>
+                    {!entry.pending && !entry.active && (
+                      <button style={S.prioLogLink} disabled={busyIds.includes(entry.id)} onClick={() => activate(entry.id)}>Make active</button>
+                    )}
+                  </div>
+                  {entry.pending && (
+                    verifyingId === entry.id ? (
+                      <div style={{ marginTop: 8 }}>
+                        <input style={M.input} value={codeInput} onChange={e => setCodeInput(e.target.value)} placeholder="6-digit code" inputMode="numeric" maxLength={6} />
+                        <TapError message={verifyError} />
+                        <SaveStatus status={verifySave.status} onRetry={verifyCode} />
+                        <div style={{ display: "flex", gap: 12, marginTop: 8 }}>
+                          <button style={S.prioLogLink} disabled={verifySave.status === "saving"} onClick={verifyCode}>{verifySave.status === "saving" ? "Verifying…" : "Verify"}</button>
+                          <button style={S.prioLogLink} disabled={busyIds.includes(entry.id)} onClick={() => resend(entry.id)}>{busyIds.includes(entry.id) ? "Sending…" : "Resend code"}</button>
+                          <button style={S.prioLogLink} onClick={() => setVerifyingId(null)}>Cancel</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", gap: 12, marginTop: 8 }}>
+                        <button style={S.prioLogLink} onClick={() => { setVerifyingId(entry.id); setCodeInput(""); }}>Enter code</button>
+                        <button style={S.prioLogLink} disabled={busyIds.includes(entry.id)} onClick={() => resend(entry.id)}>{busyIds.includes(entry.id) ? "Sending…" : "Resend code"}</button>
+                      </div>
+                    )
+                  )}
+                  {entry.removable && (
+                    confirmDeleteId === entry.id ? (
+                      <div style={{ marginTop: 6 }}>
+                        <div style={{ ...S.prioSub, color: "#C87060" }}>Remove this email? This can't be undone.</div>
+                        <button style={{ ...S.prioLogLink, color: "#C87060" }} disabled={busyIds.includes(entry.id)} onClick={() => del(entry.id)}>
+                          {busyIds.includes(entry.id) ? "Removing…" : "Yes, remove"}
+                        </button>
+                        <button style={{ ...S.prioLogLink, marginLeft: 12 }} onClick={() => setConfirmDeleteId(null)}>Cancel</button>
+                      </div>
+                    ) : (
+                      <button style={{ ...S.prioLogLink, color: "#C87060", marginTop: 6 }} onClick={() => setConfirmDeleteId(entry.id)}>Remove</button>
+                    )
+                  )}
+                  <TapError message={rowError.get(entry.id)} />
+                </div>
+              ))}
+            </div>
+
+            <div style={{ marginTop: 16 }}>
+              <div style={E.label}>ADD ANOTHER EMAIL{additionalCount >= MAX_REMINDER_EMAILS ? " (limit reached)" : ""}</div>
+              <input
+                style={M.input} value={newEmail} onChange={e => setNewEmail(e.target.value)}
+                placeholder="name@example.com" disabled={additionalCount >= MAX_REMINDER_EMAILS}
+              />
+              <TapError message={addError} />
+              <SaveStatus status={addSave.status} onRetry={addEmail} />
+              <button
+                style={{ ...M.next, marginTop: 8 }}
+                disabled={addSave.status === "saving" || additionalCount >= MAX_REMINDER_EMAILS}
+                onClick={addEmail}
+              >
+                {addSave.status === "saving" ? "Adding…" : "Add email"}
+              </button>
+            </div>
+
+            <div style={{ marginTop: 16 }}>
+              <button style={S.prioLogLink} disabled={sendingTest} onClick={handleSendTest}>{sendingTest ? "Sending…" : "Send test reminder"}</button>
+              {testMsg && <div style={S.prioSub}>{testMsg}</div>}
+            </div>
+          </>
+        )}
+
+        <button style={{ ...M.cancel, marginTop: 16 }} onClick={onClose}>Close</button>
       </ModalSheet>
     </div>
   );
@@ -3367,22 +3577,13 @@ function tasksMentionedIn(content: string, tasks: Task[]): Task[] {
   return tasks.filter(t => t.text.trim().length > 3 && lower.includes(t.text.trim().toLowerCase()));
 }
 
-function StewardChat({ messages, input, setInput, send, sending, tasks, onOpenPriority, tone, onSetTone, suggestedTone, remindersEnabled, onSetRemindersEnabled, onSendTestReminder }: {
+function StewardChat({ messages, input, setInput, send, sending, tasks, onOpenPriority, tone, onSetTone, suggestedTone }: {
   messages: Message[]; input: string; setInput: (v: string) => void; send: () => void; sending: boolean; tasks: Task[]; onOpenPriority: (t: Task) => void;
   tone: ToneVoice; onSetTone: (t: ToneVoice) => void; suggestedTone: ToneVoice | null;
-  remindersEnabled: boolean; onSetRemindersEnabled: (enabled: boolean) => void; onSendTestReminder: () => Promise<boolean>;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
   const scrollFade = useBottomScrollFade<HTMLDivElement>();
-  const { error: reminderMsg, flash: flashReminderMsg } = useTapError();
-  const [sendingTest, setSendingTest] = useState(false);
-  async function handleSendTest() {
-    setSendingTest(true);
-    const ok = await onSendTestReminder();
-    setSendingTest(false);
-    flashReminderMsg(ok ? "Test reminder sent — check your inbox" : "Couldn't send — try again");
-  }
   return (
     <div style={S.chatWrap}>
       <div style={{ padding: "4px 18px 0" }}>
@@ -3396,17 +3597,6 @@ function StewardChat({ messages, input, setInput, send, sending, tasks, onOpenPr
           {(["straight_talk", "middle_of_the_road", "take_it_easy"] as const).map(t => (
             <button key={t} style={{ ...S.toneOpt, ...(tone === t ? S.toneOptOn : {}) }} onClick={() => onSetTone(t)}>{TONE_LABEL[t]}</button>
           ))}
-        </div>
-        <div style={S.remindersRow}>
-          <button style={{ ...S.toneOpt, flex: "none", padding: "7px 14px" }} onClick={() => onSetRemindersEnabled(!remindersEnabled)}>
-            Commitment reminders: {remindersEnabled ? "On" : "Off"}
-          </button>
-          {remindersEnabled && (
-            <button style={S.chatPrioChip} disabled={sendingTest} onClick={handleSendTest}>
-              {sendingTest ? "Sending…" : "Send test reminder"}
-            </button>
-          )}
-          {reminderMsg && <span style={S.pageSub}>{reminderMsg}</span>}
         </div>
       </div>
       <div ref={scrollFade.ref} style={S.chatMsgs}>
@@ -5061,7 +5251,6 @@ const S: Record<string, CSSProperties> = {
   toneRow: { display: "flex", gap: 6, marginBottom: 14, marginTop: -4 },
   toneOpt: { flex: 1, background: "rgba(24,20,12,0.55)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 14, color: C.parchmentDim, fontSize: 14, fontWeight: 600, padding: "7px 4px", cursor: "pointer", fontFamily: F },
   toneOptOn: { borderColor: C.brass, background: "rgba(216,170,62,0.16)", color: C.parchment },
-  remindersRow: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 14, marginTop: -4 },
   logRow: { display: "flex", gap: 8, marginBottom: 14 },
   logInput: { flex: 1, background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: "12px 14px", outline: "none", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
   logBtn: { background: `linear-gradient(135deg,${C.walnutMid},${C.walnut})`, border: "none", borderRadius: 12, color: C.parchment, fontSize: 14, fontWeight: 700, padding: "12px 18px", cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,220,160,0.15)" },
