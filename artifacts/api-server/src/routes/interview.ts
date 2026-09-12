@@ -177,6 +177,47 @@ async function persistExtractedPursuits(userId: string, profileData: unknown): P
   }
 }
 
+// #92 — the fields "Redo the Interview" (a fresh onboarding conversation
+// run again later) and "Edit My Answers" (the direct form) both operate on.
+// Deliberately excludes relationships/pursuits (their own tables now, never
+// read back from profile.data) and voice (has its own Steward-tab toggle,
+// though a redo's answer to the directness question still flows into it
+// via the generic merge below — no special-casing needed).
+const ONBOARDING_ANSWER_KEYS = ["name", "season_of_life", "core_identity", "planning_profile", "guardrails"] as const;
+
+// A redo interview's extraction writes null (or an empty array) for
+// anything the new conversation didn't happen to cover — merging instead
+// of overwriting means a redo only updates what it actually touched, not
+// wipe everything else back to blank. `voice` merges the same generic way
+// as the top-level string fields, even though it isn't in
+// ONBOARDING_ANSWER_KEYS (only used for display/editing there) — a redo's
+// answer to the directness question should still update it.
+function mergeOnboardingFields(oldData: unknown, newData: unknown): Record<string, unknown> {
+  const old = isRecord(oldData) ? oldData : {};
+  const fresh = isRecord(newData) ? newData : {};
+  const merged: Record<string, unknown> = { ...old };
+  for (const key of [...ONBOARDING_ANSWER_KEYS, "voice"]) {
+    const freshVal = fresh[key];
+    if (freshVal === null || freshVal === undefined) continue;
+    if (isRecord(freshVal)) {
+      // One level of nested-object merge (core_identity, planning_profile,
+      // guardrails) — a null/absent/empty-array leaf keeps the old value,
+      // anything else overwrites it.
+      const oldNested = isRecord(old[key]) ? old[key] : {};
+      const mergedNested: Record<string, unknown> = { ...oldNested };
+      for (const [k, v] of Object.entries(freshVal)) {
+        if (v === null || v === undefined) continue;
+        if (Array.isArray(v) && v.length === 0) continue;
+        mergedNested[k] = v;
+      }
+      merged[key] = mergedNested;
+    } else {
+      merged[key] = freshVal;
+    }
+  }
+  return merged;
+}
+
 // GET /api/profile
 router.get("/profile", async (req: Request, res: Response) => {
   try {
@@ -247,6 +288,53 @@ router.patch("/profile", async (req: Request, res: Response) => {
   } catch (err) {
     req.log?.error({ err }, "Error updating profile");
     res.status(500).json({ error: "Failed to update profile" });
+  }
+});
+
+// PATCH /api/profile/answers (#92) — "Edit My Answers": a direct form over
+// the onboarding-derived fields, no AI conversation involved. Each key
+// present in the body fully replaces that top-level field (the client
+// always submits the complete current state of whatever section it's
+// editing, so there's no need for the redo interview's null-preserving
+// merge here) — a key simply absent from the body is left untouched.
+router.patch("/profile/answers", async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const body = req.body as Record<string, unknown>;
+    const updates: Record<string, unknown> = {};
+    for (const key of ONBOARDING_ANSWER_KEYS) {
+      if (body[key] === undefined) continue;
+      if (key === "name" || key === "season_of_life") {
+        if (typeof body[key] !== "string") {
+          res.status(400).json({ error: `${key} must be a string` });
+          return;
+        }
+      } else if (!isRecord(body[key])) {
+        res.status(400).json({ error: `${key} must be an object` });
+        return;
+      }
+      updates[key] = body[key];
+    }
+    if (Object.keys(updates).length === 0) {
+      res.status(400).json({ error: `Provide at least one of: ${ONBOARDING_ANSWER_KEYS.join(", ")}` });
+      return;
+    }
+
+    const [existing] = await db.select().from(profileTable).where(eq(profileTable.userId, userId)).limit(1);
+    const existingData = isRecord(existing?.data) ? existing.data : {};
+    const data = { ...existingData, ...updates };
+
+    await db
+      .insert(profileTable)
+      .values({ userId, data, onboarded: existing?.onboarded ?? false, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: profileTable.userId,
+        set: { data, updatedAt: new Date() },
+      });
+    res.json({ data: normalizeProfileData(data) });
+  } catch (err) {
+    req.log?.error({ err }, "Error updating profile answers");
+    res.status(500).json({ error: "Failed to update profile answers" });
   }
 });
 
@@ -366,6 +454,15 @@ router.post("/interview", aiRateLimit, async (req: Request, res: Response) => {
 
     // Check if interview is complete, or force it once the question cap is hit
     if (assistantText.includes("[INTERVIEW_COMPLETE]") || userCount >= TOTAL_INTERVIEW_QUESTIONS) {
+      // #92 — "Redo the Interview" reuses this exact completion path. The
+      // `onboarded` flag only ever flips true once and a redo never resets
+      // it (see /interview/restart below), so its value going into this
+      // completion already tells us whether this is someone's first-ever
+      // finish (persist relationships/pursuits, use the extraction as-is)
+      // or a redo (merge into what's already saved, skip relationships/
+      // pursuits entirely to avoid inserting duplicate People/Pursuits rows).
+      const [existingProfileRow] = await db.select().from(profileTable).where(eq(profileTable.userId, userId)).limit(1);
+      const isRedo = existingProfileRow?.onboarded === true;
       try {
         const allMessages = await db
           .select()
@@ -391,43 +488,54 @@ router.post("/interview", aiRateLimit, async (req: Request, res: Response) => {
           // best-effort extraction
         }
 
-        await persistExtractedRelationships(userId, profileData);
-        await persistExtractedPursuits(userId, profileData);
+        if (!isRedo) {
+          await persistExtractedRelationships(userId, profileData);
+          await persistExtractedPursuits(userId, profileData);
+        }
         // Relationships and pursuits live in their own tables now — don't
         // also keep a stale copy in the jsonb blob.
         if (isRecord(profileData)) {
           delete profileData.relationships;
           delete profileData.pursuits;
-          // Helpful Hints (#83) — show automatically for a brand new user's
-          // first login, even though the general default (normalizeProfileData)
-          // is off.
-          profileData.hintsEnabled = true;
+          if (!isRedo) {
+            // Helpful Hints (#83) — show automatically for a brand new
+            // user's first login, even though the general default
+            // (normalizeProfileData) is off. A redo leaves whatever the
+            // user already has for this alone.
+            profileData.hintsEnabled = true;
+          }
         } else {
-          profileData = { hintsEnabled: true };
+          profileData = isRedo ? {} : { hintsEnabled: true };
         }
+
+        const finalData = isRedo ? mergeOnboardingFields(existingProfileRow?.data, profileData) : profileData;
 
         await db
           .insert(profileTable)
-          .values({ userId, data: profileData, onboarded: true, updatedAt: new Date() })
+          .values({ userId, data: finalData, onboarded: true, updatedAt: new Date() })
           .onConflictDoUpdate({
             target: profileTable.userId,
-            set: { data: profileData, onboarded: true, updatedAt: new Date() },
+            set: { data: finalData, onboarded: true, updatedAt: new Date() },
           });
 
         const cleanMessage = assistantText.replace("[INTERVIEW_COMPLETE]", "").trimEnd();
-        res.json({ message: cleanMessage, questionNumber: TOTAL_INTERVIEW_QUESTIONS, complete: true, profile: profileData });
+        res.json({ message: cleanMessage, questionNumber: TOTAL_INTERVIEW_QUESTIONS, complete: true, profile: finalData });
         return;
       } catch (extractErr) {
         req.log?.error({ extractErr }, "Profile extraction failed");
-        // Still mark complete even if extraction failed — hintsEnabled: true
-        // for the same first-login reason as the success branch above.
-        await db
-          .insert(profileTable)
-          .values({ userId, data: { hintsEnabled: true }, onboarded: true, updatedAt: new Date() })
-          .onConflictDoUpdate({
-            target: profileTable.userId,
-            set: { onboarded: true, updatedAt: new Date() },
-          });
+        if (!isRedo) {
+          // Still mark complete even if extraction failed — hintsEnabled:
+          // true for the same first-login reason as the success branch above.
+          await db
+            .insert(profileTable)
+            .values({ userId, data: { hintsEnabled: true }, onboarded: true, updatedAt: new Date() })
+            .onConflictDoUpdate({
+              target: profileTable.userId,
+              set: { onboarded: true, updatedAt: new Date() },
+            });
+        }
+        // A redo's failed extraction leaves the already-saved profile
+        // untouched — nothing to merge, and onboarded was already true.
         const cleanMessage = assistantText.replace("[INTERVIEW_COMPLETE]", "").trimEnd();
         res.json({ message: cleanMessage, questionNumber: TOTAL_INTERVIEW_QUESTIONS, complete: true });
         return;
@@ -458,6 +566,28 @@ router.post("/interview/skip", async (req: Request, res: Response) => {
   } catch (err) {
     req.log?.error({ err }, "Error skipping interview");
     res.status(500).json({ error: "Failed to skip interview" });
+  }
+});
+
+// POST /api/interview/restart (#92) — "Redo the Interview" from Profile.
+// Clears the old conversation so /interview starts fresh (POST /interview's
+// "already started" branch would otherwise just return the tail of the
+// old, possibly months-old, transcript). Deliberately does NOT touch
+// profileTable — onboarded stays true throughout, which is exactly what
+// lets the completion handler above tell a redo apart from a first-ever
+// completion. The client passes ?restart=1 to /interview so that screen
+// skips its normal "already onboarded, bounce to /" redirect for this one
+// visit; if the user abandons here (closes the app, or hits Skip, which
+// leaves onboarded true and profile.data untouched), their existing
+// profile is unaffected.
+router.post("/interview/restart", async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    await db.delete(interviewMessages).where(eq(interviewMessages.userId, userId));
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, "Error restarting interview");
+    res.status(500).json({ error: "Failed to restart interview" });
   }
 });
 

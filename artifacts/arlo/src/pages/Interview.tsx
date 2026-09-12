@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { CSSProperties } from "react";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { useAuth } from "@workspace/replit-auth-web";
 import { apiFetch } from "../lib/apiFetch";
 import { useSpeech } from "../hooks/use-speech";
@@ -47,6 +47,10 @@ function MicIcon({ on }: { on: boolean }) {
 export default function Interview() {
   const { isLoading, isAuthenticated, login } = useAuth();
   const [, setLocation] = useLocation();
+  // #92 — "Redo the Interview" (Profile) already cleared the old
+  // conversation server-side and lands here with this param, so the
+  // already-onboarded bounce-to-"/" below doesn't fire for this one visit.
+  const isRestart = new URLSearchParams(useSearch()).get("restart") === "1";
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [questionNumber, setQuestionNumber] = useState(1);
@@ -71,7 +75,7 @@ export default function Interview() {
         const r = await apiFetch(`${API}/interview/history`, { credentials: "include" });
         if (!r.ok) return;
         const d = await r.json() as { messages: Message[]; questionNumber: number; onboarded: boolean };
-        if (d.onboarded) { setLocation("/"); return; }
+        if (d.onboarded && !isRestart) { setLocation("/"); return; }
         if (d.messages.length > 0) {
           setMessages(d.messages);
           setQuestionNumber(d.questionNumber);
