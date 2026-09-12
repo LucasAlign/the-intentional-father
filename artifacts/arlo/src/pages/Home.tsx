@@ -3831,6 +3831,7 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
             External calendars {hideExternal ? "hidden" : "shown"}
           </button>
         </div>
+        <div style={S.calendarHeaderLine} />
       </div>
       <FirstVisitTip id="week">See what's ahead — work, commitments, and calendar events together, scroll to see more.</FirstVisitTip>
       {days.map(d => {
@@ -5565,16 +5566,23 @@ const S: Record<string, CSSProperties> = {
   // S.scroll's own 16px top padding) makes the header's background hug the
   // very top edge of the scroll container instead of leaving a dead,
   // unstuck gap above it — same bleed technique the horizontal
-  // -18px margin already used, just extended to the top. Background uses
-  // the app's own `glass` gradient recipe (walnut-toned, not flat black)
-  // so it reads as consistent chrome rather than a washed-out overlay.
+  // -18px margin already used, just extended to the top. Background/blur
+  // mirrors R.navWrap (the bottom nav bar) — this app's one other piece of
+  // persistent chrome — rather than the warm walnut `glass` card gradient,
+  // which is meant for content cards floating on the page, not an overlay
+  // sitting on top of scrolling content. `calendarHeaderLine` below plays
+  // the same role as R.navLine: the brass divider that actually separates
+  // persistent chrome from the content underneath it.
   calendarHeader: {
     position: "sticky", top: -16, zIndex: 2,
-    background: "linear-gradient(158deg, rgba(46,40,26,0.96) 0%, rgba(20,18,11,0.98) 100%)",
-    backdropFilter: "blur(8px)",
+    background: "linear-gradient(180deg, rgba(8,10,5,0.97) 0%, rgba(8,10,5,0.90) 100%)",
+    backdropFilter: "blur(20px)",
     margin: "-16px -18px 14px", padding: "16px 18px 14px",
-    borderBottom: "1px solid rgba(210,190,130,0.22)",
-    boxShadow: "0 6px 18px rgba(0,0,0,0.45)",
+  },
+  calendarHeaderLine: {
+    position: "absolute", left: 0, right: 0, bottom: 0, height: 1,
+    background: `linear-gradient(90deg,transparent,${C.brassDeep},${C.brass},${C.brassDeep},transparent)`,
+    boxShadow: `0 0 10px ${C.brassGlow}`,
   },
   calendarMonthBar: { display: "flex", alignItems: "center", gap: 10, marginBottom: 10 },
   calendarMonthArrow: {
