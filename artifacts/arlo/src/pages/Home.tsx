@@ -1318,6 +1318,14 @@ function useSwipeReveal(canSwipeRight: boolean) {
   const velocity = useRef(0); // px/ms — drives how quickly the swipe cue snaps/fades on release
 
   function down(e: PointerEvent<HTMLDivElement>) {
+    // A press starting on a button (checkbox, expand arrow, Edit) shouldn't
+    // start a swipe-capture at all — capturing the pointer here redirects
+    // the eventual native "click" to this row div instead of the button
+    // underneath, which silently swallows the click for mouse users (touch
+    // taps aren't affected the same way, which is why this went unnoticed
+    // until testing with a mouse). Swiping still works from anywhere else
+    // on the row.
+    if ((e.target as HTMLElement).closest("button")) return;
     setStartX(e.clientX);
     baseOffset.current = offset;
     lastMove.current = { x: e.clientX, t: e.timeStamp };
