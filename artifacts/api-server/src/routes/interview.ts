@@ -12,6 +12,15 @@ const router = Router();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
 const TOTAL_INTERVIEW_QUESTIONS = 10;
 const MAX_INTERVIEW_MESSAGE_LENGTH = 4000;
+// #91 (reopened) — an explicit tap-able choice for "own a business" vs.
+// "work for someone else", layered on top of the conversational branching
+// PR #110 already built. Same marker mechanism [INTERVIEW_COMPLETE] uses:
+// the model embeds this tag in its own reply exactly when asking the
+// question; the server detects/strips it and attaches quickReplies to
+// that turn's response. Can fire more than once per interview (once per
+// work pursuit) — unlike [INTERVIEW_COMPLETE], which only ever fires once.
+const PURSUIT_TYPE_CHOICE_MARKER = "[PURSUIT_TYPE_CHOICE]";
+const PURSUIT_TYPE_QUICK_REPLIES = ["I own a business", "I work for someone else"];
 // Without this, a slow OpenAI response has no server-side bound — same gap
 // steward.ts's /chat route closed for the same reason (#68/#76): the
 // request just hangs, and POST /interview can chain two of these calls
@@ -37,7 +46,7 @@ Your mission: get to know them well enough to be genuinely useful across all of 
 Work through these 7 areas naturally, like a mentor conversation — not a form or checklist. You have up to 10 questions total, so use any extras to push deeper with a follow-up before moving on:
 1. Name, role, and season of life — ask this open-ended (single, dating, married, parenting young kids, empty nester, widowed, retired, or anything else). Don't assume marriage or kids.
 2. Their #1 priority — what comes first? What's non-negotiable?
-3. Their pursuits — a job, a business, a volunteer role, whatever they're actively working, one or more if they mentioned it. For each: what they do, any patterns or common blockers. If it's their own business, also ask naturally about team size (solo or with employees), a revenue or growth goal, and roughly how long they've been running it. If it's a job working for someone else, also ask who they report to and what career goal or next step they're working toward. Weave these in as part of the conversation, not a checklist.
+3. Their pursuits — a job, a business, a volunteer role, whatever they're actively working, one or more if they mentioned it. For each: what they do, any patterns or common blockers. If a pursuit sounds like paid work (a job or a business) and it isn't already clear which, ask directly — keep that question short, and end your message with this exact tag on its own line so it renders as tappable options: [PURSUIT_TYPE_CHOICE]. Once you know which: if it's their own business, also ask naturally about team size (solo or with employees), a revenue or growth goal, and roughly how long they've been running it; if it's a job working for someone else, also ask who they report to and what career goal or next step they're working toward. A volunteer role or hobby doesn't need this distinction — go straight to what they do and blockers. Weave all of this in as part of the conversation, not a checklist.
 4. Key relationships — who matters most to them right now given their season of life (a spouse, kids, parents, close friends, a mentee — whatever actually fits), names if they share them, and the biggest friction point in those relationships right now
 5. Where do plans stall? What drains decisions? Where does execution break down?
 6. Guardrails — what should you never suggest?
@@ -435,6 +444,14 @@ router.post("/interview", aiRateLimit, async (req: Request, res: Response) => {
 
     const assistantText = await callOpenAI(apiKey, INTERVIEW_SYSTEM_PROMPT, apiMessages);
 
+    // Strip the pursuit-type marker before persisting/displaying — the
+    // model shouldn't see its own internal tag echoed back on later turns,
+    // and it's never meant to reach the user as literal text.
+    const hasPursuitTypeChoice = assistantText.includes(PURSUIT_TYPE_CHOICE_MARKER);
+    const displayText = hasPursuitTypeChoice
+      ? assistantText.replace(PURSUIT_TYPE_CHOICE_MARKER, "").trimEnd()
+      : assistantText;
+
     // Save messages to DB (skip "start" trigger)
     if (!isStart) {
       await db.insert(interviewMessages).values({
@@ -446,7 +463,7 @@ router.post("/interview", aiRateLimit, async (req: Request, res: Response) => {
     await db.insert(interviewMessages).values({
       userId,
       role: "assistant",
-      content: assistantText,
+      content: displayText,
     });
 
     const userCount = existing.filter((m) => m.role === "user").length + (isStart ? 0 : 1);
@@ -542,7 +559,11 @@ router.post("/interview", aiRateLimit, async (req: Request, res: Response) => {
       }
     }
 
-    res.json({ message: assistantText, questionNumber });
+    res.json({
+      message: displayText,
+      questionNumber,
+      ...(hasPursuitTypeChoice ? { quickReplies: PURSUIT_TYPE_QUICK_REPLIES } : {}),
+    });
   } catch (err) {
     req.log?.error({ err }, "Interview error");
     res.status(500).json({ error: "Failed to get response from Steward" });

@@ -64,6 +64,11 @@ export default function Interview() {
   // "Redo the Interview" rerun (isRestart) — a returning user doesn't need
   // the map again.
   const [showTour, setShowTour] = useState(false);
+  // #91 (reopened) — tappable "I own a business" / "I work for someone
+  // else" options, offered by the server (via quickReplies) exactly when
+  // it's asking that question. Cleared at the start of every send() so a
+  // stale set never lingers past its own turn.
+  const [quickReplies, setQuickReplies] = useState<string[] | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
   const { listening, toggle: toggleMic } = useSpeech(setInput);
@@ -114,9 +119,10 @@ export default function Interview() {
         setMessages([{ role: "assistant", content: "Steward is connected, but onboarding failed (" + r.status + "): " + (errorText || "No error details returned.") }]);
         return;
       }
-      const d = await r.json() as { message: string; questionNumber: number; complete?: boolean };
+      const d = await r.json() as { message: string; questionNumber: number; complete?: boolean; quickReplies?: string[] };
       setMessages([{ role: "assistant", content: d.message }]);
       setQuestionNumber(d.questionNumber);
+      setQuickReplies(d.quickReplies ?? null);
       if (d.complete) setComplete(true);
     } catch {
       // ignore
@@ -126,10 +132,13 @@ export default function Interview() {
     }
   }
 
-  async function send() {
-    const text = input.trim();
+  // #91 (reopened) — an optional override lets tapping a quick-reply chip
+  // send that exact text immediately, same as typing it and hitting send.
+  async function send(overrideText?: string) {
+    const text = (overrideText ?? input).trim();
     if (!text || sending) return;
-    setInput("");
+    setQuickReplies(null);
+    if (overrideText === undefined) setInput("");
     setMessages(prev => [...prev, { role: "user", content: text }]);
     setSending(true);
     try {
@@ -146,9 +155,10 @@ export default function Interview() {
         setMessages(prev => [...prev, { role: "assistant", content: "Steward is connected, but onboarding failed (" + r.status + "): " + (errorText || "No error details returned.") }]);
         return;
       }
-      const d = await r.json() as { message: string; questionNumber: number; complete?: boolean };
+      const d = await r.json() as { message: string; questionNumber: number; complete?: boolean; quickReplies?: string[] };
       setMessages(prev => [...prev, { role: "assistant", content: d.message }]);
       setQuestionNumber(d.questionNumber);
+      setQuickReplies(d.quickReplies ?? null);
       if (d.complete) setComplete(true);
     } catch {
       setMessages(prev => [...prev, { role: "assistant", content: "Something went wrong. Try again." }]);
@@ -237,6 +247,13 @@ export default function Interview() {
             <div style={{ ...R.bubbleText, color: C.parchmentDim }}>…</div>
           </div>
         )}
+        {quickReplies && !sending && (
+          <div style={R.quickReplies}>
+            {quickReplies.map(qr => (
+              <button key={qr} style={R.quickReplyBtn} onClick={() => send(qr)}>{qr}</button>
+            ))}
+          </div>
+        )}
         <div ref={endRef} />
       </div>
 
@@ -284,7 +301,7 @@ export default function Interview() {
             >
               <MicIcon on={listening} />
             </button>
-            <button style={R.sendBtn} disabled={sending || !input.trim()} onClick={send}>
+            <button style={R.sendBtn} disabled={sending || !input.trim()} onClick={() => send()}>
               <SendIcon />
             </button>
           </div>
@@ -356,6 +373,12 @@ const R: Record<string, CSSProperties> = {
     background: `linear-gradient(135deg,${C.walnut},${C.walnutMid})`,
     border: `1px solid ${C.walnutLite}50`,
     borderTopLeftRadius: 18, borderTopRightRadius: 5,
+  },
+  quickReplies: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4, marginBottom: 8 },
+  quickReplyBtn: {
+    background: "rgba(216,170,62,0.12)", border: `1px solid ${C.brass}`, borderRadius: 20,
+    color: C.parchment, fontSize: 13.5, fontWeight: 600, padding: "10px 16px",
+    cursor: "pointer", fontFamily: F,
   },
   inputWrap: {
     position: "relative", zIndex: 10,
