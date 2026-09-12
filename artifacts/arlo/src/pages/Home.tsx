@@ -33,7 +33,11 @@ const PURSUIT_CATEGORIES: PursuitCategory[] = ["job", "business", "volunteer", "
 const PURSUIT_CATEGORY_LABEL: Record<PursuitCategory, string> = { job: "Job", business: "Business", volunteer: "Volunteer", hobby: "Hobby", other: "Other" };
 interface Event { id: number; date: string; time: string; title: string; sub: string; tag: string; kind: string; }
 interface Message { role: "user" | "assistant"; content: string; }
-interface Journal { reflect: string; commit_text: string; }
+// commitTextDate (#94) is the date the Marriage Intention (commit_text) was
+// last actually saved — null until ever saved. Marriage Intention persists
+// until changed now, so this drives the "hasn't been updated in a while"
+// note; reflect stays exactly as it always was, today-only.
+interface Journal { reflect: string; commit_text: string; commitTextDate: string | null; }
 type RelationshipCategory = "spouse" | "child" | "family" | "friend" | "other";
 interface Relationship {
   id: number; name: string | null; category: RelationshipCategory; type: string;
@@ -619,7 +623,7 @@ export default function Home() {
   const [verseHistoryOpen, setVerseHistoryOpen] = useState(false);
   const [verseFavoritesOpen, setVerseFavoritesOpen] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [journal, setJournal] = useState<Journal>({ reflect: "", commit_text: "" });
+  const [journal, setJournal] = useState<Journal>({ reflect: "", commit_text: "", commitTextDate: null });
   const [commits, setCommits] = useState<Commit[]>([]);
   const [relationships, setRelationships] = useState<Relationship[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -645,6 +649,7 @@ export default function Home() {
   const [priorityDetail, setPriorityDetail] = useState<Task | null>(null);
   const [completedLogOpen, setCompletedLogOpen] = useState(false);
   const [journalHistoryOpen, setJournalHistoryOpen] = useState(false);
+  const [intentionHistoryOpen, setIntentionHistoryOpen] = useState(false);
   const [suggestedTone, setSuggestedTone] = useState<ToneVoice | null>(null);
 
   async function setTone(voice: ToneVoice) {
@@ -754,7 +759,9 @@ export default function Home() {
     getList<PulseCheckEntry>(`${API}/pulse-checks?date=${ymd(new Date())}`).then(setPulseChecks);
   }, []);
   const refreshJournal = useCallback(() => {
-    getJson(`${API}/journal`, null).then((d) => { if (isRecord(d)) setJournal({ reflect: String(d.reflect || ""), commit_text: String(d.commitText ?? d.commit_text ?? "") }); });
+    getJson(`${API}/journal`, null).then((d) => {
+      if (isRecord(d)) setJournal({ reflect: String(d.reflect || ""), commit_text: String(d.commitText ?? d.commit_text ?? ""), commitTextDate: typeof d.commitTextDate === "string" ? d.commitTextDate : null });
+    });
   }, []);
 
   async function savePulseCheck(category: PulseCategory, state: PulseState, note: string): Promise<boolean> {
@@ -798,7 +805,13 @@ export default function Home() {
   async function saveJournal(next: Journal): Promise<boolean> {
     try {
       const r = await apiFetch(`${API}/journal`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next) });
-      if (r.ok) { setJournal(next); return true; }
+      if (r.ok) {
+        // Only bump commitTextDate when the intention itself actually
+        // changed (#94) — a reflect-only save shouldn't reset its clock.
+        const commitChanged = next.commit_text !== journal.commit_text;
+        setJournal({ ...next, commitTextDate: commitChanged ? ymd(new Date()) : journal.commitTextDate });
+        return true;
+      }
       return false;
     } catch {
       return false;
@@ -874,7 +887,7 @@ export default function Home() {
       </header>
 
       <main style={R.screen}>
-        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} onOpenJournalHistory={() => setJournalHistoryOpen(true)} onToggleVerseFavorite={toggleVerseFavorite} onOpenVerseHistory={() => setVerseHistoryOpen(true)} onOpenVerseFavorites={() => setVerseFavoritesOpen(true)} />}
+        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} onOpenJournalHistory={() => setJournalHistoryOpen(true)} onOpenIntentionHistory={() => setIntentionHistoryOpen(true)} onToggleVerseFavorite={toggleVerseFavorite} onOpenVerseHistory={() => setVerseHistoryOpen(true)} onOpenVerseFavorites={() => setVerseFavoritesOpen(true)} />}
         {tab === "her" && <Relationships relationships={relationships} refreshRelationships={refreshRelationships} commits={commits} refreshCommits={refreshCommits} />}
         {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} onOpenClosed={() => setClosedPursuitsOpen(true)} onOpenDeletedJobs={() => setDeletedJobsOpen(true)} />}
         {tab === "sphere" && <Sphere />}
@@ -913,6 +926,7 @@ export default function Home() {
       {priorityDetail && <PriorityDetailModal task={priorityDetail} onClose={() => setPriorityDetail(null)} onChanged={refreshTasks} />}
       {completedLogOpen && <CompletedLogModal onClose={() => setCompletedLogOpen(false)} onChanged={refreshTasks} />}
       {journalHistoryOpen && <JournalHistoryModal onClose={() => setJournalHistoryOpen(false)} onSaved={refreshJournal} />}
+      {intentionHistoryOpen && <IntentionHistoryModal relationships={relationships} onClose={() => setIntentionHistoryOpen(false)} onCommitSaved={refreshCommits} onRelationshipAdded={refreshRelationships} />}
       {verseHistoryOpen && <VerseHistoryModal onClose={() => setVerseHistoryOpen(false)} onToggleFavorite={toggleVerseFavorite} />}
       {verseFavoritesOpen && <VerseFavoritesModal onClose={() => setVerseFavoritesOpen(false)} onToggleFavorite={toggleVerseFavorite} />}
     </div>
@@ -943,14 +957,14 @@ function ProfileMenu({ name, email, onClose, onLogout, hintsEnabled, onSetHintsE
 }
 
 // ── Today ───────────────────────────────────────────────────────────────────
-function Today({ verse, tasks, journal, events, name, profile, relationships, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks, onOpenPriority, onViewCompleted, pulseChecks, onSavePulseCheck, onOpenJournalHistory, onToggleVerseFavorite, onOpenVerseHistory, onOpenVerseFavorites }: {
+function Today({ verse, tasks, journal, events, name, profile, relationships, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks, onOpenPriority, onViewCompleted, pulseChecks, onSavePulseCheck, onOpenJournalHistory, onOpenIntentionHistory, onToggleVerseFavorite, onOpenVerseHistory, onOpenVerseFavorites }: {
   verse: VerseEntry | null; tasks: Task[]; journal: Journal; events: Event[]; name?: string | null;
   profile: ProfileData | null; relationships: Relationship[]; primaryRel: Relationship | null;
   onSend: (m?: string) => void; ci: string; setCi: (v: string) => void; sending: boolean;
   onSaveJournal: (j: Journal) => Promise<boolean>; refreshTasks: () => void;
   onOpenPriority: (t: Task) => void; onViewCompleted: () => void;
   pulseChecks: PulseCheckEntry[]; onSavePulseCheck: (category: PulseCategory, state: PulseState, note: string) => Promise<boolean>;
-  onOpenJournalHistory: () => void;
+  onOpenJournalHistory: () => void; onOpenIntentionHistory: () => void;
   onToggleVerseFavorite: (ref: string, favorite: boolean, customId?: number) => Promise<boolean>; onOpenVerseHistory: () => void; onOpenVerseFavorites: () => void;
 }) {
   const [intent, setIntent] = useState(journal.commit_text);
@@ -964,6 +978,14 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   const reflectSave = useSaveStatus();
   const addTaskSave = useSaveStatus();
   useEffect(() => { setIntent(journal.commit_text); setReflect(journal.reflect); }, [journal.commit_text, journal.reflect]);
+  // #94 — Marriage Intention persists until changed; this is the "hasn't
+  // been updated in a while" note, purely informational, gone the moment
+  // it's saved again (commitTextDate bumps on save, see saveJournal).
+  const INTENTION_STALE_DAYS = 7;
+  const intentionStaleDays = journal.commitTextDate
+    ? Math.round((new Date(ymd(new Date())).getTime() - new Date(journal.commitTextDate).getTime()) / 86400000)
+    : null;
+  const intentionStale = intentionStaleDays !== null && intentionStaleDays >= INTENTION_STALE_DAYS;
 
   const [favoritingVerse, setFavoritingVerse] = useState(false);
   const { error: verseFavError, flash: flashVerseFavError } = useTapError();
@@ -1082,7 +1104,10 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
       </div>
 
       <div style={S.cardCentered}>
-        <div style={S.eyebrow}><Icon name="heart" /><span style={S.eyeText}>{intentionLabel}</span></div>
+        <div style={{ ...S.prioHeadRow, width: "100%" }}>
+          <div style={{ ...S.eyebrow, marginBottom: 0 }}><Icon name="heart" /><span style={S.eyeText}>{intentionLabel}</span></div>
+          <button style={S.prioLogLink} onClick={onOpenIntentionHistory}>History ›</button>
+        </div>
         <textarea
           style={S.intentInput}
           value={intent}
@@ -1092,6 +1117,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
           onBlur={() => { if (intent !== journal.commit_text) introSave.save(() => onSaveJournal({ ...journal, commit_text: intent })); }}
         />
         <SaveStatus status={introSave.status} onRetry={() => introSave.save(() => onSaveJournal({ ...journal, commit_text: intent }))} />
+        {intentionStale && <div style={{ fontSize: 12, color: C.brassSoft, marginTop: 6 }}>You haven't updated this in a while.</div>}
       </div>
 
       <div style={S.card}>
@@ -1992,12 +2018,12 @@ async function createAdHocRelationship(name: string, category: RelationshipCateg
 // creation flow, and the free-text Commitments field's current value seeds
 // the commitment text. Neither carries any special meaning once saved: a
 // later edit treats everyone the same.
-function CommitLogModal({ relationships, lockedPerson, initialText, onClose, onSaved, onRelationshipAdded }: {
-  relationships: Relationship[]; lockedPerson?: { id: number; label: string }; initialText?: string;
+function CommitLogModal({ relationships, lockedPerson, initialText, defaultNewCategory, onClose, onSaved, onRelationshipAdded }: {
+  relationships: Relationship[]; lockedPerson?: { id: number; label: string }; initialText?: string; defaultNewCategory?: RelationshipCategory;
   onClose: () => void; onSaved: () => void; onRelationshipAdded: () => void;
 }) {
   const [relationshipIds, setRelationshipIds] = useState<number[]>(lockedPerson ? [lockedPerson.id] : []);
-  const [newCategory, setNewCategory] = useState<RelationshipCategory | "">("");
+  const [newCategory, setNewCategory] = useState<RelationshipCategory | "">(defaultNewCategory ?? "");
   const [newName, setNewName] = useState("");
   const [addToTribe, setAddToTribe] = useState(false);
   const [text, setText] = useState(initialText ?? "");
@@ -4045,6 +4071,131 @@ function JournalHistoryModal({ onClose, onSaved }: { onClose: () => void; onSave
         <button style={M.cancel} onClick={onClose}>Close</button>
       </ModalSheet>
     </div>
+  );
+}
+
+interface IntentionHistoryEntry { date: string; commitText: string; }
+
+// Marriage Intention's own History (#94) — separate from Journal History
+// above (that one edits raw daily reflect/intention rows; this one is a
+// read-mostly log of every date the intention actually changed, since it
+// only ever writes a new row on a real change, plus the Select-mode
+// multi-transfer into Tribe Commitments). Capped server-side at 6 months.
+function IntentionHistoryModal({ relationships, onClose, onCommitSaved, onRelationshipAdded }: {
+  relationships: Relationship[]; onClose: () => void; onCommitSaved: () => void; onRelationshipAdded: () => void;
+}) {
+  const [entries, setEntries] = useState<IntentionHistoryEntry[] | null>(null);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedDates, setSelectedDates] = useState<string[]>([]);
+  const [transferQueue, setTransferQueue] = useState<IntentionHistoryEntry[] | null>(null);
+  const scrollFade = useBottomScrollFade<HTMLDivElement>();
+
+  useEffect(() => {
+    getJson(`${API}/journal/intention-history`, null).then(d => {
+      setEntries(isRecord(d) && Array.isArray(d.items) ? d.items as IntentionHistoryEntry[] : []);
+    });
+  }, []);
+
+  function toggleSelected(date: string) {
+    setSelectedDates(prev => prev.includes(date) ? prev.filter(d => d !== date) : [...prev, date]);
+  }
+  function exitSelectMode() {
+    setSelectMode(false);
+    setSelectedDates([]);
+  }
+  function startTransfer() {
+    if (!entries || selectedDates.length === 0) return;
+    setTransferQueue(entries.filter(e => selectedDates.includes(e.date)));
+  }
+  function finishTransfer() {
+    setTransferQueue(null);
+    exitSelectMode();
+  }
+
+  return (
+    <div style={M.overlay}>
+      <ModalSheet title="Marriage Intention History" onClose={onClose}>
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+          <button style={S.prioLogLink} onClick={() => (selectMode ? exitSelectMode() : setSelectMode(true))}>
+            {selectMode ? "Cancel select" : "Select"}
+          </button>
+        </div>
+        <div ref={scrollFade.ref} style={S.scrollCap5}>
+          {scrollFade.showFade && <div style={S.scrollFadeCue} />}
+          {(entries ?? []).map(entry => (
+            <div key={entry.date} style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 14 }}>
+              {selectMode && (
+                <input
+                  type="checkbox"
+                  checked={selectedDates.includes(entry.date)}
+                  onChange={() => toggleSelected(entry.date)}
+                  style={{ marginTop: 4 }}
+                  aria-label={`Select intention from ${entry.date}`}
+                />
+              )}
+              <div style={{ flex: 1 }}>
+                <div style={S.prioSub}>{entry.date}</div>
+                <div style={S.prioTitle}>{entry.commitText}</div>
+              </div>
+            </div>
+          ))}
+          {entries && entries.length === 0 && <div style={S.empty}>Nothing here yet — change today's intention on the Today tab and it'll show up here.</div>}
+        </div>
+        {selectMode && (
+          <button style={{ ...M.next, ...(selectedDates.length === 0 ? { opacity: 0.4, pointerEvents: "none" } : {}) }} onClick={startTransfer}>
+            Transfer{selectedDates.length > 0 ? ` ${selectedDates.length}` : ""} to Commitments
+          </button>
+        )}
+        <button style={M.cancel} onClick={onClose}>Close</button>
+      </ModalSheet>
+      {transferQueue && (
+        <IntentionTransferModal
+          queue={transferQueue}
+          relationships={relationships}
+          onDone={finishTransfer}
+          onCommitSaved={onCommitSaved}
+          onRelationshipAdded={onRelationshipAdded}
+        />
+      )}
+    </div>
+  );
+}
+
+// Steps through one pre-filled Log a Commitment modal per selected
+// intention (#94) — closing (whether by a successful save, which
+// auto-closes, or an explicit Cancel) always advances to the next one, so
+// you can edit, skip, or bail on any of them along the way without losing
+// your place in the rest of the queue.
+function IntentionTransferModal({ queue, relationships, onDone, onCommitSaved, onRelationshipAdded }: {
+  queue: IntentionHistoryEntry[]; relationships: Relationship[];
+  onDone: () => void; onCommitSaved: () => void; onRelationshipAdded: () => void;
+}) {
+  const [index, setIndex] = useState(0);
+  const current = queue[index];
+  if (!current) { onDone(); return null; }
+
+  // Not perfectly race-free: if the very first item creates a brand-new
+  // Spouse relationship, a same-session later item could still render
+  // before that refetch lands and offer "add new" again rather than
+  // finding it. Rare (only hits a multi-select transfer with zero
+  // existing Spouse relationship), and self-corrects on the next open.
+  const spouse = relationships.find(r => r.category === "spouse");
+
+  function advance() {
+    if (index + 1 >= queue.length) onDone();
+    else setIndex(i => i + 1);
+  }
+
+  return (
+    <CommitLogModal
+      relationships={relationships}
+      lockedPerson={spouse ? { id: spouse.id, label: relationshipLabel(spouse) } : undefined}
+      defaultNewCategory={spouse ? undefined : "spouse"}
+      initialText={current.commitText}
+      onClose={advance}
+      onSaved={onCommitSaved}
+      onRelationshipAdded={onRelationshipAdded}
+    />
   );
 }
 

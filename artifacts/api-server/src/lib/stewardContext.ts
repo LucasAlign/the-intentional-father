@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, lt } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, ne } from "drizzle-orm";
 import { db, journalEntries, tasks, taskCompletions, pulseChecks, commits, commitRelationshipTargets, relationships, type Relationship, sphereChecks } from "@workspace/db";
 import { isSlipping, type RecurrencePeriod } from "./priorityPeriods";
 import { PULSE_STATE_LABEL, type PulseState } from "./pulseCheck";
@@ -59,8 +59,14 @@ export async function buildTodayContext(userId: string, today: string): Promise<
   earliestTrendDate.setUTCDate(earliestTrendDate.getUTCDate() - SPHERE_TREND_WEEKS * 7);
   const earliestTrendWeekStart = getWeekStart(earliestTrendDate);
 
-  const [recentJournal, openTasks, todayPulse, openCommits, thisWeekSphere, priorSphereWeeks] = await Promise.all([
+  const [recentJournal, latestIntention, openTasks, todayPulse, openCommits, thisWeekSphere, priorSphereWeeks] = await Promise.all([
     db.select().from(journalEntries).where(eq(journalEntries.userId, userId)).orderBy(desc(journalEntries.date)).limit(3),
+    // Marriage Intention persists until changed (#94) — a separate query
+    // since recentJournal above is capped at 3 *dates*, which could miss an
+    // intention that's been sitting unchanged far longer than that.
+    db.select({ commitText: journalEntries.commitText, date: journalEntries.date }).from(journalEntries)
+      .where(and(eq(journalEntries.userId, userId), ne(journalEntries.commitText, '')))
+      .orderBy(desc(journalEntries.date)).limit(1),
     db.select().from(tasks).where(and(eq(tasks.userId, userId), eq(tasks.done, false), eq(tasks.deleted, false))).orderBy(desc(tasks.createdAt)).limit(5),
     db.select().from(pulseChecks).where(and(eq(pulseChecks.userId, userId), eq(pulseChecks.date, today))),
     db.select().from(commits).where(and(eq(commits.userId, userId), eq(commits.done, false), eq(commits.deleted, false))).orderBy(desc(commits.createdAt)).limit(5),
@@ -80,6 +86,14 @@ export async function buildTodayContext(userId: string, today: string): Promise<
       if (entry.commitText) context += `- (${entry.date}) Commit: ${entry.commitText}\n`;
     });
     context += '\n';
+  }
+
+  const INTENTION_STALE_DAYS = 7;
+  if (latestIntention.length > 0) {
+    const daysSinceIntention = Math.floor((new Date(today).getTime() - new Date(latestIntention[0]!.date).getTime()) / 86400000);
+    if (daysSinceIntention >= INTENTION_STALE_DAYS) {
+      context += `## Marriage Intention hasn't been updated in ${daysSinceIntention} days:\n- Last one (${latestIntention[0]!.date}): "${latestIntention[0]!.commitText.slice(0, 150)}"\n\n`;
+    }
   }
 
   if (openTasks.length > 0) {

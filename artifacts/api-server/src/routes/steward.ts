@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import { db, withUserSession } from "@workspace/db";
 import { journalEntries, chatMessages, tasks, taskCompletions, commits, commitRelationshipTargets, type Commit, jobs, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit, verseFavorites, customVerses, sphereChecks } from "@workspace/db";
-import { eq, desc, asc, gte, lte, and, isNull, isNotNull, inArray, notInArray, sql } from "drizzle-orm";
+import { eq, desc, asc, gte, lte, and, ne, isNull, isNotNull, inArray, notInArray, sql } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
 import { normalizeProfileData, isToneVoice, DEFAULT_TONE_VOICE, type ProfileData, type ToneVoice } from "../lib/profile";
 import { aiRateLimit } from "../middlewares/aiRateLimit";
@@ -123,6 +123,7 @@ Guidelines:
 - If a recurring priority is flagged slipping (its streak just broke), mention it directly when relevant — but only when it's genuinely notable, not as routine commentary on ordinary progress.
 - If today's Pulse Check shows a category clearly down, ask about it directly rather than letting it pass unmentioned — name which one (physical, mental, or spiritual) and what they noted, if anything. A category that's notably strong is worth acknowledging too. Don't force commentary on every check-in — only when it's genuinely notable, the same restraint as the slipping-priority guideline above.
 - If this week's Sphere check-in shows a category (Family, Yourself, Community, Provision, or Leadership) clearly down, or the trend shows it's been down for multiple weeks running, bring it up — but start general ("how's things been going with your health lately" rather than naming a specific struggle they haven't raised themselves) and let them steer how far into it you go. Don't dodge what's actually true, though — if they open the door, walk through it honestly rather than staying vague to be polite. Use their note if they left one, and never open by naming a sensitive specific (e.g. never lead with "what's the addiction you're still struggling with") — that's for them to bring up, not you to assume. A category that's notably strong, or one that just turned a corner after a rough stretch, is worth acknowledging too. Same restraint as Pulse Check: only when genuinely notable, not routine commentary on every check-in.
+- If their Marriage Intention hasn't been updated in a week or more, it's worth a gentle nudge — not guilt, just a direct "what's your intention for your marriage this week?" kind of question. Same restraint as the other check-ins above: only when it's actually been a while, not routine commentary.
 - Hold them accountable to commitments they've made to the people who matter most to them, by name where you know it — the same way you'd hold a brother to a promise.
 - If an open commitment is flagged overdue or due soon, or has sat logged a week or more with no due date, ask about it directly by name and who it was made to — the same restraint as the stuck-task guideline above, not routine commentary on every commitment.
 - Encourage real relationships and real action, never foster dependence on the app.${doNotSuggest}${alwaysRemind}${toneDelivery}
@@ -573,15 +574,49 @@ router.get('/chat-history', async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/journal
+// GET /api/journal — reflect stays exactly what it always was: today-only,
+// blank until written today. Marriage Intention (commitText, #94) now
+// persists until changed instead: this returns the most recent date with a
+// non-empty commit_text, not strictly today's row. commitTextDate lets the
+// client compute staleness itself (client-local "today", same convention as
+// Sphere/tasks) rather than trusting this server-UTC-derived one.
 router.get('/journal', async (req: Request, res: Response) => {
   try {
     const today = new Date().toISOString().split('T')[0];
-    const rows = await db.select().from(journalEntries).where(and(eq(journalEntries.userId, req.user!.id), eq(journalEntries.date, today))).limit(1);
-    res.json(rows[0] || null);
+    const [todayRow, latestIntention] = await Promise.all([
+      db.select().from(journalEntries).where(and(eq(journalEntries.userId, req.user!.id), eq(journalEntries.date, today))).limit(1),
+      db.select({ commitText: journalEntries.commitText, date: journalEntries.date }).from(journalEntries)
+        .where(and(eq(journalEntries.userId, req.user!.id), ne(journalEntries.commitText, '')))
+        .orderBy(desc(journalEntries.date)).limit(1),
+    ]);
+    res.json({
+      reflect: todayRow[0]?.reflect ?? '',
+      commitText: latestIntention[0]?.commitText ?? '',
+      commitTextDate: latestIntention[0]?.date ?? null,
+    });
   } catch (err) {
     req.log?.error({ err }, 'Error fetching journal entry');
     res.status(500).json({ error: 'Failed to fetch journal entry' });
+  }
+});
+
+// GET /api/journal/intention-history — Marriage Intention's own History
+// (#94), separate from the general Journal History modal: only dates with
+// a real saved intention (a no-op save never creates a row, so every row
+// here is a genuine change), capped to the last 6 months like Sphere's.
+const INTENTION_HISTORY_MONTHS = 6;
+router.get('/journal/intention-history', async (req: Request, res: Response) => {
+  try {
+    const cutoff = new Date();
+    cutoff.setUTCMonth(cutoff.getUTCMonth() - INTENTION_HISTORY_MONTHS);
+    const cutoffDate = cutoff.toISOString().split('T')[0];
+    const items = await db.select({ date: journalEntries.date, commitText: journalEntries.commitText }).from(journalEntries)
+      .where(and(eq(journalEntries.userId, req.user!.id), ne(journalEntries.commitText, ''), gte(journalEntries.date, cutoffDate)))
+      .orderBy(desc(journalEntries.date));
+    res.json({ items });
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching intention history');
+    res.status(500).json({ error: 'Failed to fetch intention history' });
   }
 });
 
