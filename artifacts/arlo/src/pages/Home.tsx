@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useId, useContext, createContext } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, useId, useContext, createContext } from "react";
 import type { CSSProperties, ReactElement, ReactNode, PointerEvent } from "react";
 import { useAuth } from "@workspace/replit-auth-web";
 import { useLocation } from "wouter";
@@ -350,7 +350,7 @@ function TapError({ message }: { message: string | null }) {
 }
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
-type IconName = "book" | "heart" | "target" | "cal" | "clock" | "pen" | "chat" | "sun" | "work" | "user" | "send" | "mic" | "globe";
+type IconName = "book" | "heart" | "target" | "cal" | "clock" | "pen" | "chat" | "sun" | "work" | "user" | "send" | "mic" | "globe" | "sync";
 function Icon({ name, size = 15, color = C.brassSoft, stroke = 1.6 }: { name: IconName; size?: number; color?: string; stroke?: number }) {
   const p = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: color, strokeWidth: stroke, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
   const m: Record<IconName, ReactElement> = {
@@ -367,6 +367,7 @@ function Icon({ name, size = 15, color = C.brassSoft, stroke = 1.6 }: { name: Ic
     send: <path d="M3 11l18-8-8 18-2-7-8-3z" fill={color} stroke="none" />,
     mic: <><path d="M12 1a3 3 0 0 1 3 3v8a3 3 0 0 1-6 0V4a3 3 0 0 1 3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" /></>,
     globe: <><circle cx="12" cy="12" r="9" /><ellipse cx="12" cy="12" rx="4" ry="9" /><line x1="3.3" y1="8.5" x2="20.7" y2="8.5" /><line x1="3.3" y1="15.5" x2="20.7" y2="15.5" /></>,
+    sync: <><path d="M21 12a9 9 0 0 1-15.5 6.36" /><path d="M3 12a9 9 0 0 1 15.5-6.36" /><path d="M21 3v6h-6" /><path d="M3 21v-6h6" /></>,
   };
   // Every icon in the app is decorative — paired with a visible label, or
   // sitting inside a button that carries its own aria-label — so it's
@@ -503,14 +504,40 @@ function weekStartYmd(d: Date): string {
   sunday.setDate(d.getDate() - d.getDay());
   return ymd(sunday);
 }
-function weekDays() {
-  const now = new Date();
-  const dow = (now.getDay() + 6) % 7; // Monday = 0
-  const monday = new Date(now); monday.setHours(0, 0, 0, 0); monday.setDate(now.getDate() - dow);
-  return Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(monday); d.setDate(monday.getDate() + i);
-    return { key: ymd(d), day: d.toLocaleDateString("en-US", { weekday: "short" }), label: d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) };
-  });
+// #115 — the Calendar tab's continuous-scroll range: a generous bounded
+// window, not truly infinite, so scrolling and the sync button only ever
+// work over data already fetched once — no fetch-on-scroll plumbing
+// needed. 1 month back for context, 6 months forward since this tab is
+// primarily forward-looking (planning), matching this app's other
+// fixed-window history views (Sphere's 12-week dashboard, 6-month
+// history) rather than true infinite scroll.
+function addMonths(d: Date, delta: number): Date {
+  const nd = new Date(d);
+  nd.setMonth(nd.getMonth() + delta);
+  return nd;
+}
+function calendarRange(): { start: Date; end: Date } {
+  const start = addMonths(new Date(), -1);
+  start.setDate(1);
+  const end = addMonths(new Date(), 6);
+  return { start, end };
+}
+interface CalendarDay { key: string; day: string; label: string; monthKey: string; monthLabel: string }
+function calendarDays(): CalendarDay[] {
+  const { start, end } = calendarRange();
+  const days: CalendarDay[] = [];
+  const cur = new Date(start);
+  while (cur <= end) {
+    days.push({
+      key: ymd(cur),
+      day: cur.toLocaleDateString("en-US", { weekday: "short" }),
+      label: cur.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+      monthKey: `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}`,
+      monthLabel: cur.toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+    });
+    cur.setDate(cur.getDate() + 1);
+  }
+  return days;
 }
 
 
@@ -735,6 +762,15 @@ export default function Home() {
     return getJson(`${API}/verse`, null).then((v) => v && setVerse(v as VerseEntry));
   }, []);
 
+  // #115 — shared by the mount effect and the Calendar tab's sync button,
+  // so tapping sync can't drift from what a fresh load would show. Every
+  // GET /coming-up call is already a live Google Calendar pull with no
+  // caching layer to bypass, so re-running this is a genuine full refresh.
+  const refreshWeek = useCallback(() => {
+    const { start, end } = calendarRange();
+    return getList<Event>(`${API}/coming-up?start=${ymd(start)}&end=${ymd(end)}`).then(setWeek);
+  }, []);
+
   const refreshProfile = useCallback(() => {
     return getJson(`${API}/profile`, null).then((d) => { if (isRecord(d) && isRecord(d.data)) setProfile(d.data as unknown as ProfileData); });
   }, []);
@@ -829,17 +865,15 @@ export default function Home() {
       })
       .catch(() => {});
 
-    const days = weekDays();
-    const start = days[0].key, end = days[6].key;
     refreshVerse();
     refreshJournal();
     getList<Event>(`${API}/coming-up`).then(setToday);
-    getList<Event>(`${API}/coming-up?start=${start}&end=${end}`).then(setWeek);
+    refreshWeek();
     getList<Message>(`${API}/chat-history`).then((m) => setChat(prev => prev.length ? prev : m));
     getJson(`${API}/admin/is-admin`, { isAdmin: false }).then((d) => setIsAdmin(isRecord(d) && d.isAdmin === true));
     refreshProfile();
     refreshTasks(); refreshCommits(); refreshJobs(); refreshCalendarStatus(); refreshPulseChecks(); refreshRelationships(); refreshPursuits();
-  }, [isAuthenticated, setLocation, refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus, refreshPulseChecks, refreshRelationships, refreshPursuits, refreshJournal, refreshProfile]);
+  }, [isAuthenticated, setLocation, refreshTasks, refreshCommits, refreshJobs, refreshCalendarStatus, refreshPulseChecks, refreshRelationships, refreshPursuits, refreshJournal, refreshProfile, refreshWeek]);
 
   async function saveJournal(next: Journal): Promise<boolean> {
     try {
@@ -931,7 +965,7 @@ export default function Home() {
         {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} onOpenClosed={() => setClosedPursuitsOpen(true)} onOpenDeletedJobs={() => setDeletedJobsOpen(true)} />}
         {tab === "sphere" && <Sphere />}
         {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} />}
-        {tab === "week" && <WeekView events={week} jobs={jobs} pursuits={pursuits} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await apiFetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
+        {tab === "week" && <WeekView events={week} jobs={jobs} pursuits={pursuits} calendarAccounts={calendarAccounts} onRefresh={refreshWeek} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await apiFetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
       </main>
 
       <div style={R.navWrap}>
@@ -3671,8 +3705,14 @@ function useWeekVisibilityToggle(key: string): [boolean, () => void] {
   return [hidden, toggle];
 }
 
-function WeekView({ events, jobs, pursuits, calendarAccounts, onConnectCalendar, onDisconnectCalendar }: { events: Event[]; jobs: Job[]; pursuits: Pursuit[]; calendarAccounts: string[]; onConnectCalendar: () => void; onDisconnectCalendar: (email: string) => void }) {
-  const days = weekDays();
+function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConnectCalendar, onDisconnectCalendar }: {
+  events: Event[]; jobs: Job[]; pursuits: Pursuit[]; calendarAccounts: string[];
+  onRefresh: () => Promise<void>; onConnectCalendar: () => void; onDisconnectCalendar: (email: string) => void;
+}) {
+  // #115 — a fixed, generous window (see calendarRange) computed once per
+  // mount, not on every render; the whole scroll happens client-side over
+  // this already-loaded list, no fetch-on-scroll.
+  const days = useMemo(() => calendarDays(), []);
   const todayKey = ymd(new Date());
   const pursuitNameById = new Map(pursuits.map(p => [p.id, p.name]));
   const datedWork = jobs
@@ -3688,12 +3728,82 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onConnectCalendar,
     !(hideCommitments && e.tag === "Commitment") && !(hideExternal && e.tag === "Google Calendar"));
   const calendarEvents = [...visibleEvents, ...datedWork].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
   const scrollFade = useBottomScrollFade<HTMLDivElement>();
+
+  // One entry per distinct month in `days`, in order — drives both the
+  // sticky header's label and the prev/next arrows' scroll targets.
+  const months = useMemo(() => {
+    const list: { key: string; label: string; firstDayKey: string }[] = [];
+    for (const d of days) {
+      if (list.length === 0 || list[list.length - 1].key !== d.monthKey) {
+        list.push({ key: d.monthKey, label: d.monthLabel, firstDayKey: d.key });
+      }
+    }
+    return list;
+  }, [days]);
+  const todayMonthKey = days.find(d => d.key === todayKey)?.monthKey ?? months[0]?.key ?? "";
+  const [currentMonthKey, setCurrentMonthKey] = useState(todayMonthKey);
+  const [showJumpToday, setShowJumpToday] = useState(false);
+  const dayRefs = useRef(new Map<string, HTMLDivElement>());
+
+  // Tracks which month is "current" (the last month-start row that's
+  // scrolled past the sticky header) and whether today's row is off-screen,
+  // so the jump-to-today button only shows up when it's actually useful.
+  useEffect(() => {
+    const el = scrollFade.ref.current;
+    if (!el) return;
+    function update() {
+      if (!el) return;
+      const elTop = el.getBoundingClientRect().top;
+      let current = months[0]?.key ?? "";
+      for (const m of months) {
+        const rowEl = dayRefs.current.get(m.firstDayKey);
+        if (!rowEl) continue;
+        if (rowEl.getBoundingClientRect().top - elTop <= 60) current = m.key;
+        else break;
+      }
+      setCurrentMonthKey(current);
+      const todayEl = dayRefs.current.get(todayKey);
+      if (todayEl) {
+        const rect = todayEl.getBoundingClientRect();
+        const elRect = el.getBoundingClientRect();
+        setShowJumpToday(rect.top < elRect.top || rect.bottom > elRect.bottom);
+      }
+    }
+    update();
+    el.addEventListener("scroll", update, { passive: true });
+    return () => el.removeEventListener("scroll", update);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [months]);
+
+  function scrollToDay(key: string) {
+    dayRefs.current.get(key)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+  const currentMonthIndex = months.findIndex(m => m.key === currentMonthKey);
+  function jumpMonth(delta: number) {
+    const target = months[currentMonthIndex + delta];
+    if (target) scrollToDay(target.firstDayKey);
+  }
+
+  const [syncing, setSyncing] = useState(false);
+  async function handleSync() {
+    setSyncing(true);
+    try { await onRefresh(); } finally { setSyncing(false); }
+  }
+
   return (
     <div ref={scrollFade.ref} style={S.scroll}>
       {scrollFade.showFade && <div style={S.scrollFadeCue} />}
-      <div style={S.pageTitle}>This Week</div>
-      <div style={S.pageSub}>Work, commitments, and calendar events in one pass.</div>
-      <FirstVisitTip id="week">See what's ahead — work, commitments, and calendar events together, one week at a time.</FirstVisitTip>
+      <div style={S.calendarMonthBar}>
+        <button style={{ ...S.calendarMonthArrow, ...(currentMonthIndex <= 0 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => jumpMonth(-1)} aria-label="Previous month">‹</button>
+        <div style={S.calendarMonthLabel}>{months[currentMonthIndex]?.label ?? ""}</div>
+        <button style={{ ...S.calendarMonthArrow, ...(currentMonthIndex >= months.length - 1 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => jumpMonth(1)} aria-label="Next month">›</button>
+        <button style={S.calendarSyncBtn} onClick={handleSync} disabled={syncing} aria-label="Refresh calendar" title="Refresh calendar">
+          <Icon name="sync" size={15} color={C.parchmentMid} stroke={1.8} />
+        </button>
+      </div>
+      <div style={S.pageTitle}>Calendar</div>
+      <div style={S.pageSub}>Work, commitments, and calendar events — scroll ahead or back.</div>
+      <FirstVisitTip id="week">See what's ahead — work, commitments, and calendar events together, scroll to see more.</FirstVisitTip>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
         <button style={{ ...E.chip, ...(hideCommitments ? { opacity: 0.5 } : { borderColor: C.brass, color: C.brass }) }} onClick={toggleCommitments}>
           Commitments {hideCommitments ? "hidden" : "shown"}
@@ -3707,7 +3817,11 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onConnectCalendar,
         const isToday = d.key === todayKey;
         const past = d.key < todayKey;
         return (
-          <div key={d.key} style={{ ...S.weekRow, ...(isToday ? S.weekToday : {}), ...(past ? { opacity: 0.3 } : {}) }}>
+          <div
+            key={d.key}
+            ref={el => { if (el) dayRefs.current.set(d.key, el); else dayRefs.current.delete(d.key); }}
+            style={{ ...S.weekRow, ...(isToday ? S.weekToday : {}), ...(past ? { opacity: 0.3 } : {}) }}
+          >
             <div style={S.weekL}><div style={{ ...S.weekDay, ...(isToday ? { color: C.brass } : {}) }}>{d.day}</div><div style={S.prioSub}>{d.label}</div></div>
             <div style={{ flex: 1 }}>
               {items.length === 0 ? <div style={S.prioSub}>—</div> : items.map(it => (
@@ -3731,6 +3845,9 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onConnectCalendar,
         <button style={S.calendarSmallBtn} onClick={onConnectCalendar}>Add Google Calendar</button>
       </div>
       <div style={{ height: 32 }} />
+      {showJumpToday && (
+        <button style={S.calendarJumpToday} onClick={() => scrollToDay(todayKey)}>Today</button>
+      )}
     </div>
   );
 }
@@ -5314,6 +5431,33 @@ const S: Record<string, CSSProperties> = {
   calendarBottom: { borderTop: "1px solid rgba(210,190,130,0.12)", marginTop: 8, paddingTop: 14, display: "flex", flexDirection: "column", gap: 8, alignItems: "stretch" },
   calendarAccount: { display: "flex", justifyContent: "space-between", alignItems: "center", color: C.parchmentDim, fontSize: 14 },
   calendarSmallBtn: { alignSelf: "stretch", background: "rgba(30,26,16,0.62)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 10, color: C.parchmentMid, fontSize: 14, fontWeight: 700, padding: "10px 12px", cursor: "pointer", fontFamily: F },
+  // #115 — sticky month header: stays pinned to the top of the tab's own
+  // scroll container (S.scroll) as the day list scrolls beneath it.
+  calendarMonthBar: {
+    position: "sticky", top: 0, zIndex: 2, display: "flex", alignItems: "center", gap: 10,
+    background: "rgba(10,9,5,0.92)", backdropFilter: "blur(6px)",
+    margin: "0 -18px 14px", padding: "10px 18px",
+    borderBottom: "1px solid rgba(210,190,130,0.14)",
+  },
+  calendarMonthArrow: {
+    background: "none", border: "1px solid rgba(210,190,130,0.28)", borderRadius: "50%",
+    width: 30, height: 30, color: C.brassSoft, fontSize: 16, cursor: "pointer", fontFamily: F,
+    display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+  },
+  calendarMonthLabel: { flex: 1, textAlign: "center", fontSize: 15, fontWeight: 700, color: C.parchment },
+  calendarSyncBtn: {
+    background: "none", border: "1px solid rgba(210,190,130,0.28)", borderRadius: "50%",
+    width: 30, height: 30, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+  },
+  // Floats fixed within the scroll viewport (same technique as
+  // scrollFadeCue — an absolutely-positioned child of S.scroll's own
+  // position:relative box doesn't move with the scrolled content).
+  calendarJumpToday: {
+    position: "absolute", bottom: 90, right: 18, zIndex: 3,
+    background: `linear-gradient(135deg,${C.brass},${C.brassDeep})`, border: "none",
+    borderRadius: 20, color: C.ink, fontSize: 13, fontWeight: 700, padding: "10px 18px",
+    cursor: "pointer", fontFamily: F, boxShadow: `0 4px 16px ${C.brassGlow}`,
+  },
 };
 const M: Record<string, CSSProperties> = {
   // The page behind (R.root's `background: C.ink`, #0C0E07) is already
