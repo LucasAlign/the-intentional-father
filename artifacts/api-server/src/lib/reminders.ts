@@ -14,7 +14,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import * as schema from "@workspace/db/schema";
-import { commits, profile as profileTable, usersTable, pool as poolExport, type Commit } from "@workspace/db";
+import { commits, profile as profileTable, reminderEmails, usersTable, pool as poolExport, type Commit } from "@workspace/db";
 import { resolveCommitWhoLabels } from "./stewardContext";
 import { isRecord } from "./profile";
 import { sendReminderDigest, isReminderDigestEmpty, type ReminderDigest } from "./email";
@@ -22,6 +22,18 @@ import { logger } from "./logger";
 
 type DbClient = NodePgDatabase<typeof schema>;
 type Pool = typeof poolExport;
+
+// #93 — the account's own login email is never stored as its own row (see
+// schema/steward.ts's note on reminderEmails); it's always the fallback
+// when no additional address has been verified and switched to active.
+// Shared by the test-send endpoint and the daily scan below so the two
+// can't drift on which address actually receives a reminder.
+export async function resolveActiveReminderEmail(dbClient: DbClient, userId: string, accountEmail: string | null): Promise<string | null> {
+  const [row] = await dbClient.select({ email: reminderEmails.email }).from(reminderEmails)
+    .where(and(eq(reminderEmails.userId, userId), eq(reminderEmails.active, true), eq(reminderEmails.verified, true)))
+    .limit(1);
+  return row?.email ?? accountEmail;
+}
 
 function todayUTC(): string {
   return new Date().toISOString().slice(0, 10);
@@ -95,9 +107,10 @@ export async function runReminderScan(pool: Pool): Promise<ReminderScanResult> {
       .leftJoin(profileTable, eq(profileTable.userId, usersTable.id));
 
     for (const u of users) {
-      if (!u.email) continue;
       const remindersEnabled = !(isRecord(u.profileData) && u.profileData.remindersEnabled === false);
       if (!remindersEnabled) continue;
+      const email = await resolveActiveReminderEmail(dbClient, u.id, u.email);
+      if (!email) continue;
       usersScanned++;
 
       try {
@@ -112,7 +125,7 @@ export async function runReminderScan(pool: Pool): Promise<ReminderScanResult> {
         const digest = await toDigest(dbClient, unreminded);
         if (isReminderDigestEmpty(digest)) continue;
 
-        await sendReminderDigest(u.email, digest);
+        await sendReminderDigest(email, digest);
 
         const now = new Date();
         const dueIds = [...unreminded.dueToday, ...unreminded.dueTomorrow].map((c) => c.id);

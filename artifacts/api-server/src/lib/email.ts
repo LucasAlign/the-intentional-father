@@ -114,3 +114,27 @@ export async function sendLoginCode(email: string, code: string): Promise<void> 
     throw new Error(`Resend error: ${error.message}`);
   }
 }
+
+// #93 — verifies a newly-added reminder email before it can be made active,
+// same dev/production fallback behavior as sendLoginCode (this also gates
+// an account setting change, not just a convenience notification).
+export async function sendReminderEmailVerificationCode(email: string, code: string): Promise<void> {
+  const resend = getResendClient();
+  if (!resend) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("RESEND_API_KEY not configured; cannot send verification code");
+    }
+    console.warn(`RESEND_API_KEY not configured; reminder-email verification code for ${email} is ${code}`);
+    return;
+  }
+
+  const { error } = await resend.emails.send({
+    from: FROM_EMAIL,
+    to: email,
+    subject: `Your Steward verification code: ${code}`,
+    html: `<p>To receive Steward commitment reminders at this address, enter this code:</p><p style="font-size:28px;font-weight:700;letter-spacing:6px;">${code}</p><p>This code expires in 10 minutes.</p>`,
+  });
+  if (error) {
+    throw new Error(`Resend error: ${error.message}`);
+  }
+}
