@@ -318,3 +318,25 @@ export const verseFavorites = pgTable("verse_favorites", {
 export const insertVerseFavoriteSchema = createInsertSchema(verseFavorites).omit({ id: true, createdAt: true });
 export type InsertVerseFavorite = z.infer<typeof insertVerseFavoriteSchema>;
 export type VerseFavorite = typeof verseFavorites.$inferSelect;
+
+// #96 — a user's own verses (manually typed, not from lib/verses.ts's curated
+// bank). `favorited` lives directly on the row rather than going through
+// verseFavorites — that table's ref namespace and unique constraint assume
+// every ref resolves against the global bank, which doesn't hold for
+// per-user free text. `favorited` is what makes a custom verse join the
+// daily/favorite rotation (lib/verses.ts); un-favoriting doesn't delete the
+// row, same as removing a bank favorite doesn't touch the bank. Never fed
+// into Steward's chat prompt — chat only ever quotes the human-checked bank.
+export const customVerses = pgTable("custom_verses", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  ref: text("ref").notNull(),
+  text: text("text").notNull(),
+  favorited: boolean("favorited").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertCustomVerseSchema = createInsertSchema(customVerses).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertCustomVerse = z.infer<typeof insertCustomVerseSchema>;
+export type CustomVerse = typeof customVerses.$inferSelect;

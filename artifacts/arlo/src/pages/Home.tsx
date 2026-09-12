@@ -43,8 +43,9 @@ const RELATIONSHIP_CATEGORIES: RelationshipCategory[] = ["spouse", "child", "fam
 const RELATIONSHIP_CATEGORY_LABEL: Record<RelationshipCategory, string> = { spouse: "Spouse", child: "Child", family: "Family", friend: "Friend", other: "Other" };
 type ToneVoice = "straight_talk" | "middle_of_the_road" | "take_it_easy";
 interface ProfileData { name?: string | null; season_of_life?: string | null; voice?: ToneVoice | null; remindersEnabled?: boolean | null; hintsEnabled?: boolean | null; dismissedHints?: string[] | null; }
-interface VerseEntry { ref: string; text: string; favorited: boolean; }
+interface VerseEntry { ref: string; text: string; favorited: boolean; custom?: boolean; id?: number; }
 interface VerseHistoryEntry extends VerseEntry { date: string; }
+interface MyVerse { id: number; ref: string; text: string; favorited: boolean; }
 type PulseCategory = "physical" | "mental" | "spiritual";
 type PulseState = "up" | "mid" | "down";
 interface PulseCheckEntry { category: PulseCategory; state: PulseState; note: string; }
@@ -694,13 +695,21 @@ export default function Home() {
     return getJson(`${API}/verse`, null).then((v) => v && setVerse(v as VerseEntry));
   }, []);
 
-  async function toggleVerseFavorite(ref: string, favorite: boolean): Promise<boolean> {
+  async function toggleVerseFavorite(ref: string, favorite: boolean, customId?: number): Promise<boolean> {
     try {
-      const res = await apiFetch(`${API}/verse-favorites`, {
-        method: favorite ? "POST" : "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ref }),
-      });
+      // A custom verse's favorited flag lives on its own row, not the
+      // bank's verse-favorites table (see #96) — different endpoint.
+      const res = customId
+        ? await apiFetch(`${API}/my-verses/${customId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ favorited: favorite }),
+          })
+        : await apiFetch(`${API}/verse-favorites`, {
+            method: favorite ? "POST" : "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ref }),
+          });
       if (res.ok) setVerse(v => (v && v.ref === ref ? { ...v, favorited: favorite } : v));
       return res.ok;
     } catch {
@@ -942,7 +951,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   onOpenPriority: (t: Task) => void; onViewCompleted: () => void;
   pulseChecks: PulseCheckEntry[]; onSavePulseCheck: (category: PulseCategory, state: PulseState, note: string) => Promise<boolean>;
   onOpenJournalHistory: () => void;
-  onToggleVerseFavorite: (ref: string, favorite: boolean) => Promise<boolean>; onOpenVerseHistory: () => void; onOpenVerseFavorites: () => void;
+  onToggleVerseFavorite: (ref: string, favorite: boolean, customId?: number) => Promise<boolean>; onOpenVerseHistory: () => void; onOpenVerseFavorites: () => void;
 }) {
   const [intent, setIntent] = useState(journal.commit_text);
   const [reflect, setReflect] = useState(journal.reflect);
@@ -961,7 +970,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   async function handleToggleVerseFavorite() {
     if (!verse || favoritingVerse) return;
     setFavoritingVerse(true);
-    const ok = await onToggleVerseFavorite(verse.ref, !verse.favorited);
+    const ok = await onToggleVerseFavorite(verse.ref, !verse.favorited, verse.custom ? verse.id : undefined);
     setFavoritingVerse(false);
     if (!ok) flashVerseFavError("Couldn't save — try again");
   }
@@ -1057,6 +1066,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
         {verse?.ref && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "center" }}>
             <div style={S.verseRef}>{verse.ref.toUpperCase()}</div>
+            {verse.custom && <span style={{ ...S.upTag, ...S.myVerseTag }}>MY VERSE</span>}
             <button
               style={S.verseStarBtn}
               onClick={handleToggleVerseFavorite}
@@ -4039,8 +4049,10 @@ function JournalHistoryModal({ onClose, onSaved }: { onClose: () => void; onSave
 }
 
 // #77 — last 5 days (today included), recomputed live by the server rather
-// than logged; see lib/verses.ts's getVerseHistoryForUser.
-function VerseHistoryModal({ onClose, onToggleFavorite }: { onClose: () => void; onToggleFavorite: (ref: string, favorite: boolean) => Promise<boolean> }) {
+// than logged; see lib/verses.ts's getVerseHistoryForUser. #96 adds a
+// separate "My Verses" section below it — not date-based, a straight list
+// of the user's own saved verses with Edit/Delete.
+function VerseHistoryModal({ onClose, onToggleFavorite }: { onClose: () => void; onToggleFavorite: (ref: string, favorite: boolean, customId?: number) => Promise<boolean> }) {
   const [entries, setEntries] = useState<VerseHistoryEntry[] | null>(null);
   const [togglingRef, setTogglingRef] = useState<string | null>(null);
 
@@ -4051,7 +4063,7 @@ function VerseHistoryModal({ onClose, onToggleFavorite }: { onClose: () => void;
   async function toggle(entry: VerseHistoryEntry) {
     if (togglingRef) return;
     setTogglingRef(entry.ref);
-    const ok = await onToggleFavorite(entry.ref, !entry.favorited);
+    const ok = await onToggleFavorite(entry.ref, !entry.favorited, entry.custom ? entry.id : undefined);
     if (ok) setEntries(list => list && list.map(e => (e.ref === entry.ref ? { ...e, favorited: !entry.favorited } : e)));
     else flashToggleError("Couldn't save — try again");
     setTogglingRef(null);
@@ -4073,36 +4085,165 @@ function VerseHistoryModal({ onClose, onToggleFavorite }: { onClose: () => void;
                 </button>
               </div>
               <div style={{ ...S.prioTitle, marginTop: 6 }}>{entry.text}</div>
-              <div style={S.verseRef}>{entry.ref.toUpperCase()}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={S.verseRef}>{entry.ref.toUpperCase()}</div>
+                {entry.custom && <span style={{ ...S.upTag, ...S.myVerseTag }}>MY VERSE</span>}
+              </div>
             </div>
           ))}
           {entries && entries.length === 0 && <div style={S.empty}>No history yet.</div>}
         </div>
         <TapError message={toggleError} />
+        <MyVersesSection />
         <button style={M.cancel} onClick={onClose}>Close</button>
       </ModalSheet>
     </div>
   );
 }
 
-function VerseFavoritesModal({ onClose, onToggleFavorite }: { onClose: () => void; onToggleFavorite: (ref: string, favorite: boolean) => Promise<boolean> }) {
-  const [entries, setEntries] = useState<{ ref: string; text: string }[] | null>(null);
-  const [removingRef, setRemovingRef] = useState<string | null>(null);
+// #96 — every verse the user has personally saved (manual entry only for
+// now — automated Lookup is deferred, see #103). Not date-based like the
+// list above it: a straight CRUD list with Edit and Delete, each verse
+// tagged "My Verse" wherever it's shown elsewhere in the app.
+function MyVersesSection() {
+  const [verses, setVerses] = useState<MyVerse[] | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editRef, setEditRef] = useState("");
+  const [editText, setEditText] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const editSave = useKeyedSaveStatus<string>();
+  const rowError = useKeyedTapError<number>();
 
+  const load = useCallback(() => { getList<MyVerse>(`${API}/my-verses`).then(setVerses); }, []);
+  useEffect(() => { load(); }, [load]);
+
+  function startEdit(v: MyVerse) {
+    setEditingId(v.id);
+    setEditRef(v.ref);
+    setEditText(v.text);
+  }
+
+  async function saveEdit(id: number) {
+    const trimmedRef = editRef.trim();
+    const trimmedText = editText.trim();
+    if (!trimmedRef || !trimmedText) return;
+    const ok = await editSave.save(String(id), async () => {
+      const res = await apiFetch(`${API}/my-verses/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ref: trimmedRef, text: trimmedText }),
+      });
+      return res.ok;
+    });
+    if (ok) {
+      setVerses(list => list && list.map(v => (v.id === id ? { ...v, ref: trimmedRef, text: trimmedText } : v)));
+      setEditingId(null);
+    } else {
+      rowError.flash(id, "Couldn't save — try again");
+    }
+  }
+
+  async function del(id: number) {
+    const res = await apiFetch(`${API}/my-verses/${id}`, { method: "DELETE" });
+    if (res.ok) {
+      setVerses(list => list && list.filter(v => v.id !== id));
+      setConfirmDeleteId(null);
+    } else {
+      rowError.flash(id, "Couldn't delete — try again");
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 20 }}>
+      <div style={S.eyebrow}>MY VERSES</div>
+      {(verses ?? []).map(v => (
+        <div key={v.id} style={{ ...S.card, marginTop: 10 }}>
+          {editingId === v.id ? (
+            <>
+              <input style={M.input} value={editRef} onChange={e => setEditRef(e.target.value)} placeholder="Reference (e.g. John 3:16)" />
+              <textarea style={{ ...M.input, marginTop: 8 }} rows={2} value={editText} onChange={e => setEditText(e.target.value)} placeholder="Verse text" />
+              <SaveStatus status={editSave.get(String(v.id))} onRetry={() => saveEdit(v.id)} />
+              <div style={{ display: "flex", gap: 12, marginTop: 8 }}>
+                <button style={S.prioLogLink} onClick={() => saveEdit(v.id)}>Save</button>
+                <button style={S.prioLogLink} onClick={() => setEditingId(null)}>Cancel</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ ...S.prioTitle }}>{v.text}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+                <div style={S.verseRef}>{v.ref.toUpperCase()}</div>
+                <span style={{ ...S.upTag, ...S.myVerseTag }}>MY VERSE</span>
+              </div>
+              <div style={{ display: "flex", gap: 12, marginTop: 8 }}>
+                <button style={S.prioLogLink} onClick={() => startEdit(v)}>Edit</button>
+                {confirmDeleteId === v.id ? (
+                  <>
+                    <button style={{ ...S.prioLogLink, color: "#C87060" }} onClick={() => del(v.id)}>Yes, delete</button>
+                    <button style={S.prioLogLink} onClick={() => setConfirmDeleteId(null)}>Cancel</button>
+                  </>
+                ) : (
+                  <button style={{ ...S.prioLogLink, color: "#C87060" }} onClick={() => setConfirmDeleteId(v.id)}>Delete</button>
+                )}
+              </div>
+              {confirmDeleteId === v.id && <div style={{ ...S.prioSub, color: "#C87060", marginTop: 4 }}>Delete this verse? This can't be undone.</div>}
+            </>
+          )}
+          <TapError message={rowError.get(v.id)} />
+        </div>
+      ))}
+      {verses && verses.length === 0 && <div style={S.empty}>No verses added yet — add your own from Favorite Verses.</div>}
+    </div>
+  );
+}
+
+function VerseFavoritesModal({ onClose, onToggleFavorite }: { onClose: () => void; onToggleFavorite: (ref: string, favorite: boolean, customId?: number) => Promise<boolean> }) {
+  const [entries, setEntries] = useState<{ ref: string; text: string; custom: boolean; id: number | null }[] | null>(null);
+  const [removingRef, setRemovingRef] = useState<string | null>(null);
   const { error: removeError, flash: flashRemoveError } = useTapError();
 
+  const [addOpen, setAddOpen] = useState(false);
+  const [newRef, setNewRef] = useState("");
+  const [newText, setNewText] = useState("");
+  const [newFavorited, setNewFavorited] = useState(true);
+  const addSave = useSaveStatus();
+  const { error: addError, flash: flashAddError } = useTapError();
+
   const load = useCallback(() => {
-    getList<{ ref: string; text: string }>(`${API}/verse-favorites`).then(setEntries);
+    getList<{ ref: string; text: string; custom: boolean; id: number | null }>(`${API}/verse-favorites`).then(setEntries);
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  async function remove(ref: string) {
+  async function remove(entry: { ref: string; custom: boolean; id: number | null }) {
     if (removingRef) return;
-    setRemovingRef(ref);
-    const ok = await onToggleFavorite(ref, false);
-    if (ok) setEntries(list => list && list.filter(e => e.ref !== ref));
+    setRemovingRef(entry.ref);
+    const ok = await onToggleFavorite(entry.ref, false, entry.custom && entry.id ? entry.id : undefined);
+    if (ok) setEntries(list => list && list.filter(e => e.ref !== entry.ref));
     else flashRemoveError("Couldn't save — try again");
     setRemovingRef(null);
+  }
+
+  async function addVerse() {
+    const trimmedRef = newRef.trim();
+    const trimmedText = newText.trim();
+    if (!trimmedRef || !trimmedText) {
+      flashAddError("A reference and verse text are required");
+      return;
+    }
+    const ok = await addSave.save(async () => {
+      const res = await apiFetch(`${API}/my-verses`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ref: trimmedRef, text: trimmedText, favorited: newFavorited }),
+      });
+      return res.ok;
+    });
+    if (ok) {
+      setNewRef(""); setNewText(""); setNewFavorited(true); setAddOpen(false);
+      load();
+    } else {
+      flashAddError("Couldn't add — try again");
+    }
   }
 
   return (
@@ -4112,8 +4253,11 @@ function VerseFavoritesModal({ onClose, onToggleFavorite }: { onClose: () => voi
           {(entries ?? []).map(entry => (
             <div key={entry.ref} style={S.card}>
               <div style={S.prioHeadRow}>
-                <div style={S.verseRef}>{entry.ref.toUpperCase()}</div>
-                <button style={S.verseStarBtn} onClick={() => remove(entry.ref)} disabled={removingRef === entry.ref} aria-label="Remove from favorites" aria-pressed={true}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={S.verseRef}>{entry.ref.toUpperCase()}</div>
+                  {entry.custom && <span style={{ ...S.upTag, ...S.myVerseTag }}>MY VERSE</span>}
+                </div>
+                <button style={S.verseStarBtn} onClick={() => remove(entry)} disabled={removingRef === entry.ref} aria-label="Remove from favorites" aria-pressed={true}>
                   <span style={{ color: C.brass }}>★</span>
                 </button>
               </div>
@@ -4123,6 +4267,31 @@ function VerseFavoritesModal({ onClose, onToggleFavorite }: { onClose: () => voi
           {entries && entries.length === 0 && <div style={S.empty}>No favorites yet — tap the star on Verse of the Day to save one.</div>}
         </div>
         <TapError message={removeError} />
+
+        <div style={{ marginTop: 16 }}>
+          {addOpen ? (
+            <div style={S.card}>
+              <div style={S.eyebrow}>ADD YOUR OWN VERSE</div>
+              <input style={{ ...M.input, marginTop: 8 }} value={newRef} onChange={e => setNewRef(e.target.value)} placeholder="Reference (e.g. John 3:16)" autoFocus />
+              <textarea style={{ ...M.input, marginTop: 8 }} rows={2} value={newText} onChange={e => setNewText(e.target.value)} placeholder="Verse text" />
+              <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, fontSize: 13, color: C.parchmentDim }}>
+                <input type="checkbox" checked={newFavorited} onChange={e => setNewFavorited(e.target.checked)} />
+                Favorite this verse (joins the rotation)
+              </label>
+              <TapError message={addError} />
+              <SaveStatus status={addSave.status} onRetry={addVerse} />
+              <div style={{ display: "flex", gap: 12, marginTop: 8 }}>
+                <button style={M.next} disabled={addSave.status === "saving"} onClick={addVerse}>
+                  {addSave.status === "saving" ? "Adding…" : "Add verse"}
+                </button>
+                <button style={M.cancel} onClick={() => setAddOpen(false)}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <button style={S.prioLogLink} onClick={() => setAddOpen(true)}>+ Add your own verse</button>
+          )}
+        </div>
+
         <button style={M.cancel} onClick={onClose}>Close</button>
       </ModalSheet>
     </div>
@@ -4441,6 +4610,7 @@ const S: Record<string, CSSProperties> = {
   upTag: { display: "inline-block", fontSize: 9, letterSpacing: "0.1em", borderRadius: 5, padding: "3px 8px", fontWeight: 600, border: "1px solid" },
   tagWork: { color: "#A8C888", background: "rgba(120,150,90,0.18)", borderColor: "rgba(150,180,110,0.4)" },
   tagHer: { color: "#D4A090", background: "rgba(160,90,70,0.18)", borderColor: "rgba(190,120,100,0.4)" },
+  myVerseTag: { color: C.brass, background: "rgba(180,140,80,0.14)", borderColor: "rgba(180,140,80,0.4)" },
   journalCard: { ...glass, padding: "16px 20px", marginBottom: 14, display: "flex", alignItems: "center", gap: 12 },
   journalText: { fontSize: 14, color: C.parchmentMid, marginTop: 2 },
   journalInput: { width: "100%", marginTop: 10, background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: "10px 12px", outline: "none", resize: "vertical", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
