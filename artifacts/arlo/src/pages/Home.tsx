@@ -27,10 +27,10 @@ interface Commit {
   relationshipIds: number[]; adHocName: string | null; adHocCategory: RelationshipCategory | null;
 }
 interface Job { id: number; biz: string; name: string; stage: string; due: string; pct: number; pursuitId: number | null; materials: string; budget: string; risk: string; }
-type PursuitCategory = "job" | "business" | "volunteer" | "other";
+type PursuitCategory = "job" | "business" | "volunteer" | "hobby" | "other";
 interface Pursuit { id: number; name: string; category: PursuitCategory; notes: string; }
-const PURSUIT_CATEGORIES: PursuitCategory[] = ["job", "business", "volunteer", "other"];
-const PURSUIT_CATEGORY_LABEL: Record<PursuitCategory, string> = { job: "Job", business: "Business", volunteer: "Volunteer", other: "Other" };
+const PURSUIT_CATEGORIES: PursuitCategory[] = ["job", "business", "volunteer", "hobby", "other"];
+const PURSUIT_CATEGORY_LABEL: Record<PursuitCategory, string> = { job: "Job", business: "Business", volunteer: "Volunteer", hobby: "Hobby", other: "Other" };
 interface Event { id: number; date: string; time: string; title: string; sub: string; tag: string; kind: string; }
 interface Message { role: "user" | "assistant"; content: string; }
 interface Journal { reflect: string; commit_text: string; }
@@ -174,6 +174,13 @@ function asList<T>(value: unknown): T[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// Today's Coming Up card is a fixed small column (#98) — keep whatever the
+// source's raw title is (a Google Calendar summary, a manual entry, a
+// commitment's text) short enough to fit and still read as a real title.
+function briefTitle(title: string, max = 30): string {
+  return title.length > max ? `${title.slice(0, max - 1).trimEnd()}…` : title;
 }
 
 async function getJson(url: string, fallback: unknown) {
@@ -628,6 +635,7 @@ export default function Home() {
   const [pursuitModal, setPursuitModal] = useState(false);
   const [editPursuit, setEditPursuit] = useState<Pursuit | null>(null);
   const [closedPursuitsOpen, setClosedPursuitsOpen] = useState(false);
+  const [deletedJobsOpen, setDeletedJobsOpen] = useState(false);
   const [closePursuitPrompt, setClosePursuitPrompt] = useState<Pursuit | null>(null);
   const [calendarAccounts, setCalendarAccounts] = useState<string[]>([]);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -859,7 +867,7 @@ export default function Home() {
       <main style={R.screen}>
         {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} onOpenJournalHistory={() => setJournalHistoryOpen(true)} onToggleVerseFavorite={toggleVerseFavorite} onOpenVerseHistory={() => setVerseHistoryOpen(true)} onOpenVerseFavorites={() => setVerseFavoritesOpen(true)} />}
         {tab === "her" && <Relationships relationships={relationships} refreshRelationships={refreshRelationships} commits={commits} refreshCommits={refreshCommits} />}
-        {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} onOpenClosed={() => setClosedPursuitsOpen(true)} />}
+        {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} onOpenClosed={() => setClosedPursuitsOpen(true)} onOpenDeletedJobs={() => setDeletedJobsOpen(true)} />}
         {tab === "sphere" && <Sphere />}
         {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} remindersEnabled={profile?.remindersEnabled ?? true} onSetRemindersEnabled={setRemindersEnabled} onSendTestReminder={sendTestReminder} />}
         {tab === "week" && <WeekView events={week} jobs={jobs} pursuits={pursuits} calendarAccounts={calendarAccounts} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await apiFetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
@@ -884,6 +892,7 @@ export default function Home() {
       {pursuitModal && <PursuitModal onClose={() => setPursuitModal(false)} onSaved={refreshPursuits} />}
       {editPursuit && <PursuitModal pursuit={editPursuit} onClose={() => setEditPursuit(null)} onSaved={refreshPursuits} onDeleted={() => { refreshPursuits(); refreshJobs(); }} onClosed={refreshPursuits} />}
       {closedPursuitsOpen && <PursuitsClosedModal onClose={() => setClosedPursuitsOpen(false)} onChanged={refreshPursuits} />}
+      {deletedJobsOpen && <JobsDeletedModal onClose={() => setDeletedJobsOpen(false)} onChanged={refreshJobs} />}
       {closePursuitPrompt && (
         <PursuitCloseFinishedPrompt
           pursuit={closePursuitPrompt}
@@ -1125,7 +1134,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
             {events.slice(0, 3).map((u, i, arr) => (
               <div key={u.id} style={{ ...S.upCol, ...(i < arr.length - 1 ? S.upBorder : {}) }}>
                 <div style={S.upTime}><Icon name="clock" size={12} color={C.brassSoft} /><span style={{ marginLeft: 5 }}>{u.time}</span></div>
-                <div style={S.upTitle}>{u.title}</div>
+                <div style={S.upTitle} title={u.title}>{briefTitle(u.title)}</div>
                 {u.sub && <div style={S.upSub}>{u.sub}</div>}
                 {u.tag && <div style={{ ...S.upTag, ...(u.kind === "her" ? S.tagHer : S.tagWork) }}>{u.tag}</div>}
               </div>
@@ -2413,9 +2422,9 @@ function PeopleDeletedModal({ onClose, onChanged }: { onClose: () => void; onCha
 }
 
 // ── Work ───────────────────────────────────────────────────────────────────
-function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit, onOpenClosed }: {
+function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit, onOpenClosed, onOpenDeletedJobs }: {
   jobs: Job[]; pursuits: Pursuit[]; onJob: () => void; onEdit: (j: Job) => void;
-  onAddPursuit: () => void; onEditPursuit: (p: Pursuit) => void; onOpenClosed: () => void;
+  onAddPursuit: () => void; onEditPursuit: (p: Pursuit) => void; onOpenClosed: () => void; onOpenDeletedJobs: () => void;
 }) {
   const pursuitIds = pursuits.map(p => p.id);
   const jobsByPursuit = new Map<number | null, Job[]>();
@@ -2447,7 +2456,8 @@ function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit, onOp
       <div style={S.pageTitle}>Work</div>
       <div style={S.pageSub}>Active jobs by pursuit. Tap a row to edit.</div>
       <FirstVisitTip id="work">Group your jobs under pursuits — a job, a business, a volunteer role — to see progress at a glance.</FirstVisitTip>
-      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 2 }}>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 16, marginBottom: 2 }}>
+        <button style={S.prioLogLink} onClick={onOpenDeletedJobs}>Deleted Jobs ›</button>
         <button style={S.prioLogLink} onClick={onOpenClosed}>Closed ›</button>
       </div>
       {pursuits.length === 0 && jobs.length === 0 ? (
@@ -2552,30 +2562,37 @@ function SphereLandscapeChart({ categories }: { categories: SphereDashboardCateg
   );
 }
 
-// Small sparkline-with-dots version of the same idea, for the 4-week window
-// shown under each category's own heading.
+// Small sparkline-with-dots version of the same idea, for the recent-weeks
+// window shown under each category's own heading. Ramps up from however many
+// weeks have actually been logged (1, 2, 3...) rather than always demanding
+// 4 (#88) — `weeks` is the full 12-week dashboard array, padded with "none"
+// placeholders back to before the user ever touched Sphere, and those
+// leading placeholders shouldn't count as gaps the way a genuinely skipped
+// week (one after their first-ever entry) still should.
 function SphereMiniMeter({ weeks }: { weeks: SphereWeek[] }) {
-  const n = weeks.length;
-  if (n < 2) return null;
-  const w = 100, h = 26;
-  const opac = sphereGhostOpacity(weeks);
-  const pts = weeks.map((wk, i) => {
-    const x = (i / (n - 1)) * w;
+  const firstLoggedIdx = weeks.findIndex(w => w.state !== "none");
+  if (firstLoggedIdx === -1) return null;
+  const shown = weeks.slice(Math.max(firstLoggedIdx, weeks.length - 4));
+  const n = shown.length;
+  const w = 132, h = 34;
+  const opac = sphereGhostOpacity(shown);
+  const pts = shown.map((wk, i) => {
+    const x = n > 1 ? (i / (n - 1)) * w : w / 2;
     const score = wk.state === "none" ? 0.5 : SPHERE_STATE_SCORE[wk.state];
-    return [x, h - 4 - score * (h - 8)] as const;
+    return [x, h - 5 - score * (h - 10)] as const;
   });
   const linePath = pts.map((p, i) => `${i === 0 ? "M" : "L"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
       <svg viewBox={`0 0 ${w} ${h}`} width={w} height={h} aria-hidden="true">
-        <path d={linePath} fill="none" stroke={C.brassSoft} strokeWidth={1.6} opacity={0.85} />
-        {weeks.map((wk, i) => {
+        {n > 1 && <path d={linePath} fill="none" stroke={C.brassSoft} strokeWidth={2} opacity={0.85} />}
+        {shown.map((wk, i) => {
           const [x, y] = pts[i]!;
-          if (wk.state === "none") return <circle key={i} cx={x} cy={y} r={2.2} fill="none" stroke={C.parchmentLow} strokeDasharray="1.5,1.5" opacity={0.6} />;
-          return <circle key={i} cx={x} cy={y} r={i === n - 1 ? 3 : 2.2} fill={PULSE_STATE_COLOR[wk.state]} opacity={i === n - 1 ? 1 : opac[i]} />;
+          if (wk.state === "none") return <circle key={i} cx={x} cy={y} r={2.8} fill="none" stroke={C.parchmentLow} strokeDasharray="1.5,1.5" opacity={0.6} />;
+          return <circle key={i} cx={x} cy={y} r={i === n - 1 ? 4 : 2.8} fill={PULSE_STATE_COLOR[wk.state]} opacity={i === n - 1 ? 1 : opac[i]} />;
         })}
       </svg>
-      <span style={{ fontSize: 10, color: C.parchmentLow }}>4-wk trend</span>
+      <span style={{ fontSize: 11, color: C.parchmentLow }}>{n === 1 ? "This week" : `${n}-wk trend`}</span>
     </div>
   );
 }
@@ -3054,7 +3071,7 @@ function Sphere() {
                   </>
                 )}
                 <button style={S.prioExpandBtn} onClick={() => setWalkthroughCategory(cat.id)}>Walk through this ›</button>
-                {dashCat && <div style={{ marginTop: 10 }}><SphereMiniMeter weeks={dashCat.weeks.slice(-4)} /></div>}
+                {dashCat && <div style={{ marginTop: 10 }}><SphereMiniMeter weeks={dashCat.weeks} /></div>}
               </div>
             );
           })}
@@ -3169,6 +3186,25 @@ function StewardChatBar({ input, setInput, send, sending }: { input: string; set
 }
 
 // ── Week ───────────────────────────────────────────────────────────────────
+// Toggles only hide items from This Week's view (#97) — never touch the
+// underlying data. Per-device, so localStorage rather than a profile field;
+// wrapped in try/catch same as FirstVisitTip's own localStorage use since
+// private browsing / blocked storage shouldn't break the toggle itself.
+function useWeekVisibilityToggle(key: string): [boolean, () => void] {
+  const storageKey = `steward:week-hide-${key}`;
+  const [hidden, setHidden] = useState(() => {
+    try { return localStorage.getItem(storageKey) === "1"; } catch { return false; }
+  });
+  function toggle() {
+    setHidden(prev => {
+      const next = !prev;
+      try { localStorage.setItem(storageKey, next ? "1" : "0"); } catch { /* private browsing, etc. */ }
+      return next;
+    });
+  }
+  return [hidden, toggle];
+}
+
 function WeekView({ events, jobs, pursuits, calendarAccounts, onConnectCalendar, onDisconnectCalendar }: { events: Event[]; jobs: Job[]; pursuits: Pursuit[]; calendarAccounts: string[]; onConnectCalendar: () => void; onDisconnectCalendar: (email: string) => void }) {
   const days = weekDays();
   const todayKey = ymd(new Date());
@@ -3176,7 +3212,15 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onConnectCalendar,
   const datedWork = jobs
     .map(j => jobCalendarEvent(j, (j.pursuitId !== null && pursuitNameById.get(j.pursuitId)) || ""))
     .filter((event): event is Event => Boolean(event));
-  const calendarEvents = [...events, ...datedWork].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+  // Commitments and Google Calendar events are tagged at the source
+  // (routes/steward.ts's GET /coming-up) specifically so these two toggles
+  // can filter them independently — no due-date field on Priorities yet
+  // (see #97), so there's no third toggle for those.
+  const [hideCommitments, toggleCommitments] = useWeekVisibilityToggle("commitments");
+  const [hideExternal, toggleExternal] = useWeekVisibilityToggle("external");
+  const visibleEvents = events.filter(e =>
+    !(hideCommitments && e.tag === "Commitment") && !(hideExternal && e.tag === "Google Calendar"));
+  const calendarEvents = [...visibleEvents, ...datedWork].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
   const scrollFade = useBottomScrollFade<HTMLDivElement>();
   return (
     <div ref={scrollFade.ref} style={S.scroll}>
@@ -3184,6 +3228,14 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onConnectCalendar,
       <div style={S.pageTitle}>This Week</div>
       <div style={S.pageSub}>Work, commitments, and calendar events in one pass.</div>
       <FirstVisitTip id="week">See what's ahead — work, commitments, and calendar events together, one week at a time.</FirstVisitTip>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        <button style={{ ...E.chip, ...(hideCommitments ? { opacity: 0.5 } : { borderColor: C.brass, color: C.brass }) }} onClick={toggleCommitments}>
+          Commitments {hideCommitments ? "hidden" : "shown"}
+        </button>
+        <button style={{ ...E.chip, ...(hideExternal ? { opacity: 0.5 } : { borderColor: C.brass, color: C.brass }) }} onClick={toggleExternal}>
+          External calendars {hideExternal ? "hidden" : "shown"}
+        </button>
+      </div>
       {days.map(d => {
         const items = calendarEvents.filter(e => e.date === d.key);
         const isToday = d.key === todayKey;
@@ -3306,6 +3358,9 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
   const [validationErr, setValidationErr] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [delErr, setDelErr] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [closeErr, setCloseErr] = useState("");
 
   async function save() {
     if (!name.trim()) { setValidationErr("Name is required."); return; }
@@ -3320,6 +3375,19 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
     });
   }
 
+  // Soft — reversible from the Deleted Jobs list (#89), same as
+  // PursuitModal's "Close Pursuit".
+  async function close() {
+    setClosing(true);
+    try {
+      const r = await apiFetch(`${API}/jobs/${job.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: true }) });
+      if (r.ok) { onDeleted(); onClose(); }
+      else { setCloseErr("Couldn't close. Try again."); setClosing(false); }
+    } catch { setCloseErr("Couldn't reach the server."); setClosing(false); }
+  }
+
+  // Permanent — gated behind an inline confirm (#89) so a single mistap
+  // can't lose a job with no way back, matching relationships' pattern.
   async function del() {
     setDeleting(true);
     try {
@@ -3373,9 +3441,74 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
         <TapError message={validationErr || null} />
         <SaveStatus status={saveStatus.status} onRetry={save} />
         <button style={M.next} disabled={saveStatus.status === "saving"} onClick={save}>{saveStatus.status === "saving" ? "Saving…" : "Save Changes"}</button>
+        <TapError message={closeErr || null} />
+        <button style={M.cancel} disabled={closing} onClick={close}>{closing ? "Closing…" : "Close Job"}</button>
         <TapError message={delErr || null} />
-        <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete Job"}</button>
+        {confirmDelete ? (
+          <div style={{ ...S.prioSub, marginTop: 4 }}>
+            Permanently delete this job? This can't be undone.
+            <button style={{ ...S.prioLogLink, color: "#C87060", marginLeft: 8 }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Yes, permanently delete"}</button>
+            <button style={{ ...S.prioLogLink, marginLeft: 12 }} disabled={deleting} onClick={() => setConfirmDelete(false)}>Cancel</button>
+          </div>
+        ) : (
+          <button style={{ ...M.cancel, color: "#C87060" }} onClick={() => setConfirmDelete(true)}>Delete permanently</button>
+        )}
         <button style={M.cancel} onClick={onClose}>Cancel</button>
+      </ModalSheet>
+    </div>
+  );
+}
+
+// Deleted-jobs history view (#89) — mirrors PursuitsClosedModal: a Reopen
+// action only, since "Delete permanently" in JobEditModal already covers
+// permanent removal separately.
+function JobsDeletedModal({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
+  const [deleted, setDeleted] = useState<Job[] | null>(null);
+  const [reopeningIds, setReopeningIds] = useState<number[]>([]);
+  const reopenError = useKeyedTapError<number>();
+  const scrollFade = useBottomScrollFade<HTMLDivElement>();
+
+  const load = useCallback(() => {
+    apiFetch(`${API}/jobs/deleted`).then(r => r.ok ? r.json() : null).then(d => setDeleted(d?.items ?? []));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function reopen(id: number) {
+    setReopeningIds(prev => [...prev, id]);
+    try {
+      const r = await apiFetch(`${API}/jobs/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deleted: false }) });
+      if (r.ok) {
+        setDeleted(prev => prev ? prev.filter(j => j.id !== id) : prev);
+        onChanged();
+        return;
+      }
+    } catch { /* fall through */ }
+    setReopeningIds(prev => prev.filter(item => item !== id));
+    reopenError.flash(id, "Couldn't reopen — try again");
+  }
+
+  return (
+    <div style={M.overlay}>
+      <ModalSheet title="Deleted Jobs" onClose={onClose}>
+        <div ref={scrollFade.ref} style={S.scrollCap5}>
+          {scrollFade.showFade && <div style={S.scrollFadeCue} />}
+          {(deleted ?? []).map(j => (
+            <div key={j.id} style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={S.prioTitle}>{j.name}</div>
+                  <div style={S.prioSub}>{[j.stage, j.due].filter(Boolean).join("  •  ") || "No stage or due date"}</div>
+                </div>
+                <button style={S.prioLogLink} disabled={reopeningIds.includes(j.id)} onClick={() => reopen(j.id)}>
+                  {reopeningIds.includes(j.id) ? "Reopening…" : "Reopen"}
+                </button>
+              </div>
+              <TapError message={reopenError.get(j.id)} />
+            </div>
+          ))}
+          {deleted && deleted.length === 0 && <div style={S.empty}>Nothing deleted yet.</div>}
+        </div>
+        <button style={M.cancel} onClick={onClose}>Close</button>
       </ModalSheet>
     </div>
   );
@@ -3392,6 +3525,7 @@ function PursuitModal({ pursuit, onClose, onSaved, onDeleted, onClosed }: {
   const [validationErr, setValidationErr] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [delErr, setDelErr] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [closing, setClosing] = useState(false);
   const [closeErr, setCloseErr] = useState("");
 
@@ -3457,7 +3591,15 @@ function PursuitModal({ pursuit, onClose, onSaved, onDeleted, onClosed }: {
         <TapError message={closeErr || null} />
         {pursuit && <button style={M.cancel} disabled={closing} onClick={close}>{closing ? "Closing…" : "Close Pursuit"}</button>}
         <TapError message={delErr || null} />
-        {pursuit && <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete Pursuit"}</button>}
+        {pursuit && (confirmDelete ? (
+          <div style={{ ...S.prioSub, marginTop: 4 }}>
+            Permanently delete this pursuit? This can't be undone.
+            <button style={{ ...S.prioLogLink, color: "#C87060", marginLeft: 8 }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Yes, permanently delete"}</button>
+            <button style={{ ...S.prioLogLink, marginLeft: 12 }} disabled={deleting} onClick={() => setConfirmDelete(false)}>Cancel</button>
+          </div>
+        ) : (
+          <button style={{ ...M.cancel, color: "#C87060" }} onClick={() => setConfirmDelete(true)}>Delete permanently</button>
+        ))}
         <button style={M.cancel} onClick={onClose}>Cancel</button>
       </ModalSheet>
     </div>
