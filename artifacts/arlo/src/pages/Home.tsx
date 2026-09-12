@@ -3802,6 +3802,16 @@ function PursuitModal({ pursuit, onClose, onSaved, onDeleted, onClosed }: {
   const [name, setName] = useState(pursuit?.name ?? "");
   const [category, setCategory] = useState<PursuitCategory>(pursuit?.category ?? "job");
   const [notes, setNotes] = useState(pursuit?.notes ?? "");
+  // #91 — guided follow-ups, only offered while adding a brand-new pursuit
+  // (not editing one): there's no reliable way to split an existing
+  // freeform notes string back apart into these once it's already saved,
+  // so editing just keeps the plain single Notes field as it always has.
+  // Everything still lands in that one notes column on save — no schema
+  // change, just richer prose.
+  const [bizTeamOrGoal, setBizTeamOrGoal] = useState("");
+  const [bizDuration, setBizDuration] = useState("");
+  const [jobReportsTo, setJobReportsTo] = useState("");
+  const [jobCareerGoal, setJobCareerGoal] = useState("");
   const saveStatus = useSaveStatus();
   const [validationErr, setValidationErr] = useState("");
   const [deleting, setDeleting] = useState(false);
@@ -3810,10 +3820,24 @@ function PursuitModal({ pursuit, onClose, onSaved, onDeleted, onClosed }: {
   const [closing, setClosing] = useState(false);
   const [closeErr, setCloseErr] = useState("");
 
+  function combinedNotes(): string {
+    const parts = [notes.trim()];
+    if (!pursuit) {
+      if (category === "business") {
+        if (bizTeamOrGoal.trim()) parts.push(`Team size / revenue goal: ${bizTeamOrGoal.trim()}`);
+        if (bizDuration.trim()) parts.push(`Running for: ${bizDuration.trim()}`);
+      } else if (category === "job") {
+        if (jobReportsTo.trim()) parts.push(`Reports to: ${jobReportsTo.trim()}`);
+        if (jobCareerGoal.trim()) parts.push(`Career goal: ${jobCareerGoal.trim()}`);
+      }
+    }
+    return parts.filter(Boolean).join(" — ");
+  }
+
   async function save() {
     if (!name.trim()) { setValidationErr("Name is required."); return; }
     setValidationErr("");
-    const body = { name: name.trim(), category, notes: notes.trim() };
+    const body = { name: name.trim(), category, notes: combinedNotes() };
     await saveStatus.save(async () => {
       const r = pursuit
         ? await apiFetch(`${API}/pursuits/${pursuit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
@@ -3861,6 +3885,30 @@ function PursuitModal({ pursuit, onClose, onSaved, onDeleted, onClosed }: {
             ))}
           </div>
         </div>
+        {!pursuit && category === "business" && (
+          <>
+            <div style={E.fieldGroup}>
+              <div style={E.label}>Team size / revenue goal (optional)</div>
+              <input style={M.input} value={bizTeamOrGoal} onChange={e => setBizTeamOrGoal(e.target.value)} placeholder="e.g. solo, 3 employees, $500k goal" />
+            </div>
+            <div style={E.fieldGroup}>
+              <div style={E.label}>How long running (optional)</div>
+              <input style={M.input} value={bizDuration} onChange={e => setBizDuration(e.target.value)} placeholder="e.g. 2 years" />
+            </div>
+          </>
+        )}
+        {!pursuit && category === "job" && (
+          <>
+            <div style={E.fieldGroup}>
+              <div style={E.label}>Who you report to (optional)</div>
+              <input style={M.input} value={jobReportsTo} onChange={e => setJobReportsTo(e.target.value)} placeholder="e.g. store manager, regional director" />
+            </div>
+            <div style={E.fieldGroup}>
+              <div style={E.label}>Career goal (optional)</div>
+              <input style={M.input} value={jobCareerGoal} onChange={e => setJobCareerGoal(e.target.value)} placeholder="e.g. promotion to team lead" />
+            </div>
+          </>
+        )}
         <div style={E.fieldGroup}>
           <div style={E.label}>Notes</div>
           <input style={M.input} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Role, rhythm, what you track" />
