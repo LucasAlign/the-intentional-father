@@ -982,7 +982,7 @@ export default function Home() {
         </nav>
       </div>
 
-      {jobModal && <JobModal pursuits={pursuits} onClose={() => setJobModal(false)} onCreated={refreshJobs} />}
+      {jobModal && <JobModal pursuits={pursuits} onClose={() => setJobModal(false)} onCreated={refreshJobs} onPursuitCreated={refreshPursuits} />}
       {editJob && <JobEditModal job={editJob} pursuits={pursuits} onClose={() => setEditJob(null)} onSaved={maybePromptPursuitClose} onDeleted={refreshJobs} />}
       {pursuitModal && <PursuitModal onClose={() => setPursuitModal(false)} onSaved={refreshPursuits} />}
       {editPursuit && <PursuitModal pursuit={editPursuit} onClose={() => setEditPursuit(null)} onSaved={refreshPursuits} onDeleted={() => { refreshPursuits(); refreshJobs(); }} onClosed={refreshPursuits} />}
@@ -3851,7 +3851,9 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
 }
 
 // ── Job intake modal ─────────────────────────────────────────────────────────
-function JobModal({ pursuits, onClose, onCreated }: { pursuits: Pursuit[]; onClose: () => void; onCreated: () => void }) {
+function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
+  pursuits: Pursuit[]; onClose: () => void; onCreated: () => void; onPursuitCreated: () => void;
+}) {
   const Qs = [
     { q: "What's the job?", ph: "e.g. First Baptist — monument sign", key: "name" },
     { q: "When does it need to be done?", ph: "e.g. June 20, end of month", key: "due" },
@@ -3859,7 +3861,12 @@ function JobModal({ pursuits, onClose, onCreated }: { pursuits: Pursuit[]; onClo
     { q: "Rough budget or quote?", ph: "e.g. $2,400 or not sure", key: "budget" },
     { q: "Anything that could slow you down?", ph: "e.g. approval, weather", key: "risk" },
   ];
-  const [pickingPursuit, setPickingPursuit] = useState(pursuits.length > 0);
+  // #91 follow-up — always offer the pursuit-picking step, even with zero
+  // existing pursuits, so there's always a chance to set the business-vs-
+  // employee split (via "+ New pursuit") before logging a job under it,
+  // rather than silently skipping straight to the job questions.
+  const [pickingPursuit, setPickingPursuit] = useState(true);
+  const [creatingPursuit, setCreatingPursuit] = useState(false);
   const [pursuitId, setPursuitId] = useState<number | null>(null);
   const [step, setStep] = useState(0);
   const [val, setVal] = useState("");
@@ -3867,9 +3874,58 @@ function JobModal({ pursuits, onClose, onCreated }: { pursuits: Pursuit[]; onClo
   const saveStatus = useSaveStatus();
   const q = Qs[step];
 
+  // New-pursuit fields, mirroring PursuitModal's own add-pursuit branching
+  // (#91's original resolution) so this inline shortcut asks the same
+  // business-vs-employee follow-ups instead of a bare name+category.
+  const [newPursuitName, setNewPursuitName] = useState("");
+  const [newPursuitCategory, setNewPursuitCategory] = useState<PursuitCategory>("job");
+  const [newPursuitNotes, setNewPursuitNotes] = useState("");
+  const [bizTeamOrGoal, setBizTeamOrGoal] = useState("");
+  const [bizDuration, setBizDuration] = useState("");
+  const [jobReportsTo, setJobReportsTo] = useState("");
+  const [jobCareerGoal, setJobCareerGoal] = useState("");
+  const [creatingErr, setCreatingErr] = useState("");
+  const [creating, setCreating] = useState(false);
+
   function choosePursuit(id: number | null) {
     setPursuitId(id);
     setPickingPursuit(false);
+  }
+
+  function combinedNewPursuitNotes(): string {
+    const parts = [newPursuitNotes.trim()];
+    if (newPursuitCategory === "business") {
+      if (bizTeamOrGoal.trim()) parts.push(`Team size / revenue goal: ${bizTeamOrGoal.trim()}`);
+      if (bizDuration.trim()) parts.push(`Running for: ${bizDuration.trim()}`);
+    } else if (newPursuitCategory === "job") {
+      if (jobReportsTo.trim()) parts.push(`Reports to: ${jobReportsTo.trim()}`);
+      if (jobCareerGoal.trim()) parts.push(`Career goal: ${jobCareerGoal.trim()}`);
+    }
+    return parts.filter(Boolean).join(" — ");
+  }
+
+  async function createPursuitAndContinue() {
+    if (!newPursuitName.trim()) { setCreatingErr("Name is required."); return; }
+    setCreatingErr("");
+    setCreating(true);
+    try {
+      const r = await apiFetch(`${API}/pursuits`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newPursuitName.trim(), category: newPursuitCategory, notes: combinedNewPursuitNotes() }),
+      });
+      if (r.ok) {
+        const created = await r.json() as Pursuit;
+        onPursuitCreated();
+        setCreatingPursuit(false);
+        choosePursuit(created.id);
+      } else {
+        setCreatingErr("Couldn't create the pursuit. Try again.");
+      }
+    } catch {
+      setCreatingErr("Couldn't reach the server.");
+    } finally {
+      setCreating(false);
+    }
   }
 
   async function submit(final: Record<string, string>) {
@@ -3892,6 +3948,58 @@ function JobModal({ pursuits, onClose, onCreated }: { pursuits: Pursuit[]; onClo
     else submit(next);
   }
 
+  if (creatingPursuit) {
+    return (
+      <div style={M.overlay}>
+        <ModalSheet title="New Pursuit" onClose={onClose}>
+          <div style={E.fieldGroup}>
+            <div style={E.label}>Name</div>
+            <input style={M.input} value={newPursuitName} onChange={e => setNewPursuitName(e.target.value)} placeholder="e.g. Signs, church volunteering" autoFocus />
+          </div>
+          <div style={E.fieldGroup}>
+            <div style={E.label}>Category</div>
+            <div style={E.chipRow}>
+              {PURSUIT_CATEGORIES.map(c => (
+                <button key={c} style={{ ...E.chip, ...(newPursuitCategory === c ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setNewPursuitCategory(c)}>{PURSUIT_CATEGORY_LABEL[c]}</button>
+              ))}
+            </div>
+          </div>
+          {newPursuitCategory === "business" && (
+            <>
+              <div style={E.fieldGroup}>
+                <div style={E.label}>Team size / revenue goal (optional)</div>
+                <input style={M.input} value={bizTeamOrGoal} onChange={e => setBizTeamOrGoal(e.target.value)} placeholder="e.g. solo, 3 employees, $500k goal" />
+              </div>
+              <div style={E.fieldGroup}>
+                <div style={E.label}>How long running (optional)</div>
+                <input style={M.input} value={bizDuration} onChange={e => setBizDuration(e.target.value)} placeholder="e.g. 2 years" />
+              </div>
+            </>
+          )}
+          {newPursuitCategory === "job" && (
+            <>
+              <div style={E.fieldGroup}>
+                <div style={E.label}>Who you report to (optional)</div>
+                <input style={M.input} value={jobReportsTo} onChange={e => setJobReportsTo(e.target.value)} placeholder="e.g. store manager, regional director" />
+              </div>
+              <div style={E.fieldGroup}>
+                <div style={E.label}>Career goal (optional)</div>
+                <input style={M.input} value={jobCareerGoal} onChange={e => setJobCareerGoal(e.target.value)} placeholder="e.g. promotion to team lead" />
+              </div>
+            </>
+          )}
+          <div style={E.fieldGroup}>
+            <div style={E.label}>Notes</div>
+            <input style={M.input} value={newPursuitNotes} onChange={e => setNewPursuitNotes(e.target.value)} placeholder="Role, rhythm, what you track" />
+          </div>
+          <TapError message={creatingErr || null} />
+          <button style={M.next} disabled={creating} onClick={createPursuitAndContinue}>{creating ? "Creating…" : "Continue →"}</button>
+          <button style={M.cancel} onClick={() => setCreatingPursuit(false)}>Back</button>
+        </ModalSheet>
+      </div>
+    );
+  }
+
   if (pickingPursuit) {
     return (
       <div style={M.overlay}>
@@ -3902,6 +4010,7 @@ function JobModal({ pursuits, onClose, onCreated }: { pursuits: Pursuit[]; onClo
               <button key={p.id} style={E.chip} onClick={() => choosePursuit(p.id)}>{p.name}</button>
             ))}
           </div>
+          <button style={M.cancel} onClick={() => setCreatingPursuit(true)}>＋ New pursuit</button>
           <button style={M.cancel} onClick={() => choosePursuit(null)}>Skip — not tied to a pursuit</button>
           <button style={M.cancel} onClick={onClose}>Cancel</button>
         </ModalSheet>
