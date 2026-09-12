@@ -1572,6 +1572,14 @@ function SwipeCommitment({ commit, byId, onToggleDone, onDelete, onEdit }: {
   const [expanded, setExpanded] = useState(false);
   const [toggling, setToggling] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  // Marking a commitment kept needs a second tap to confirm, matching
+  // Priorities' one-off complete-confirm — reopening a kept one, and the
+  // swipe-revealed "Kept" cue, stay single-tap since those are already
+  // deliberate actions.
+  const [confirming, setConfirming] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (confirmTimer.current) clearTimeout(confirmTimer.current); }, []);
   const { error, flash } = useTapError();
   const swipe = useSwipeReveal(!commit.done && !toggling);
 
@@ -1582,6 +1590,26 @@ function SwipeCommitment({ commit, byId, onToggleDone, onDelete, onEdit }: {
     const ok = await onToggleDone(commit.id, !commit.done);
     setToggling(false);
     if (!ok) flash("Couldn't save — try again");
+  }
+  function tapDot() {
+    if (toggling || deleting || confirmed) return;
+    if (commit.done) { runToggle(); return; }
+    if (!confirming) {
+      setConfirming(true);
+      if (confirmTimer.current) clearTimeout(confirmTimer.current);
+      confirmTimer.current = setTimeout(() => setConfirming(false), 3000);
+      return;
+    }
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    setConfirming(false);
+    setConfirmed(true);
+    setToggling(true);
+    // Hold the confirmed checkmark for a beat before it actually moves to Kept.
+    setTimeout(async () => {
+      const ok = await onToggleDone(commit.id, true);
+      setToggling(false);
+      if (!ok) { setConfirmed(false); flash("Couldn't save — try again"); }
+    }, 1000);
   }
   async function runDelete() {
     if (deleting) return;
@@ -1598,6 +1626,8 @@ function SwipeCommitment({ commit, byId, onToggleDone, onDelete, onEdit }: {
   const sub = commitTargetSub(commit, byId);
   const age = commit.done ? { label: "", color: null as "red" | "brass" | null } : commitAgeStatus(commit);
   const ageColor = age.color === "red" ? "#C87060" : age.color === "brass" ? C.brass : C.parchmentDim;
+  const showGreen = commit.done || confirming || confirmed;
+  const showCheck = commit.done || confirmed;
 
   return (
     <div style={{ ...S.swipeWrap, marginBottom: 12 }}>
@@ -1620,15 +1650,23 @@ function SwipeCommitment({ commit, byId, onToggleDone, onDelete, onEdit }: {
         onPointerDown={down} onPointerMove={swipe.move} onPointerUp={swipe.up} onPointerCancel={swipe.up}
       >
         <div style={{ ...S.commitRow, marginBottom: 0 }}>
-          <button style={{ ...S.dot, ...(commit.done ? S.dotDone : {}) }} disabled={toggling} onClick={runToggle} aria-label={commit.done ? "Reopen" : "Mark kept"}>
-            {commit.done ? "✓" : ""}
+          <button
+            style={{ ...S.dot, ...(showGreen ? S.dotDone : {}) }}
+            disabled={toggling} onClick={tapDot}
+            aria-label={commit.done ? "Reopen" : confirming ? "Tap again to confirm" : "Mark kept"}
+          >
+            {showCheck ? "✓" : ""}
           </button>
           <div style={{ flex: 1 }}>
             <div style={{ ...S.prioTitle, textDecoration: commit.done ? "line-through" : "none" }}>{commit.text}</div>
-            <div style={S.prioSub}>
-              For {who}{sub ? ` (${sub})` : ""} · Said {commit.madeDate}
-              {age.label && <span style={{ color: ageColor, marginLeft: 6 }}>{age.label}</span>}
-            </div>
+            {confirming ? (
+              <div style={{ ...S.prioSub, color: "#7AB46A" }}>Tap again to confirm</div>
+            ) : (
+              <div style={S.prioSub}>
+                For {who}{sub ? ` (${sub})` : ""} · Said {commit.madeDate}
+                {age.label && <span style={{ color: ageColor, marginLeft: 6 }}>{age.label}</span>}
+              </div>
+            )}
           </div>
           <button style={S.commitExpandBtn} onClick={() => setExpanded(e => !e)} aria-label={expanded ? "Show less" : "Show more"}>
             {expanded ? "▴" : "▾"}
