@@ -1524,7 +1524,7 @@ router.get('/jobs/deleted', async (req: Request, res: Response) => {
 // POST /api/jobs
 router.post('/jobs', async (req: Request, res: Response) => {
   try {
-    const { name, stage, due, pct, pursuitId, materials, budget, risk } = req.body;
+    const { name, stage, due, pct, pursuitId, materials, budget, risk, notes } = req.body;
     if (!name) { res.status(400).json({ error: 'name is required' }); return; }
     const resolved = await resolvePursuitId(req.user!.id, pursuitId, res);
     if (!resolved.ok) return; // resolvePursuitId already responded
@@ -1533,6 +1533,7 @@ router.post('/jobs', async (req: Request, res: Response) => {
       materials: typeof materials === 'string' ? materials : '',
       budget: typeof budget === 'string' ? budget : '',
       risk: typeof risk === 'string' ? risk : '',
+      notes: typeof notes === 'string' ? notes : '',
     }).returning();
     res.json(row);
   } catch (err) {
@@ -1546,7 +1547,7 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    const { name, stage, due, pct, pursuitId, materials, budget, risk, deleted } = req.body;
+    const { name, stage, due, pct, pursuitId, materials, budget, risk, notes, deleted } = req.body;
     const updates: Partial<typeof jobs.$inferInsert> = {};
     if (name !== undefined) updates.name = name;
     if (stage !== undefined) updates.stage = stage;
@@ -1555,6 +1556,7 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
     if (typeof materials === 'string') updates.materials = materials;
     if (typeof budget === 'string') updates.budget = budget;
     if (typeof risk === 'string') updates.risk = risk;
+    if (typeof notes === 'string') updates.notes = notes;
     if (typeof deleted === 'boolean') {
       updates.deleted = deleted;
       updates.deletedAt = deleted ? new Date() : null;

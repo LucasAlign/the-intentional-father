@@ -191,6 +191,11 @@ export const jobs = pgTable("jobs", {
   materials: text("materials").notNull().default(""),
   budget: text("budget").notNull().default(""),
   risk: text("risk").notNull().default(""),
+  // #91 follow-up (job/pursuit redesign) — a plain freeform field, mainly
+  // for the lightweight "My job" flow (which has nowhere else to put an
+  // optional note since materials/budget/risk are business-task-shaped),
+  // but exposed as a general optional field on every job for consistency.
+  notes: text("notes").notNull().default(""),
   // Soft-delete (#89), matching pursuits — "Delete Job" now closes rather
   // than permanently removing, with a Deleted-jobs list to Reopen from.
   deleted: boolean("deleted").notNull().default(false),

@@ -1,4 +1,4 @@
-export const PURSUIT_CATEGORIES = ["job", "business", "volunteer", "hobby", "other"] as const;
+export const PURSUIT_CATEGORIES = ["job", "business", "volunteer", "hobby", "side_hustle", "other"] as const;
 export type PursuitCategory = (typeof PURSUIT_CATEGORIES)[number];
 export function isPursuitCategory(value: unknown): value is PursuitCategory {
   return typeof value === "string" && (PURSUIT_CATEGORIES as readonly string[]).includes(value);
@@ -9,5 +9,6 @@ export const PURSUIT_CATEGORY_LABEL: Record<PursuitCategory, string> = {
   business: "Business",
   volunteer: "Volunteer",
   hobby: "Hobby",
+  side_hustle: "Side Hustle",
   other: "Other",
 };

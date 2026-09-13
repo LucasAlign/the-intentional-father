@@ -79,7 +79,7 @@ Use this exact schema (use null for unknown fields). Order the "relationships" a
   "pursuits": [
     {
       "name": "string",
-      "category": "exactly one of: job, business, volunteer, hobby, other — pick the closest fit",
+      "category": "exactly one of: job, business, volunteer, hobby, side_hustle, other — pick the closest fit",
       "notes": "string or null — role, rhythm, common blockers, what they track; for a business also team size/revenue goal and how long running if discussed; for a job also who they report to and their career goal if discussed"
     }
   ],
