@@ -3794,9 +3794,25 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
   // implementation can stall the scroll container outright — the arrow
   // would then read as "stopped working" until a manual scroll nudged it
   // loose. An instant jump has no in-flight animation to collide with.
+  //
+  // setCurrentMonthKey is also called directly here, not left to the
+  // scroll-listener's own pixel-geometry inference below: scrollToDay
+  // lands the target row's top at exactly the listener's threshold value,
+  // so a sub-pixel rounding difference between the two independently
+  // -measured rects can flip that comparison either way. For a *forward*
+  // jump that miss leaves the listener's "current" pinned on the old
+  // month (since it accumulates in order and bails on the first miss) —
+  // every next click re-targets the same month, which is exactly "the
+  // arrow only ever advances one month total." A backward jump's miss is
+  // harmless by comparison (it just undershoots by one extra month), which
+  // is why only the forward direction ever got stuck. Since a deliberate
+  // jump already knows its destination month with certainty, there's no
+  // need to re-derive it from scroll position at all.
   function jumpMonth(delta: number) {
     const target = months[currentMonthIndex + delta];
-    if (target) scrollToDay(target.firstDayKey, "auto");
+    if (!target) return;
+    scrollToDay(target.firstDayKey, "auto");
+    setCurrentMonthKey(target.key);
   }
 
   // Opening the Calendar tab previously left the list scrolled to the very
@@ -3831,7 +3847,7 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
               <Icon name="sync" size={15} color={C.parchmentMid} stroke={1.8} />
             </span>
           </button>
-          <button style={S.calendarTodayBtn} onClick={() => scrollToDay(todayKey, "auto")} aria-label="Jump to today">Today</button>
+          <button style={S.calendarTodayBtn} onClick={() => { scrollToDay(todayKey, "auto"); setCurrentMonthKey(todayMonthKey); }} aria-label="Jump to today">Today</button>
         </div>
         <div style={S.pageTitle}>Calendar</div>
         <div style={S.pageSub}>Work, commitments, and calendar events — scroll ahead or back.</div>
