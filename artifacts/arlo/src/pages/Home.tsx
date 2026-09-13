@@ -512,19 +512,18 @@ function weekStartYmd(d: Date): string {
 // #115 — the Calendar tab's continuous-scroll range: a generous bounded
 // window, not truly infinite, so scrolling and the sync button only ever
 // work over data already fetched once — no fetch-on-scroll plumbing
-// needed. 1 month back for context, 6 months forward since this tab is
-// primarily forward-looking (planning), matching this app's other
-// fixed-window history views (Sphere's 12-week dashboard, 6-month
-// history) rather than true infinite scroll.
+// needed. 1.5 years back and 1.5 years forward, per direct user request
+// (the original 1-back/6-forward window read as "the arrows stop working"
+// once someone actually tried paging more than a couple months out).
 function addMonths(d: Date, delta: number): Date {
   const nd = new Date(d);
   nd.setMonth(nd.getMonth() + delta);
   return nd;
 }
 function calendarRange(): { start: Date; end: Date } {
-  const start = addMonths(new Date(), -1);
+  const start = addMonths(new Date(), -18);
   start.setDate(1);
-  const end = addMonths(new Date(), 6);
+  const end = addMonths(new Date(), 18);
   return { start, end };
 }
 interface CalendarDay { key: string; day: string; label: string; monthKey: string; monthLabel: string }
@@ -3794,9 +3793,15 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
     el.scrollTo({ top: targetTop - headerHeight, behavior });
   }
   const currentMonthIndex = months.findIndex(m => m.key === currentMonthKey);
+  // Instant, not smooth: the arrows are meant to be paged through quickly,
+  // and a "smooth" scrollTo fired again before the previous one finishes
+  // animating is exactly the case where mobile Safari's smooth-scroll
+  // implementation can stall the scroll container outright — the arrow
+  // would then read as "stopped working" until a manual scroll nudged it
+  // loose. An instant jump has no in-flight animation to collide with.
   function jumpMonth(delta: number) {
     const target = months[currentMonthIndex + delta];
-    if (target) scrollToDay(target.firstDayKey);
+    if (target) scrollToDay(target.firstDayKey, "auto");
   }
 
   // Opening the Calendar tab previously left the list scrolled to the very
@@ -3831,7 +3836,7 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
               <Icon name="sync" size={15} color={C.parchmentMid} stroke={1.8} />
             </span>
           </button>
-          <button style={S.calendarTodayBtn} onClick={() => scrollToDay(todayKey)} aria-label="Jump to today">Today</button>
+          <button style={S.calendarTodayBtn} onClick={() => scrollToDay(todayKey, "auto")} aria-label="Jump to today">Today</button>
         </div>
         <div style={S.pageTitle}>Calendar</div>
         <div style={S.pageSub}>Work, commitments, and calendar events — scroll ahead or back.</div>
