@@ -3752,18 +3752,25 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
 
   // Tracks which month is "current" (the last month-start row that's
   // scrolled past the sticky header), so the month label and prev/next
-  // arrows stay in sync with what's actually on screen.
+  // arrows stay in sync with what's actually on screen. Threshold is the
+  // header's own measured height, not a fixed pixel guess — scrollToDay
+  // below positions a jumped-to row's top edge exactly at that boundary,
+  // so a fixed threshold smaller than the (now much taller, title+subtitle+
+  // toggles) header meant a row landed there was never actually detected
+  // as "passed," leaving currentMonthKey stuck on the previous month and
+  // the next arrow click re-targeting the same month it just jumped to.
   useEffect(() => {
     const el = scrollFade.ref.current;
     if (!el) return;
     function update() {
       if (!el) return;
       const elTop = el.getBoundingClientRect().top;
+      const threshold = headerRef.current?.getBoundingClientRect().height ?? 60;
       let current = months[0]?.key ?? "";
       for (const m of months) {
         const rowEl = dayRefs.current.get(m.firstDayKey);
         if (!rowEl) continue;
-        if (rowEl.getBoundingClientRect().top - elTop <= 60) current = m.key;
+        if (rowEl.getBoundingClientRect().top - elTop <= threshold) current = m.key;
         else break;
       }
       setCurrentMonthKey(current);
