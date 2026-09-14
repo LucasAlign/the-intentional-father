@@ -3090,7 +3090,7 @@ function SphereLandscapeChart({ categories }: { categories: SphereDashboardCateg
   const W = 320, rowH = 34;
   const H = rowH * categories.length;
   return (
-    <svg viewBox={`0 0 ${W} ${H + 4}`} width="100%" height={H + 4} role="img" aria-label="The Sphere, trend over the last 3 months">
+    <svg viewBox={`0 0 ${W} ${H + 4}`} width="100%" height={H + 4} role="img" aria-label="Sphere, trend over the last 3 months">
       {categories.map((cat, ci) => {
         const n = cat.weeks.length;
         if (n < 2) return null;
@@ -3575,7 +3575,7 @@ function Sphere() {
   return (
     <div ref={scrollFade.ref} style={S.scroll}>
       {scrollFade.showFade && <div style={S.scrollFadeCue} />}
-      <div style={S.pageTitle}>The Sphere</div>
+      <div style={S.pageTitle}>Sphere</div>
       <div style={S.pageSub}>Own your Sphere of Influence.</div>
       <FirstVisitTip id="sphere">A weekly check-in on how you're protecting, providing for, and leading the people around you.</FirstVisitTip>
 
