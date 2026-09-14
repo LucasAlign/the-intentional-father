@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, jsonb, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
+import { boolean, index, integer, jsonb, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
 
 // (IMPORTANT) This table is used for OIDC login sessions, don't drop it.
 export const sessionsTable = pgTable(
@@ -60,3 +60,40 @@ export const emailLoginCodes = pgTable(
 
 export type BetaInvite = typeof betaInvites.$inferSelect;
 export type EmailLoginCode = typeof emailLoginCodes.$inferSelect;
+
+// #18 — billing. One row per user (1:1, this app has no team/household
+// billing construct — see #18's grilling). `status` is deliberately OUR OWN
+// vocabulary (lib/billing.ts's SubscriptionStatus), not the payment
+// provider's raw status strings — the webhook handler is the one place that
+// translates a provider event into one of these values, so every other
+// access-control check reads a provider-agnostic status. That's the seam a
+// future provider swap (Stripe -> something else) would need to redo; it
+// does not eliminate the real cost of a swap (existing subscribers' stored
+// payment methods don't transfer between providers), but it keeps that cost
+// contained to this table and the provider-specific route handlers instead
+// of leaking into every place access gets checked.
+export const subscriptions = pgTable(
+  "subscriptions",
+  {
+    id: serial("id").primaryKey(),
+    userId: varchar("user_id").notNull().unique(),
+    status: varchar("status").notNull(),
+    provider: varchar("provider").notNull().default("stripe"),
+    providerCustomerId: varchar("provider_customer_id"),
+    providerSubscriptionId: varchar("provider_subscription_id"),
+    // "month" | "year" once a paying plan is chosen; null while trialing,
+    // grandfathered, or admin-comped, since there's no billed interval yet.
+    priceInterval: varchar("price_interval"),
+    currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }),
+    trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
+    cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+  },
+  (table) => [
+    index("IDX_subscriptions_user_id").on(table.userId),
+    index("IDX_subscriptions_provider_customer_id").on(table.providerCustomerId),
+  ],
+);
+
+export type Subscription = typeof subscriptions.$inferSelect;

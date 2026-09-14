@@ -732,6 +732,7 @@ export default function Home() {
   const [closePursuitPrompt, setClosePursuitPrompt] = useState<Pursuit | null>(null);
   const [calendarAccounts, setCalendarAccounts] = useState<string[]>([]);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [billingStatus, setBillingStatus] = useState<BillingStatus | null>(null);
   const [profileMenu, setProfileMenu] = useState(false);
   const [myAnswersOpen, setMyAnswersOpen] = useState(false);
   const [remindersOpen, setRemindersOpen] = useState(false);
@@ -898,6 +899,14 @@ export default function Home() {
 
   useEffect(() => {
     if (!isAuthenticated) return;
+    // #18 — resolved before anything else: a blocked billingStatus short
+    // -circuits the whole render (see the gate below), so there's no point
+    // loading interview/app data for a user who can't reach it yet.
+    apiFetch(`${API}/billing/status`, { credentials: "include" })
+      .then(r => r.ok ? r.json() : null)
+      .then((d: BillingStatus | null) => setBillingStatus(d ?? { status: "grandfathered", billingEnabled: false, trialEndsAt: null, currentPeriodEnd: null, cancelAtPeriodEnd: false }))
+      .catch(() => setBillingStatus({ status: "grandfathered", billingEnabled: false, trialEndsAt: null, currentPeriodEnd: null, cancelAtPeriodEnd: false }));
+
     // Check onboarding before loading data
     apiFetch(`${API}/interview/status`, { credentials: "include" })
       .then(r => r.ok ? r.json() : null)
@@ -973,6 +982,16 @@ export default function Home() {
 
   if (!isAuthenticated) return <AuthGate loading={isLoading} pendingApproval={pendingApproval} onLogin={login} onStartEmailLogin={startEmailLogin} onVerifyEmailLogin={verifyEmailLogin} />;
 
+  // #18 — a null billingStatus means the fetch hasn't resolved yet; block on
+  // it rather than flashing the real app first, same as AuthGate's own
+  // `loading` state above. `billingEnabled === false` (the default until the
+  // env flag is deliberately set) makes this whole gate a no-op — see
+  // lib/billing.ts's billingEnabled().
+  if (!billingStatus) return <div style={R.root}><div style={G.loading}>Loading...</div></div>;
+  if (billingStatus.billingEnabled && !hasBillingAccess(billingStatus.status)) {
+    return <BillingGate status={billingStatus.status} trialEndsAt={billingStatus.trialEndsAt} onLogout={logout} />;
+  }
+
   const primaryRel = primaryRelationship(relationships);
 
   return (
@@ -1045,6 +1064,7 @@ export default function Home() {
           onRedoInterview={() => { setProfileMenu(false); redoInterview(); }}
           onOpenReminders={() => { setProfileMenu(false); setRemindersOpen(true); }}
           onOpenTour={() => { setProfileMenu(false); setTourOpen(true); }}
+          canManageSubscription={billingStatus ? ["trialing", "active", "past_due"].includes(billingStatus.status) : false}
         />
       )}
       {tourOpen && <AppTour onClose={() => setTourOpen(false)} />}
@@ -1073,12 +1093,33 @@ export default function Home() {
   );
 }
 
-function ProfileMenu({ name, email, onClose, onLogout, hintsEnabled, onSetHintsEnabled, hasInterviewed, onOpenMyAnswers, onRedoInterview, onOpenReminders, onOpenTour }: {
+function ProfileMenu({ name, email, onClose, onLogout, hintsEnabled, onSetHintsEnabled, hasInterviewed, onOpenMyAnswers, onRedoInterview, onOpenReminders, onOpenTour, canManageSubscription }: {
   name?: string | null; email?: string | null; onClose: () => void; onLogout: () => void;
   hintsEnabled: boolean; onSetHintsEnabled: (enabled: boolean) => void;
   hasInterviewed: boolean; onOpenMyAnswers: () => void; onRedoInterview: () => void; onOpenReminders: () => void; onOpenTour: () => void;
+  canManageSubscription: boolean;
 }) {
   const [confirmRedo, setConfirmRedo] = useState(false);
+  const [portalErr, setPortalErr] = useState("");
+  const [portalBusy, setPortalBusy] = useState(false);
+
+  async function openBillingPortal() {
+    setPortalBusy(true);
+    setPortalErr("");
+    try {
+      const r = await apiFetch(`${API}/billing/portal`, { method: "POST" });
+      if (r.ok) {
+        const d = await r.json();
+        if (d.url) { window.location.href = d.url; return; }
+      }
+      setPortalErr("Couldn't open the billing portal. Try again.");
+    } catch {
+      setPortalErr("Couldn't reach the server.");
+    } finally {
+      setPortalBusy(false);
+    }
+  }
+
   return (
     <div style={M.overlay} onClick={onClose}>
       <ModalSheet title={name || email || "Profile"} onClose={onClose} sheetOnClick={e => e.stopPropagation()}>
@@ -1088,6 +1129,17 @@ function ProfileMenu({ name, email, onClose, onLogout, hintsEnabled, onSetHintsE
         <button style={{ ...M.statusOpt, ...(hintsEnabled ? M.statusOptOn : {}) }} onClick={() => onSetHintsEnabled(!hintsEnabled)}>
           Helpful Hints: {hintsEnabled ? "On" : "Off"}
         </button>
+        {/* #18 — links to Stripe's own hosted Customer Portal rather than a
+            custom billing UI; only shown once there's an actual Stripe
+            subscription to manage (grandfathered/admin accounts have none). */}
+        {canManageSubscription && (
+          <>
+            <button style={{ ...M.next, background: "none", border: "1px solid rgba(210,190,130,0.18)", color: C.parchmentMid, boxShadow: "none" }} disabled={portalBusy} onClick={openBillingPortal}>
+              {portalBusy ? "Opening…" : "Manage Subscription"}
+            </button>
+            {portalErr && <div role="alert" style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{portalErr}</div>}
+          </>
+        )}
         {/* #93 — moved here from the Chat tab: on/off toggle, which email(s)
             reminders go to, and the test-send button. */}
         <button style={{ ...M.next, background: "none", border: "1px solid rgba(210,190,130,0.18)", color: C.parchmentMid, boxShadow: "none" }} onClick={onOpenReminders}>
@@ -5564,6 +5616,85 @@ function AuthGate({
             <button style={{ ...G.addHomeToggle, marginTop: 10 }} onClick={() => { setError(""); setCode(""); setStep("email"); }}>Use a different email</button>
           </>
         )}
+      </main>
+    </div>
+  );
+}
+
+// #18 — deliberately duplicated from the server's own list (lib/billing.ts)
+// rather than fetched, same trade-off this app already makes for the
+// relationship/pulse/sphere category vocabularies: it's a short, rarely
+// -changed list, and a client-side copy means the gate below can render
+// synchronously off whatever GET /billing/status already returned.
+type BillingSubscriptionStatus = "trialing" | "active" | "past_due" | "canceled" | "grandfathered" | "admin";
+function hasBillingAccess(status: BillingSubscriptionStatus): boolean {
+  return status === "trialing" || status === "active" || status === "past_due" || status === "grandfathered" || status === "admin";
+}
+interface BillingStatus {
+  status: BillingSubscriptionStatus;
+  billingEnabled: boolean;
+  trialEndsAt: string | null;
+  currentPeriodEnd: string | null;
+  cancelAtPeriodEnd: boolean;
+}
+
+// The full-screen paywall (#18's grilling, Q11) — parallel to AuthGate
+// above, shown once a user has no trial/active/grace-period access left.
+// There is deliberately no "soft" or partial-access state to fall into:
+// Q1 settled on paid-only with no permanent free tier, so once this renders
+// the only way back into the app is Checkout.
+function BillingGate({ status, trialEndsAt, onLogout }: {
+  status: BillingSubscriptionStatus; trialEndsAt: string | null; onLogout: () => void;
+}) {
+  const [busy, setBusy] = useState<"month" | "year" | null>(null);
+  const [error, setError] = useState("");
+
+  async function startCheckout(interval: "month" | "year") {
+    setBusy(interval);
+    setError("");
+    try {
+      const r = await apiFetch(`${API}/billing/checkout`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ interval }),
+      });
+      if (r.ok) {
+        const d = await r.json();
+        if (d.url) { window.location.href = d.url; return; }
+      }
+      setError("Couldn't start checkout. Try again.");
+    } catch {
+      setError("Couldn't reach the server.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const expiredTrial = status === "canceled" && trialEndsAt && new Date(trialEndsAt) < new Date();
+
+  return (
+    <div style={R.root}>
+      <div style={R.woodLayer} />
+      <div style={R.ambient} />
+      <main style={G.wrap}>
+        <div style={R.logo}><span style={R.logoText}>Steward</span><span style={R.logoDot}>.</span></div>
+        <div style={{ ...R.tagline, textAlign: "center", marginBottom: 38 }}>FOCUSED. FAITHFUL. FREE.</div>
+        <div style={G.welcome}>
+          {status === "past_due" ? "Your payment didn't go through"
+            : expiredTrial ? "Your trial has ended"
+            : "Start your 14-day free trial"}
+        </div>
+        <div style={{ ...G.notice, marginBottom: 20 }}>
+          {status === "past_due"
+            ? "Update your payment method to keep your access — we'll keep trying automatically in the meantime."
+            : "$8/month or $80/year (2 months free). No charge until your trial ends."}
+        </div>
+        {error && <div role="alert" style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{error}</div>}
+        <button style={G.googleBtn} disabled={busy !== null} onClick={() => startCheckout("month")}>
+          {busy === "month" ? "Starting…" : "Continue — $8/month"}
+        </button>
+        <button style={{ ...G.googleBtn, marginTop: 10 }} disabled={busy !== null} onClick={() => startCheckout("year")}>
+          {busy === "year" ? "Starting…" : "Continue — $80/year"}
+        </button>
+        <button style={{ ...G.addHomeToggle, marginTop: 14 }} onClick={onLogout}>Sign out</button>
       </main>
     </div>
   );
