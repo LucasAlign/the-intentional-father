@@ -63,6 +63,11 @@ interface ProfileData {
   name?: string | null; season_of_life?: string | null;
   core_identity?: CoreIdentity | null; planning_profile?: PlanningProfile | null; guardrails?: Guardrails | null;
   voice?: ToneVoice | null; remindersEnabled?: boolean | null; hintsEnabled?: boolean | null; dismissedHints?: string[] | null;
+  // #132 — separate from dismissedHints on purpose: this is an account
+  // -status notice, not a "helpful tip," so it must not reappear just
+  // because someone toggles the Helpful Hints master switch back on (which
+  // clears dismissedHints as its own reset behavior, see #83).
+  billingGrandfatherNoticeDismissed?: boolean | null;
 }
 interface VerseEntry { ref: string; text: string; favorited: boolean; custom?: boolean; id?: number; }
 interface VerseHistoryEntry extends VerseEntry { date: string; }
@@ -732,6 +737,7 @@ export default function Home() {
   const [closePursuitPrompt, setClosePursuitPrompt] = useState<Pursuit | null>(null);
   const [calendarAccounts, setCalendarAccounts] = useState<string[]>([]);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [billingStatus, setBillingStatus] = useState<BillingStatus | null>(null);
   const [profileMenu, setProfileMenu] = useState(false);
   const [myAnswersOpen, setMyAnswersOpen] = useState(false);
   const [remindersOpen, setRemindersOpen] = useState(false);
@@ -766,6 +772,18 @@ export default function Home() {
       await apiFetch(`${API}/profile`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(enabled ? { hintsEnabled: true, dismissedHints: [] } : { hintsEnabled: false }),
+      });
+    } catch { /* optimistic update already applied; a stale read on next load self-corrects */ }
+  }
+
+  // #132 — its own dismiss path, deliberately not reusing dismissHint/
+  // dismissedHints (see ProfileData's billingGrandfatherNoticeDismissed).
+  async function dismissBillingGrandfatherNotice() {
+    setProfile(p => ({ ...(p ?? {}), billingGrandfatherNoticeDismissed: true }));
+    try {
+      await apiFetch(`${API}/profile`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ billingGrandfatherNoticeDismissed: true }),
       });
     } catch { /* optimistic update already applied; a stale read on next load self-corrects */ }
   }
@@ -898,6 +916,14 @@ export default function Home() {
 
   useEffect(() => {
     if (!isAuthenticated) return;
+    // #18 — resolved before anything else: a blocked billingStatus short
+    // -circuits the whole render (see the gate below), so there's no point
+    // loading interview/app data for a user who can't reach it yet.
+    apiFetch(`${API}/billing/status`, { credentials: "include" })
+      .then(r => r.ok ? r.json() : null)
+      .then((d: BillingStatus | null) => setBillingStatus(d ?? { status: "grandfathered", billingEnabled: false, trialEndsAt: null, currentPeriodEnd: null, cancelAtPeriodEnd: false }))
+      .catch(() => setBillingStatus({ status: "grandfathered", billingEnabled: false, trialEndsAt: null, currentPeriodEnd: null, cancelAtPeriodEnd: false }));
+
     // Check onboarding before loading data
     apiFetch(`${API}/interview/status`, { credentials: "include" })
       .then(r => r.ok ? r.json() : null)
@@ -973,6 +999,16 @@ export default function Home() {
 
   if (!isAuthenticated) return <AuthGate loading={isLoading} pendingApproval={pendingApproval} onLogin={login} onStartEmailLogin={startEmailLogin} onVerifyEmailLogin={verifyEmailLogin} />;
 
+  // #18 — a null billingStatus means the fetch hasn't resolved yet; block on
+  // it rather than flashing the real app first, same as AuthGate's own
+  // `loading` state above. `billingEnabled === false` (the default until the
+  // env flag is deliberately set) makes this whole gate a no-op — see
+  // lib/billing.ts's billingEnabled().
+  if (!billingStatus) return <div style={R.root}><div style={G.loading}>Loading...</div></div>;
+  if (billingStatus.billingEnabled && !hasBillingAccess(billingStatus.status)) {
+    return <BillingGate status={billingStatus.status} trialEndsAt={billingStatus.trialEndsAt} onLogout={logout} />;
+  }
+
   const primaryRel = primaryRelationship(relationships);
 
   return (
@@ -1001,7 +1037,7 @@ export default function Home() {
       </header>
 
       <main style={R.screen}>
-        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} onOpenJournalHistory={() => setJournalHistoryOpen(true)} onOpenIntentionHistory={() => setIntentionHistoryOpen(true)} onToggleVerseFavorite={toggleVerseFavorite} onOpenVerseHistory={() => setVerseHistoryOpen(true)} onOpenVerseFavorites={() => setVerseFavoritesOpen(true)} />}
+        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} onOpenJournalHistory={() => setJournalHistoryOpen(true)} onOpenIntentionHistory={() => setIntentionHistoryOpen(true)} onToggleVerseFavorite={toggleVerseFavorite} onOpenVerseHistory={() => setVerseHistoryOpen(true)} onOpenVerseFavorites={() => setVerseFavoritesOpen(true)} billingStatus={billingStatus} onDismissBillingGrandfatherNotice={dismissBillingGrandfatherNotice} />}
         {tab === "her" && <Relationships relationships={relationships} refreshRelationships={refreshRelationships} commits={commits} refreshCommits={refreshCommits} />}
         {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} onOpenClosed={() => setClosedPursuitsOpen(true)} onOpenDeletedJobs={() => setDeletedJobsOpen(true)} />}
         {tab === "sphere" && <Sphere />}
@@ -1045,6 +1081,7 @@ export default function Home() {
           onRedoInterview={() => { setProfileMenu(false); redoInterview(); }}
           onOpenReminders={() => { setProfileMenu(false); setRemindersOpen(true); }}
           onOpenTour={() => { setProfileMenu(false); setTourOpen(true); }}
+          canManageSubscription={billingStatus ? ["trialing", "active", "past_due"].includes(billingStatus.status) : false}
         />
       )}
       {tourOpen && <AppTour onClose={() => setTourOpen(false)} />}
@@ -1073,12 +1110,33 @@ export default function Home() {
   );
 }
 
-function ProfileMenu({ name, email, onClose, onLogout, hintsEnabled, onSetHintsEnabled, hasInterviewed, onOpenMyAnswers, onRedoInterview, onOpenReminders, onOpenTour }: {
+function ProfileMenu({ name, email, onClose, onLogout, hintsEnabled, onSetHintsEnabled, hasInterviewed, onOpenMyAnswers, onRedoInterview, onOpenReminders, onOpenTour, canManageSubscription }: {
   name?: string | null; email?: string | null; onClose: () => void; onLogout: () => void;
   hintsEnabled: boolean; onSetHintsEnabled: (enabled: boolean) => void;
   hasInterviewed: boolean; onOpenMyAnswers: () => void; onRedoInterview: () => void; onOpenReminders: () => void; onOpenTour: () => void;
+  canManageSubscription: boolean;
 }) {
   const [confirmRedo, setConfirmRedo] = useState(false);
+  const [portalErr, setPortalErr] = useState("");
+  const [portalBusy, setPortalBusy] = useState(false);
+
+  async function openBillingPortal() {
+    setPortalBusy(true);
+    setPortalErr("");
+    try {
+      const r = await apiFetch(`${API}/billing/portal`, { method: "POST" });
+      if (r.ok) {
+        const d = await r.json();
+        if (d.url) { window.location.href = d.url; return; }
+      }
+      setPortalErr("Couldn't open the billing portal. Try again.");
+    } catch {
+      setPortalErr("Couldn't reach the server.");
+    } finally {
+      setPortalBusy(false);
+    }
+  }
+
   return (
     <div style={M.overlay} onClick={onClose}>
       <ModalSheet title={name || email || "Profile"} onClose={onClose} sheetOnClick={e => e.stopPropagation()}>
@@ -1088,6 +1146,17 @@ function ProfileMenu({ name, email, onClose, onLogout, hintsEnabled, onSetHintsE
         <button style={{ ...M.statusOpt, ...(hintsEnabled ? M.statusOptOn : {}) }} onClick={() => onSetHintsEnabled(!hintsEnabled)}>
           Helpful Hints: {hintsEnabled ? "On" : "Off"}
         </button>
+        {/* #18 — links to Stripe's own hosted Customer Portal rather than a
+            custom billing UI; only shown once there's an actual Stripe
+            subscription to manage (grandfathered/admin accounts have none). */}
+        {canManageSubscription && (
+          <>
+            <button style={{ ...M.next, background: "none", border: "1px solid rgba(210,190,130,0.18)", color: C.parchmentMid, boxShadow: "none" }} disabled={portalBusy} onClick={openBillingPortal}>
+              {portalBusy ? "Opening…" : "Manage Subscription"}
+            </button>
+            {portalErr && <div role="alert" style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{portalErr}</div>}
+          </>
+        )}
         {/* #93 — moved here from the Chat tab: on/off toggle, which email(s)
             reminders go to, and the test-send button. */}
         <button style={{ ...M.next, background: "none", border: "1px solid rgba(210,190,130,0.18)", color: C.parchmentMid, boxShadow: "none" }} onClick={onOpenReminders}>
@@ -1436,7 +1505,7 @@ function RemindersModal({ remindersEnabled, onSetRemindersEnabled, onSendTestRem
 }
 
 // ── Today ───────────────────────────────────────────────────────────────────
-function Today({ verse, tasks, journal, events, name, profile, relationships, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks, onOpenPriority, onViewCompleted, pulseChecks, onSavePulseCheck, onOpenJournalHistory, onOpenIntentionHistory, onToggleVerseFavorite, onOpenVerseHistory, onOpenVerseFavorites }: {
+function Today({ verse, tasks, journal, events, name, profile, relationships, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks, onOpenPriority, onViewCompleted, pulseChecks, onSavePulseCheck, onOpenJournalHistory, onOpenIntentionHistory, onToggleVerseFavorite, onOpenVerseHistory, onOpenVerseFavorites, billingStatus, onDismissBillingGrandfatherNotice }: {
   verse: VerseEntry | null; tasks: Task[]; journal: Journal; events: Event[]; name?: string | null;
   profile: ProfileData | null; relationships: Relationship[]; primaryRel: Relationship | null;
   onSend: (m?: string) => void; ci: string; setCi: (v: string) => void; sending: boolean;
@@ -1445,6 +1514,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   pulseChecks: PulseCheckEntry[]; onSavePulseCheck: (category: PulseCategory, state: PulseState, note: string) => Promise<boolean>;
   onOpenJournalHistory: () => void; onOpenIntentionHistory: () => void;
   onToggleVerseFavorite: (ref: string, favorite: boolean, customId?: number) => Promise<boolean>; onOpenVerseHistory: () => void; onOpenVerseFavorites: () => void;
+  billingStatus: BillingStatus | null; onDismissBillingGrandfatherNotice: () => void;
 }) {
   const [intent, setIntent] = useState(journal.commit_text);
   const [reflect, setReflect] = useState(journal.reflect);
@@ -1549,6 +1619,21 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
         <div><div style={S.greet}>{greeting}</div><div style={S.greetSub}>Let's build something that matters.</div></div>
         <div style={S.dateChip}><Icon name="cal" size={13} color={C.parchmentMid} /><span style={{ marginLeft: 6 }}>{new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</span></div>
       </div>
+
+      {/* #132 — deliberately not a <FirstVisitTip>: it's account-status
+          communication for the grandfathered pre-cutover cohort specifically,
+          gated on billingStatus rather than the general hints system, so it
+          can't be resurfaced by toggling Helpful Hints back on and never
+          shows before billing is actually live. Same visual/dismiss pattern
+          (S.tip/S.tipText/S.tipClose) as FirstVisitTip on purpose. */}
+      {billingStatus?.billingEnabled && billingStatus.status === "grandfathered" && profile?.billingGrandfatherNoticeDismissed !== true && (
+        <div style={S.tip}>
+          <div style={S.tipText}>
+            "Steward" is now a paid subscription app. Beta users will enjoy an extended free trial for your help and feedback during the app development. You will be notified before the extended trial ends.
+          </div>
+          <button style={S.tipClose} onClick={onDismissBillingGrandfatherNotice} aria-label="Dismiss notice">✕</button>
+        </div>
+      )}
 
       <FirstVisitTip id="today">This is your daily home base — set today's intention, check your top priorities, log a Pulse Check, and reflect before you're done.</FirstVisitTip>
 
@@ -5564,6 +5649,85 @@ function AuthGate({
             <button style={{ ...G.addHomeToggle, marginTop: 10 }} onClick={() => { setError(""); setCode(""); setStep("email"); }}>Use a different email</button>
           </>
         )}
+      </main>
+    </div>
+  );
+}
+
+// #18 — deliberately duplicated from the server's own list (lib/billing.ts)
+// rather than fetched, same trade-off this app already makes for the
+// relationship/pulse/sphere category vocabularies: it's a short, rarely
+// -changed list, and a client-side copy means the gate below can render
+// synchronously off whatever GET /billing/status already returned.
+type BillingSubscriptionStatus = "trialing" | "active" | "past_due" | "canceled" | "grandfathered" | "admin";
+function hasBillingAccess(status: BillingSubscriptionStatus): boolean {
+  return status === "trialing" || status === "active" || status === "past_due" || status === "grandfathered" || status === "admin";
+}
+interface BillingStatus {
+  status: BillingSubscriptionStatus;
+  billingEnabled: boolean;
+  trialEndsAt: string | null;
+  currentPeriodEnd: string | null;
+  cancelAtPeriodEnd: boolean;
+}
+
+// The full-screen paywall (#18's grilling, Q11) — parallel to AuthGate
+// above, shown once a user has no trial/active/grace-period access left.
+// There is deliberately no "soft" or partial-access state to fall into:
+// Q1 settled on paid-only with no permanent free tier, so once this renders
+// the only way back into the app is Checkout.
+function BillingGate({ status, trialEndsAt, onLogout }: {
+  status: BillingSubscriptionStatus; trialEndsAt: string | null; onLogout: () => void;
+}) {
+  const [busy, setBusy] = useState<"month" | "year" | null>(null);
+  const [error, setError] = useState("");
+
+  async function startCheckout(interval: "month" | "year") {
+    setBusy(interval);
+    setError("");
+    try {
+      const r = await apiFetch(`${API}/billing/checkout`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ interval }),
+      });
+      if (r.ok) {
+        const d = await r.json();
+        if (d.url) { window.location.href = d.url; return; }
+      }
+      setError("Couldn't start checkout. Try again.");
+    } catch {
+      setError("Couldn't reach the server.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const expiredTrial = status === "canceled" && trialEndsAt && new Date(trialEndsAt) < new Date();
+
+  return (
+    <div style={R.root}>
+      <div style={R.woodLayer} />
+      <div style={R.ambient} />
+      <main style={G.wrap}>
+        <div style={R.logo}><span style={R.logoText}>Steward</span><span style={R.logoDot}>.</span></div>
+        <div style={{ ...R.tagline, textAlign: "center", marginBottom: 38 }}>FOCUSED. FAITHFUL. FREE.</div>
+        <div style={G.welcome}>
+          {status === "past_due" ? "Your payment didn't go through"
+            : expiredTrial ? "Your trial has ended"
+            : "Start your 14-day free trial"}
+        </div>
+        <div style={{ ...G.notice, marginBottom: 20 }}>
+          {status === "past_due"
+            ? "Update your payment method to keep your access — we'll keep trying automatically in the meantime."
+            : "$8/month or $80/year (2 months free). No charge until your trial ends."}
+        </div>
+        {error && <div role="alert" style={{ ...S.empty, color: "#D4A090", marginBottom: 8 }}>{error}</div>}
+        <button style={G.googleBtn} disabled={busy !== null} onClick={() => startCheckout("month")}>
+          {busy === "month" ? "Starting…" : "Continue — $8/month"}
+        </button>
+        <button style={{ ...G.googleBtn, marginTop: 10 }} disabled={busy !== null} onClick={() => startCheckout("year")}>
+          {busy === "year" ? "Starting…" : "Continue — $80/year"}
+        </button>
+        <button style={{ ...G.addHomeToggle, marginTop: 14 }} onClick={onLogout}>Sign out</button>
       </main>
     </div>
   );

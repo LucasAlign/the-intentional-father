@@ -3,6 +3,7 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import pinoHttp from "pino-http";
 import router from "./routes";
+import billingWebhookRouter from "./routes/billingWebhook";
 import { authMiddleware } from "./middlewares/authMiddleware";
 import { logger } from "./lib/logger";
 
@@ -29,6 +30,15 @@ app.use(
 );
 app.use(cors({ credentials: true, origin: true }));
 app.use(cookieParser());
+// Stripe's webhook (#18) needs the exact raw bytes it signed to verify a
+// delivery's signature — billingWebhookRouter applies express.raw() as
+// route-level middleware on just its one route (not here, which would make
+// every other JSON route's body arrive as an unparsed Buffer too), but the
+// whole router still has to be mounted ahead of the global express.json()
+// below, since that would otherwise already have consumed the body by the
+// time a later-mounted route-level parser got a turn. Also ahead of
+// authMiddleware, since Stripe calls this directly with no session at all.
+app.use("/api", billingWebhookRouter);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(authMiddleware);
