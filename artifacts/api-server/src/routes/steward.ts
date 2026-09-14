@@ -17,6 +17,7 @@ import { testReminderRateLimit } from "../middlewares/testReminderRateLimit";
 import { reminderEmailAddRateLimit, reminderEmailVerifyRateLimit } from "../middlewares/reminderEmailRateLimit";
 import { generateEmailLoginCode, hashEmailLoginCode, EMAIL_CODE_TTL_MS, EMAIL_CODE_MAX_ATTEMPTS } from "../lib/auth";
 import { sendReminderEmailVerificationCode } from "../lib/email";
+import { getTribeIntentionText } from "../lib/tribeIntention";
 
 const MAX_PULSE_NOTE_LENGTH = 500;
 const MAX_SPHERE_NOTE_LENGTH = 500;
@@ -1069,6 +1070,48 @@ router.delete('/relationships/:id/permanent', async (req: Request, res: Response
   } catch (err) {
     req.log?.error({ err }, 'Error permanently deleting relationship');
     res.status(500).json({ error: 'Failed to permanently delete relationship' });
+  }
+});
+
+// GET /api/tribe-intention?relationshipId=N — Tribe's "Today's Intention"
+// card (#137). Generated lazily (first Tribe visit each day per user, see
+// lib/tribeIntention.ts's cache), targeted at whichever relationship the
+// client says is currently primary (Home.tsx's primaryRelationship() —
+// starred-first, else top of list; deliberately not recomputed here, since
+// Tribe's own notion of "primary" is independent from Today's
+// existence-based label logic).
+router.get('/tribe-intention', async (req: Request, res: Response) => {
+  try {
+    const relationshipId = parseInt(req.query.relationshipId as string, 10);
+    if (isNaN(relationshipId)) { res.status(400).json({ error: 'relationshipId is required' }); return; }
+    const userId = req.user!.id;
+
+    const [rel] = await db.select().from(relationships)
+      .where(and(eq(relationships.id, relationshipId), eq(relationships.userId, userId), eq(relationships.deleted, false)))
+      .limit(1);
+    if (!rel) { res.status(404).json({ error: 'Relationship not found' }); return; }
+
+    const [profileRow, commitRows] = await Promise.all([
+      db.select({ data: profileTable.data }).from(profileTable).where(eq(profileTable.userId, userId)).limit(1),
+      db.select({ text: commits.text, done: commits.done })
+        .from(commitRelationshipTargets)
+        .innerJoin(commits, eq(commits.id, commitRelationshipTargets.commitId))
+        .where(and(eq(commitRelationshipTargets.relationshipId, relationshipId), eq(commits.userId, userId), eq(commits.deleted, false)))
+        .orderBy(desc(commits.createdAt))
+        .limit(10),
+    ]);
+    const profileData = normalizeProfileData(profileRow[0]?.data ?? null);
+    const tone = isToneVoice(profileData?.voice) ? profileData.voice : DEFAULT_TONE_VOICE;
+    const commitments = {
+      open: commitRows.filter(c => !c.done).map(c => c.text).slice(0, 3),
+      kept: commitRows.filter(c => c.done).map(c => c.text).slice(0, 3),
+    };
+
+    const text = await getTribeIntentionText(userId, rel, commitments, tone);
+    res.json({ text });
+  } catch (err) {
+    req.log?.error({ err }, 'Error getting Tribe intention');
+    res.status(500).json({ error: 'Failed to get Tribe intention' });
   }
 });
 

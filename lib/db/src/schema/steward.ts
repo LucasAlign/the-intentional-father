@@ -370,3 +370,26 @@ export const customVerses = pgTable("custom_verses", {
 export const insertCustomVerseSchema = createInsertSchema(customVerses).omit({ id: true, createdAt: true, updatedAt: true });
 export type InsertCustomVerse = z.infer<typeof insertCustomVerseSchema>;
 export type CustomVerse = typeof customVerses.$inferSelect;
+
+// #137 — Tribe's auto-generated "Today's Intention" card. One row per
+// user/date/relationship: an OpenAI-generated line about whoever is
+// currently the Tribe tab's primary person (starred-first, else top of
+// list — see primaryRelationship() in Home.tsx), generated lazily on first
+// Tribe visit each day and cached for the rest of that day (lib/tribeIntention.ts).
+// Keying on relationshipId, not just user+date, means a mid-day change of
+// who's primary naturally misses the cache and generates a fresh row for
+// the new pairing — no explicit invalidation logic needed.
+export const tribeIntentions = pgTable("tribe_intentions", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  date: text("date").notNull(),
+  relationshipId: integer("relationship_id").notNull().references(() => relationships.id, { onDelete: "cascade" }),
+  text: text("text").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  unique("tribe_intentions_user_date_relationship_unique").on(table.userId, table.date, table.relationshipId),
+]);
+
+export const insertTribeIntentionSchema = createInsertSchema(tribeIntentions).omit({ id: true, createdAt: true });
+export type InsertTribeIntention = z.infer<typeof insertTribeIntentionSchema>;
+export type TribeIntention = typeof tribeIntentions.$inferSelect;

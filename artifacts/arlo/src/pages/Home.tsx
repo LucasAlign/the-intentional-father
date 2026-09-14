@@ -2296,9 +2296,24 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
   const byId = new Map(relationships.map(r => [r.id, r]));
   const starredPeople = relationships.filter(r => r.starred);
   const unstarredPeople = relationships.filter(r => !r.starred);
-  const intentionText = primaryRel?.name
+  // #137 — auto-generated, once-a-day rotating version of this line.
+  // Fetched lazily (only once this tab actually renders, and only when
+  // there's a primary person to generate about) and cached server-side for
+  // the rest of the day; this local fallback covers the load-in moment and
+  // the no-relationships-at-all case, where there's nothing to fetch.
+  const [generatedIntention, setGeneratedIntention] = useState<string | null>(null);
+  useEffect(() => {
+    setGeneratedIntention(null);
+    if (!primaryRel) return;
+    let cancelled = false;
+    getJson(`${API}/tribe-intention?relationshipId=${primaryRel.id}`, null).then(d => {
+      if (!cancelled && isRecord(d) && typeof d.text === "string") setGeneratedIntention(d.text);
+    });
+    return () => { cancelled = true; };
+  }, [primaryRel?.id]);
+  const intentionText = generatedIntention ?? (primaryRel?.name
     ? `Ask ${primaryRel.name} about their week before you talk about yours.`
-    : "Log commitments to the people who matter most — spouse, kids, parents, close friends.";
+    : "Log commitments to the people who matter most — spouse, kids, parents, close friends.");
   const open = commits.filter(c => !c.done && !deletingIds.includes(c.id));
   const done = commits.filter(c => c.done && !deletingIds.includes(c.id));
 
