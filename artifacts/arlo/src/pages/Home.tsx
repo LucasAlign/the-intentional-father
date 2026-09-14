@@ -400,6 +400,41 @@ function pursuitColor(pursuitId: number | null, ids: number[]) {
   return BIZ_PALETTE[i >= 0 ? i % BIZ_PALETTE.length : 0];
 }
 
+// #86 — locks the actual document body while 1+ modals are open. Module-level
+// and reference-counted (not per-modal state) because modals can stack, and
+// only the *first* lock/*last* unlock should touch the real DOM: an inner
+// modal unmounting while an outer one is still open must not restore scroll
+// out from under it. `position: fixed` (not just `overflow: hidden`) is what
+// actually matters here — M.sheet already had `overscroll-behavior: contain`
+// (#86's first attempt) to stop a scroll gesture at the sheet's own edges
+// from chaining into the page behind it, but that alone doesn't stop iOS
+// Safari's elastic rubber-band bounce, which is a property of the body's own
+// touch handling, not of scroll chaining — the previous fix stopped the
+// gesture from scrolling the page, but not from visually bouncing it. Pinning
+// the body via `position: fixed` removes it from that physics entirely.
+let modalLockCount = 0;
+let modalLockScrollY = 0;
+function lockBodyScroll() {
+  if (modalLockCount === 0) {
+    modalLockScrollY = window.scrollY;
+    document.body.style.position = "fixed";
+    document.body.style.top = `-${modalLockScrollY}px`;
+    document.body.style.left = "0";
+    document.body.style.right = "0";
+  }
+  modalLockCount++;
+}
+function unlockBodyScroll() {
+  modalLockCount--;
+  if (modalLockCount === 0) {
+    document.body.style.position = "";
+    document.body.style.top = "";
+    document.body.style.left = "";
+    document.body.style.right = "";
+    window.scrollTo(0, modalLockScrollY);
+  }
+}
+
 // ── Modal dialog shell (#36) ──────────────────────────────────────────────────
 // Every modal in the app renders the same overlay/sheet/strip/head/title
 // boilerplate by hand — this centralizes the part that needs real a11y
@@ -427,12 +462,14 @@ function ModalSheet({ title, headExtra, onClose, sheetOnClick, children }: {
     if (!sheetRef.current?.contains(document.activeElement)) {
       sheetRef.current?.focus();
     }
+    lockBodyScroll();
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") onClose();
     }
     document.addEventListener("keydown", onKeyDown);
     return () => {
       document.removeEventListener("keydown", onKeyDown);
+      unlockBodyScroll();
       if (previouslyFocused && document.contains(previouslyFocused)) previouslyFocused.focus();
     };
     // onClose is re-created per render in most callers (inline arrow) — keying
