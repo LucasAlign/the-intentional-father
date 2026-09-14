@@ -63,6 +63,11 @@ interface ProfileData {
   name?: string | null; season_of_life?: string | null;
   core_identity?: CoreIdentity | null; planning_profile?: PlanningProfile | null; guardrails?: Guardrails | null;
   voice?: ToneVoice | null; remindersEnabled?: boolean | null; hintsEnabled?: boolean | null; dismissedHints?: string[] | null;
+  // #132 — separate from dismissedHints on purpose: this is an account
+  // -status notice, not a "helpful tip," so it must not reappear just
+  // because someone toggles the Helpful Hints master switch back on (which
+  // clears dismissedHints as its own reset behavior, see #83).
+  billingGrandfatherNoticeDismissed?: boolean | null;
 }
 interface VerseEntry { ref: string; text: string; favorited: boolean; custom?: boolean; id?: number; }
 interface VerseHistoryEntry extends VerseEntry { date: string; }
@@ -771,6 +776,18 @@ export default function Home() {
     } catch { /* optimistic update already applied; a stale read on next load self-corrects */ }
   }
 
+  // #132 — its own dismiss path, deliberately not reusing dismissHint/
+  // dismissedHints (see ProfileData's billingGrandfatherNoticeDismissed).
+  async function dismissBillingGrandfatherNotice() {
+    setProfile(p => ({ ...(p ?? {}), billingGrandfatherNoticeDismissed: true }));
+    try {
+      await apiFetch(`${API}/profile`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ billingGrandfatherNoticeDismissed: true }),
+      });
+    } catch { /* optimistic update already applied; a stale read on next load self-corrects */ }
+  }
+
   async function dismissHint(id: string) {
     const next = Array.from(new Set([...(profile?.dismissedHints ?? []), id]));
     setProfile(p => ({ ...(p ?? {}), dismissedHints: next }));
@@ -1020,7 +1037,7 @@ export default function Home() {
       </header>
 
       <main style={R.screen}>
-        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} onOpenJournalHistory={() => setJournalHistoryOpen(true)} onOpenIntentionHistory={() => setIntentionHistoryOpen(true)} onToggleVerseFavorite={toggleVerseFavorite} onOpenVerseHistory={() => setVerseHistoryOpen(true)} onOpenVerseFavorites={() => setVerseFavoritesOpen(true)} />}
+        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} onOpenJournalHistory={() => setJournalHistoryOpen(true)} onOpenIntentionHistory={() => setIntentionHistoryOpen(true)} onToggleVerseFavorite={toggleVerseFavorite} onOpenVerseHistory={() => setVerseHistoryOpen(true)} onOpenVerseFavorites={() => setVerseFavoritesOpen(true)} billingStatus={billingStatus} onDismissBillingGrandfatherNotice={dismissBillingGrandfatherNotice} />}
         {tab === "her" && <Relationships relationships={relationships} refreshRelationships={refreshRelationships} commits={commits} refreshCommits={refreshCommits} />}
         {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} onOpenClosed={() => setClosedPursuitsOpen(true)} onOpenDeletedJobs={() => setDeletedJobsOpen(true)} />}
         {tab === "sphere" && <Sphere />}
@@ -1488,7 +1505,7 @@ function RemindersModal({ remindersEnabled, onSetRemindersEnabled, onSendTestRem
 }
 
 // ── Today ───────────────────────────────────────────────────────────────────
-function Today({ verse, tasks, journal, events, name, profile, relationships, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks, onOpenPriority, onViewCompleted, pulseChecks, onSavePulseCheck, onOpenJournalHistory, onOpenIntentionHistory, onToggleVerseFavorite, onOpenVerseHistory, onOpenVerseFavorites }: {
+function Today({ verse, tasks, journal, events, name, profile, relationships, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks, onOpenPriority, onViewCompleted, pulseChecks, onSavePulseCheck, onOpenJournalHistory, onOpenIntentionHistory, onToggleVerseFavorite, onOpenVerseHistory, onOpenVerseFavorites, billingStatus, onDismissBillingGrandfatherNotice }: {
   verse: VerseEntry | null; tasks: Task[]; journal: Journal; events: Event[]; name?: string | null;
   profile: ProfileData | null; relationships: Relationship[]; primaryRel: Relationship | null;
   onSend: (m?: string) => void; ci: string; setCi: (v: string) => void; sending: boolean;
@@ -1497,6 +1514,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   pulseChecks: PulseCheckEntry[]; onSavePulseCheck: (category: PulseCategory, state: PulseState, note: string) => Promise<boolean>;
   onOpenJournalHistory: () => void; onOpenIntentionHistory: () => void;
   onToggleVerseFavorite: (ref: string, favorite: boolean, customId?: number) => Promise<boolean>; onOpenVerseHistory: () => void; onOpenVerseFavorites: () => void;
+  billingStatus: BillingStatus | null; onDismissBillingGrandfatherNotice: () => void;
 }) {
   const [intent, setIntent] = useState(journal.commit_text);
   const [reflect, setReflect] = useState(journal.reflect);
@@ -1601,6 +1619,21 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
         <div><div style={S.greet}>{greeting}</div><div style={S.greetSub}>Let's build something that matters.</div></div>
         <div style={S.dateChip}><Icon name="cal" size={13} color={C.parchmentMid} /><span style={{ marginLeft: 6 }}>{new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</span></div>
       </div>
+
+      {/* #132 — deliberately not a <FirstVisitTip>: it's account-status
+          communication for the grandfathered pre-cutover cohort specifically,
+          gated on billingStatus rather than the general hints system, so it
+          can't be resurfaced by toggling Helpful Hints back on and never
+          shows before billing is actually live. Same visual/dismiss pattern
+          (S.tip/S.tipText/S.tipClose) as FirstVisitTip on purpose. */}
+      {billingStatus?.billingEnabled && billingStatus.status === "grandfathered" && profile?.billingGrandfatherNoticeDismissed !== true && (
+        <div style={S.tip}>
+          <div style={S.tipText}>
+            "Steward" is now a paid subscription app. Beta users will enjoy an extended free trial for your help and feedback during the app development. You will be notified before the extended trial ends.
+          </div>
+          <button style={S.tipClose} onClick={onDismissBillingGrandfatherNotice} aria-label="Dismiss notice">✕</button>
+        </div>
+      )}
 
       <FirstVisitTip id="today">This is your daily home base — set today's intention, check your top priorities, log a Pulse Check, and reflect before you're done.</FirstVisitTip>
 

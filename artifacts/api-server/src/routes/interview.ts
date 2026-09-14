@@ -244,17 +244,19 @@ router.get("/profile", async (req: Request, res: Response) => {
 
 // PATCH /api/profile — updates one or more fields on the user's profile
 // without re-running the interview. `voice` and `remindersEnabled` (#75),
-// plus `hintsEnabled`/`dismissedHints` (#83 — the Helpful Hints master
-// switch and its per-hint close-button state); the only writer of profile
-// data before this was interview completion (and the dev-only test seed).
+// `hintsEnabled`/`dismissedHints` (#83 — the Helpful Hints master switch and
+// its per-hint close-button state), and `billingGrandfatherNoticeDismissed`
+// (#132 — deliberately separate from dismissedHints, see lib/profile.ts);
+// the only writer of profile data before this was interview completion (and
+// the dev-only test seed).
 router.patch("/profile", async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
-    const { voice, remindersEnabled, hintsEnabled, dismissedHints } = req.body as {
-      voice?: unknown; remindersEnabled?: unknown; hintsEnabled?: unknown; dismissedHints?: unknown;
+    const { voice, remindersEnabled, hintsEnabled, dismissedHints, billingGrandfatherNoticeDismissed } = req.body as {
+      voice?: unknown; remindersEnabled?: unknown; hintsEnabled?: unknown; dismissedHints?: unknown; billingGrandfatherNoticeDismissed?: unknown;
     };
-    if (voice === undefined && remindersEnabled === undefined && hintsEnabled === undefined && dismissedHints === undefined) {
-      res.status(400).json({ error: "Provide at least one of: voice, remindersEnabled, hintsEnabled, dismissedHints" });
+    if (voice === undefined && remindersEnabled === undefined && hintsEnabled === undefined && dismissedHints === undefined && billingGrandfatherNoticeDismissed === undefined) {
+      res.status(400).json({ error: "Provide at least one of: voice, remindersEnabled, hintsEnabled, dismissedHints, billingGrandfatherNoticeDismissed" });
       return;
     }
     if (voice !== undefined && !isToneVoice(voice)) {
@@ -273,6 +275,10 @@ router.patch("/profile", async (req: Request, res: Response) => {
       res.status(400).json({ error: "dismissedHints must be an array of strings" });
       return;
     }
+    if (billingGrandfatherNoticeDismissed !== undefined && typeof billingGrandfatherNoticeDismissed !== "boolean") {
+      res.status(400).json({ error: "billingGrandfatherNoticeDismissed must be a boolean" });
+      return;
+    }
     const [existing] = await db
       .select()
       .from(profileTable)
@@ -285,6 +291,7 @@ router.patch("/profile", async (req: Request, res: Response) => {
       ...(remindersEnabled !== undefined ? { remindersEnabled } : {}),
       ...(hintsEnabled !== undefined ? { hintsEnabled } : {}),
       ...(dismissedHints !== undefined ? { dismissedHints } : {}),
+      ...(billingGrandfatherNoticeDismissed !== undefined ? { billingGrandfatherNoticeDismissed } : {}),
     };
     await db
       .insert(profileTable)
@@ -293,7 +300,7 @@ router.patch("/profile", async (req: Request, res: Response) => {
         target: profileTable.userId,
         set: { data, updatedAt: new Date() },
       });
-    res.json({ voice: data.voice, remindersEnabled: data.remindersEnabled, hintsEnabled: data.hintsEnabled, dismissedHints: data.dismissedHints });
+    res.json({ voice: data.voice, remindersEnabled: data.remindersEnabled, hintsEnabled: data.hintsEnabled, dismissedHints: data.dismissedHints, billingGrandfatherNoticeDismissed: data.billingGrandfatherNoticeDismissed });
   } catch (err) {
     req.log?.error({ err }, "Error updating profile");
     res.status(500).json({ error: "Failed to update profile" });

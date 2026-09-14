@@ -40,6 +40,11 @@ export interface ProfileData {
   // on. Turning the switch on (from off) always clears this array — that's
   // the "reset" behavior, not something normalizeProfileData decides.
   dismissedHints: string[];
+  // #132 — deliberately its own flag, not folded into dismissedHints: this
+  // notice is account-status communication (told a grandfathered beta user
+  // billing has launched), not a "helpful tip," so it must survive someone
+  // toggling Helpful Hints back on (which resets dismissedHints).
+  billingGrandfatherNoticeDismissed: boolean;
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -96,5 +101,6 @@ export function normalizeProfileData(raw: unknown): ProfileData | null {
     remindersEnabled: raw.remindersEnabled !== false,
     hintsEnabled: raw.hintsEnabled === true,
     dismissedHints: stringArray(raw.dismissedHints),
+    billingGrandfatherNoticeDismissed: raw.billingGrandfatherNoticeDismissed === true,
   };
 }
