@@ -5847,12 +5847,20 @@ const M: Record<string, CSSProperties> = {
   // against it can render with its bottom (here, the Cancel button) below
   // the actually-visible area once the browser's own chrome (address bar,
   // or an embedded preview's own frame) is accounted for; dvh tracks the
-  // real visible viewport instead. overscrollBehavior: contain (#86) stops
+  // real visible viewport instead. overscrollBehavior: none (#86) stops
   // scroll chaining once you hit the sheet's own top/bottom edge — without
   // it, the gesture falls through to the page behind this fixed overlay,
   // which rubber-bands (mainly iOS Safari) and snaps back once released,
-  // reading as "scroll up, then it bounces back."
-  sheet: { width: "100%", maxWidth: 440, margin: "0 auto", maxHeight: "88dvh", position: "relative", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain", background: "linear-gradient(160deg,rgba(34,30,18,0.98),rgba(16,14,8,0.98))", backdropFilter: "blur(24px)", borderRadius: "22px 22px 0 0", padding: "24px 24px 48px", border: "1px solid rgba(210,190,130,0.18)", borderBottom: "none", boxShadow: "0 -10px 50px rgba(0,0,0,0.7)" },
+  // reading as "scroll up, then it bounces back." An earlier cut used
+  // "contain", which per spec only stops that chaining to the page behind —
+  // it explicitly still permits the browser's own rubber-band bounce to
+  // render on the sheet's *own* edges, which is exactly what kept the bug
+  // alive on any modal with enough content to actually reach an edge (Tribe's
+  // Log a Commitment/Kept/Deleted lists, Sphere's History and walkthrough
+  // wizard) while shorter Work-tab forms never scrolled far enough to show
+  // it. "none" is a strict superset of "contain" (still blocks chaining,
+  // additionally suppresses the local bounce too), so there's no tradeoff.
+  sheet: { width: "100%", maxWidth: 440, margin: "0 auto", maxHeight: "88dvh", position: "relative", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "none", background: "linear-gradient(160deg,rgba(34,30,18,0.98),rgba(16,14,8,0.98))", backdropFilter: "blur(24px)", borderRadius: "22px 22px 0 0", padding: "24px 24px 48px", border: "1px solid rgba(210,190,130,0.18)", borderBottom: "none", boxShadow: "0 -10px 50px rgba(0,0,0,0.7)" },
   strip: { position: "absolute", top: 0, left: 0, right: 0, height: 2, background: `linear-gradient(90deg,transparent,${C.brass},transparent)`, boxShadow: `0 0 14px ${C.brassGlow}` },
   head: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
   title: { fontSize: 23, color: C.parchment, fontWeight: 400 },
