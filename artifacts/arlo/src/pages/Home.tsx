@@ -1482,13 +1482,20 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   const visibleTasks = prioritiesExpanded ? openTasks : openTasks.slice(0, PRIORITIES_VISIBLE_CAP);
   const hiddenTaskCount = openTasks.length - visibleTasks.length;
   const journalPrompt = rotatingItem(journalPromptsFor(profile, relationships));
-  const isSpouseRel = primaryRel?.category === "spouse";
-  const intentionLabel = isSpouseRel ? "MARRIAGE INTENTION" : primaryRel ? `${(primaryRel.type || "relationship").toUpperCase()} INTENTION` : "RELATIONSHIP INTENTION";
-  const intentionPlaceholder = isSpouseRel
+  // Existence-based, not tied to who's starred/primary — "no spouse in the
+  // picture" means checking the whole Tribe list, not just the top pick.
+  // Family/friend/other and an empty list all fall into "Friendship".
+  const hasSpouseRel = relationships.some(r => r.category === "spouse");
+  const hasChildRel = relationships.some(r => r.category === "child");
+  const intentionKind: "marriage" | "parenting" | "friendship" = hasSpouseRel ? "marriage" : hasChildRel ? "parenting" : "friendship";
+  const intentionLabel = intentionKind === "marriage" ? "MARRIAGE INTENTION" : intentionKind === "parenting" ? "PARENTING INTENTION" : "FRIENDSHIP INTENTION";
+  const intentionPlaceholder = intentionKind === "marriage"
     ? "What's your intention for your marriage today?"
-    : primaryRel?.name
-      ? `What's your intention with ${primaryRel.name} today?`
-      : "What's your intention for the people who matter most today?";
+    : intentionKind === "parenting"
+      ? "What's your intention for your kids today?"
+      : primaryRel?.name
+        ? `What's your intention with ${primaryRel.name} today?`
+        : "What's your intention for the people who matter most today?";
 
   async function addTask() {
     const t = newTask.trim();
@@ -5077,6 +5084,9 @@ function IntentionHistoryModal({ relationships, onClose, onCommitSaved, onRelati
   const [selectedDates, setSelectedDates] = useState<string[]>([]);
   const [transferQueue, setTransferQueue] = useState<IntentionHistoryEntry[] | null>(null);
   const scrollFade = useBottomScrollFade<HTMLDivElement>();
+  const hasSpouseRel = relationships.some(r => r.category === "spouse");
+  const hasChildRel = relationships.some(r => r.category === "child");
+  const historyTitle = hasSpouseRel ? "Marriage Intention History" : hasChildRel ? "Parenting Intention History" : "Friendship Intention History";
 
   useEffect(() => {
     getJson(`${API}/journal/intention-history`, null).then(d => {
@@ -5102,7 +5112,7 @@ function IntentionHistoryModal({ relationships, onClose, onCommitSaved, onRelati
 
   return (
     <div style={M.overlay}>
-      <ModalSheet title="Marriage Intention History" onClose={onClose}>
+      <ModalSheet title={historyTitle} onClose={onClose}>
         <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
           <button style={S.prioLogLink} onClick={() => (selectMode ? exitSelectMode() : setSelectMode(true))}>
             {selectMode ? "Cancel select" : "Select"}
