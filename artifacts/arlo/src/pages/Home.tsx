@@ -1592,7 +1592,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
 
       <div style={S.cardCentered}>
         <div style={{ ...S.prioHeadRow, width: "100%" }}>
-          <div style={{ ...S.eyebrow, marginBottom: 0 }}><Icon name="heart" /><span style={S.eyeText}>{intentionLabel}</span></div>
+          <div style={{ ...S.eyebrow, marginBottom: 0 }}><Icon name="heart" /><span id="intention-label" style={S.eyeText}>{intentionLabel}</span></div>
           <button style={S.prioLogLink} onClick={onOpenIntentionHistory}>History ›</button>
         </div>
         <textarea
@@ -1600,6 +1600,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
           value={intent}
           rows={2}
           placeholder={intentionPlaceholder}
+          aria-labelledby="intention-label"
           onChange={e => { setIntent(e.target.value); if (introSave.status === "error") introSave.reset(); }}
           onBlur={() => { if (intent !== journal.commit_text) introSave.save(() => onSaveJournal({ ...journal, commit_text: intent })); }}
         />
@@ -3701,9 +3702,9 @@ function StewardChat({ messages, input, setInput, send, sending, tasks, onOpenPr
         <div style={S.pageTitle}>Chat</div>
         <div style={S.pageSub}>Your partner, bringing just the truth.</div>
         <FirstVisitTip id="chat">Talk it through with Steward — brain dump, ask for a plan, or just think out loud.</FirstVisitTip>
-        <div style={S.toneRow}>
+        <div style={S.toneRow} role="radiogroup" aria-label="Steward tone">
           {(["straight_talk", "middle_of_the_road", "take_it_easy"] as const).map(t => (
-            <button key={t} style={{ ...S.toneOpt, ...(tone === t ? S.toneOptOn : {}) }} onClick={() => onSetTone(t)}>{TONE_LABEL[t]}</button>
+            <button key={t} style={{ ...S.toneOpt, ...(tone === t ? S.toneOptOn : {}) }} onClick={() => onSetTone(t)} role="radio" aria-checked={tone === t}>{TONE_LABEL[t]}</button>
           ))}
         </div>
       </div>
