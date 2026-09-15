@@ -1232,6 +1232,11 @@ function ProfileMenu({ name, email, onClose, onLogout, hintsEnabled, onSetHintsE
             actually using Steward and looking for it, not pushed on every
             visitor before they've seen the product. */}
         <AddToHomeScreen />
+        <div style={{ textAlign: "center", marginTop: 4, marginBottom: 10 }}>
+          <a href="/privacy" style={{ color: C.parchmentDim, fontSize: 12, textDecoration: "underline" }}>Privacy Policy</a>
+          <span style={{ color: C.parchmentDim, fontSize: 12, margin: "0 8px" }}>&middot;</span>
+          <a href="/terms" style={{ color: C.parchmentDim, fontSize: 12, textDecoration: "underline" }}>Terms of Service</a>
+        </div>
         <button style={M.cancel} onClick={onClose}>Close</button>
       </ModalSheet>
     </div>
