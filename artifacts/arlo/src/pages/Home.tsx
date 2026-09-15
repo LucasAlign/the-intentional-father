@@ -3856,6 +3856,26 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
     el.scrollTo({ top: targetTop - headerHeight, behavior });
   }
   const currentMonthIndex = months.findIndex(m => m.key === currentMonthKey);
+  // SIM-02 (#140) — all ~1,095 days stay mounted (see the #115 notes above
+  // for why: scrollToDay/the month-tracking listener both depend on every
+  // day row being a real, measurable DOM node), but only a small buffer
+  // around the currently-relevant month is exposed to assistive tech. Every
+  // day row outside this window gets aria-hidden, which affects only the
+  // accessibility tree — it doesn't touch layout, getBoundingClientRect(),
+  // or scroll behavior, so none of the #115 scroll/jump/sync mechanics
+  // above are affected. This does NOT reduce render/paint cost the way true
+  // virtualization would — offscreen rows are still in the DOM and painted,
+  // just no longer exposed to screen readers. currentMonthIndex already
+  // updates on both free-scroll (the listener above) and deliberate jumps
+  // (jumpMonth/Today), so this buffer re-derives automatically either way.
+  const activeMonthKeys = useMemo(() => {
+    const set = new Set<string>();
+    for (let i = currentMonthIndex - 1; i <= currentMonthIndex + 1; i++) {
+      const m = months[i];
+      if (m) set.add(m.key);
+    }
+    return set;
+  }, [months, currentMonthIndex]);
   // Instant, not smooth: the arrows are meant to be paged through quickly,
   // and a "smooth" scrollTo fired again before the previous one finishes
   // animating is exactly the case where mobile Safari's smooth-scroll
@@ -3908,7 +3928,7 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
       <div ref={headerRef} style={S.calendarHeader}>
         <div style={S.calendarMonthBar}>
           <button style={{ ...S.calendarMonthArrow, ...(currentMonthIndex <= 0 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => jumpMonth(-1)} aria-label="Previous month">‹</button>
-          <div style={S.calendarMonthLabel}>{months[currentMonthIndex]?.label ?? ""}</div>
+          <div style={S.calendarMonthLabel} aria-live="polite" aria-atomic="true">{months[currentMonthIndex]?.label ?? ""}</div>
           <button style={{ ...S.calendarMonthArrow, ...(currentMonthIndex >= months.length - 1 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => jumpMonth(1)} aria-label="Next month">›</button>
           <button style={S.calendarSyncBtn} onClick={handleSync} disabled={syncing} aria-label="Refresh calendar" title="Refresh calendar">
             <span style={{ display: "flex", animation: syncing ? "calendarSpin 0.6s linear infinite" : undefined }}>
@@ -3934,11 +3954,13 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
         const items = calendarEvents.filter(e => e.date === d.key);
         const isToday = d.key === todayKey;
         const past = d.key < todayKey;
+        const inBuffer = activeMonthKeys.has(d.monthKey);
         return (
           <div
             key={d.key}
             ref={el => { if (el) dayRefs.current.set(d.key, el); else dayRefs.current.delete(d.key); }}
             style={{ ...S.weekRow, ...(isToday ? S.weekToday : {}), ...(past ? { opacity: 0.3 } : {}) }}
+            aria-hidden={inBuffer ? undefined : true}
           >
             <div style={S.weekL}><div style={{ ...S.weekDay, ...(isToday ? { color: C.brass } : {}) }}>{d.day}</div><div style={S.prioSub}>{d.label}</div></div>
             <div style={{ flex: 1 }}>
