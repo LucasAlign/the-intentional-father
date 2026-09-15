@@ -63,3 +63,14 @@ textarea {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(216, 170, 62, 0.5);
 }
+
+/* SIM-07: below this width the Today greeting has no room to sit beside the
+   date chip without wrapping into several short lines (#141). Stack the date
+   under the greeting instead of squeezing both into one row. Scoped to the
+   narrowest widths only — 375px+ already has room side-by-side. */
+@media (max-width: 374px) {
+  .today-greet-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
