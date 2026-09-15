@@ -224,7 +224,12 @@ async function getList<T>(url: string): Promise<T[]> {
 
 // ── Palette ──────────────────────────────────────────────────────────────────
 const C = {
-  parchment: "#EEE4C4", parchmentMid: "#D2C7A2", parchmentDim: "#9C9272", parchmentLow: "#6E664C",
+  // #142 (SIM-12): parchmentLow was #6E664C, ~3.39:1 against C.ink — fails
+  // WCAG AA's 4.5:1 for normal text (see #37's note on G.loading below).
+  // #8C805F keeps the same warm olive hue but lifts luminance to land at
+  // ~4.96:1 — comfortably clears 4.5:1 while staying well short of
+  // parchmentDim's ~6.26:1, so it's still the dimmest/"faint" tier.
+  parchment: "#EEE4C4", parchmentMid: "#D2C7A2", parchmentDim: "#9C9272", parchmentLow: "#8C805F",
   brass: "#D8AA3E", brassSoft: "#C89A34", brassDeep: "#9A7420", brassGlow: "rgba(216,170,62,0.55)",
   walnut: "#5A3A20", walnutMid: "#7A4E2C", walnutLite: "#9C6840",
   ink: "#0C0E07",
@@ -5856,8 +5861,9 @@ function AddToHomeScreen() {
 
 const G: Record<string, CSSProperties> = {
   wrap: { position: "relative", zIndex: 10, flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px" },
-  // #37: parchmentLow measures ~3.4:1 against C.ink — fails WCAG AA (needs
-  // 4.5:1 for normal text). parchmentDim measures ~6.3:1, comfortably passes.
+  // #37/#142: parchmentLow was fixed in #142 (SIM-12) to ~4.96:1 against
+  // C.ink, clearing WCAG AA's 4.5:1 for normal text. parchmentDim measures
+  // ~6.3:1, comfortably passes.
   loading: { color: C.parchmentDim, fontSize: 14, letterSpacing: "0.04em" },
   welcome: { fontSize: 26, fontWeight: 400, color: C.parchment, textShadow: "0 2px 8px rgba(0,0,0,0.5)", marginBottom: 22, textAlign: "center" },
   googleBtn: { width: "100%", background: "rgba(30,26,16,0.62)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 12, color: C.parchmentMid, fontSize: 14, fontWeight: 700, padding: "13px 16px", cursor: "pointer", fontFamily: F },
