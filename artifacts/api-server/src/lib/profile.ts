@@ -35,6 +35,8 @@ export interface ProfileData {
   // false here (existing users see hints off until they opt in); a brand
   // new user gets hintsEnabled seeded true at onboarding completion
   // (routes/interview.ts) so hints still show automatically on first login.
+  // #142/SIM-08 traced a real bug in that seeding, not this default — see
+  // the onConflictDoUpdate fix in routes/interview.ts.
   hintsEnabled: boolean;
   // Hint ids the user has individually closed while the master switch is
   // on. Turning the switch on (from off) always clears this array — that's
