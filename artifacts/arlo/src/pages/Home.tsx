@@ -1480,6 +1480,15 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   const reflectSave = useSaveStatus();
   const addTaskSave = useSaveStatus();
   const { error: addTaskError, flash: flashAddTaskError } = useTapError();
+  // SIM-06 — priority entry had no visible Cancel and Escape did nothing.
+  // addPriorityBtnRef/restoreFocusOnAddingClose mirror ModalSheet's own
+  // Escape-to-close + on-close focus restore idiom (this block is a plain
+  // inline conditional render, not a ModalSheet, so it doesn't get that for
+  // free) — restoreFocusOnAddingClose is only set by cancelAdding, so a
+  // successful Add (which also flips `adding` back to false) doesn't yank
+  // focus away from wherever the user's attention naturally lands next.
+  const addPriorityBtnRef = useRef<HTMLButtonElement>(null);
+  const restoreFocusOnAddingClose = useRef(false);
   useEffect(() => { setIntent(journal.commit_text); setReflect(journal.reflect); }, [journal.commit_text, journal.reflect]);
   // #94 — Marriage Intention persists until changed; this is the "hasn't
   // been updated in a while" note, purely informational, gone the moment
@@ -1531,6 +1540,29 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
     });
     if (ok) { setNewTask(""); setAdding(false); }
   }
+  function cancelAdding() {
+    setNewTask("");
+    if (addTaskSave.status === "error") addTaskSave.reset();
+    restoreFocusOnAddingClose.current = true;
+    setAdding(false);
+  }
+  // Escape closes the priority-entry input the same way Cancel does —
+  // scoped to while it's actually open, added/removed via this effect,
+  // same idiom as ModalSheet's own onKeyDown (above).
+  useEffect(() => {
+    if (!adding) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") cancelAdding();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [adding]);
+  useEffect(() => {
+    if (!adding && restoreFocusOnAddingClose.current) {
+      restoreFocusOnAddingClose.current = false;
+      addPriorityBtnRef.current?.focus();
+    }
+  }, [adding]);
   async function complete(id: number): Promise<boolean> {
     try {
       const r = await apiFetch(`${API}/tasks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: true }) });
@@ -1662,12 +1694,13 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
                 onKeyDown={e => { if (e.key === "Enter") addTask(); }}
               />
               <button style={S.logBtn} disabled={!newTask.trim()} onClick={addTask}>Add</button>
+              <button style={S.prioLogLink} onClick={cancelAdding}>Cancel</button>
             </div>
             <SaveStatus status={addTaskSave.status} onRetry={addTask} />
             <TapError message={addTaskError} />
           </div>
         ) : (
-          <button style={{ ...S.intakeBtn, marginTop: 14 }} onClick={() => setAdding(true)}>＋  Add a priority</button>
+          <button ref={addPriorityBtnRef} style={{ ...S.intakeBtn, marginTop: 14 }} onClick={() => setAdding(true)}>＋  Add a priority</button>
         )}
       </div>
 
