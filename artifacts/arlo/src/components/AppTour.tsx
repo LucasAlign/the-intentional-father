@@ -15,7 +15,13 @@ type TourIconName = "sun" | "heart" | "work" | "globe" | "cal" | "steward";
 // Paths copied verbatim from Home.tsx's <Icon> (bottom nav) so the tour's
 // medallion always matches the tab it's introducing.
 function TourIcon({ name, size = 18, color = C.brass, stroke = 1.8 }: { name: TourIconName; size?: number; color?: string; stroke?: number }) {
-  if (name === "steward") return <span style={{ fontSize: size * 0.75, fontWeight: 700, color }}>S</span>;
+  // SIM-11 (#142): every svg path below is already aria-hidden, but this one
+  // glyph wasn't — leaving it exposed to assistive tech, which read it right
+  // up against the step title ("Chat") in headRow below with no separator,
+  // producing the "S Chat" the simulation flagged. Hiding it (it's already
+  // decorative — the visible label stays "Chat", matching the nav tab) fixes
+  // that without touching any copy.
+  if (name === "steward") return <span aria-hidden="true" style={{ fontSize: size * 0.75, fontWeight: 700, color }}>S</span>;
   const p = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: color, strokeWidth: stroke, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
   const paths: Record<Exclude<TourIconName, "steward">, ReactElement> = {
     sun: <><circle cx="12" cy="12" r="4.5" /><path d="M12 1v3M12 20v3M4 12H1M23 12h-3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2" /></>,
