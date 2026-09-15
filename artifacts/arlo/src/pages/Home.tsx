@@ -514,6 +514,68 @@ function ModalSheet({ title, headExtra, onClose, sheetOnClick, children }: {
   );
 }
 
+// SIM-09 (#142) — a small, reusable "⋯" overflow menu for maintenance/
+// recovery controls (Reset order, Deleted, Closed, history, …) that would
+// otherwise sit at the same visual weight as a tab's primary create/log
+// action. Deliberately not ModalSheet (that's a full bottom-sheet dialog,
+// too heavy for 1-3 links) — instead a small inline popover that borrows
+// ModalSheet's own interaction conventions: an invisible full-screen
+// backdrop closes it on an outside click (same idea as M.overlay's
+// onClick={onClose} in ProfileMenu), Escape closes it and returns focus to
+// the trigger, and picking an item closes the menu before running its
+// action. Every item this opens (ResetPeopleOrder's confirm, PeopleDeletedModal,
+// PursuitsClosedModal, JobsDeletedModal, CommitHistoryModal) is unchanged —
+// this only changes how you reach them.
+function OverflowMenu({ label, items }: { label: string; items: { label: string; onSelect: () => void }[] }) {
+  const [open, setOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") { setOpen(false); buttonRef.current?.focus(); }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open]);
+
+  if (items.length === 0) return null;
+
+  return (
+    <div style={S.overflowWrap}>
+      <button
+        ref={buttonRef}
+        type="button"
+        style={S.overflowBtn}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={label}
+        onClick={() => setOpen(o => !o)}
+      >
+        ⋯
+      </button>
+      {open && (
+        <>
+          <div style={S.overflowBackdrop} onClick={() => setOpen(false)} />
+          <div role="menu" aria-label={label} style={S.overflowMenu}>
+            {items.map(item => (
+              <button
+                key={item.label}
+                type="button"
+                role="menuitem"
+                style={S.overflowMenuItem}
+                onClick={() => { setOpen(false); item.onSelect(); }}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // Tracks whether a scrollable element has more content below its visible
 // area — drives the fade-cue hint (#37) so it's only shown while there's
 // somewhere left to scroll, and disappears once the user reaches the end.
@@ -2455,10 +2517,17 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
       <div style={S.card}>
         <div style={S.prioHeadRow}>
           <div style={S.eyebrow}><h2 style={S.eyeText}>PEOPLE</h2></div>
-          <div>
-            {relationships.length > 0 && <button style={S.prioLogLink} onClick={() => setResetConfirmOpen(true)}>Reset order</button>}
-            <button style={{ ...S.prioLogLink, marginLeft: 12 }} onClick={() => setDeletedPeopleOpen(true)}>Deleted ›</button>
-          </div>
+          {/* SIM-09 (#142) — Reset order/Deleted moved off the header row's
+              own visual weight and into a secondary overflow menu; the
+              actions themselves (resetConfirmOpen, deletedPeopleOpen) are
+              untouched. */}
+          <OverflowMenu
+            label="People list options"
+            items={[
+              ...(relationships.length > 0 ? [{ label: "Reset order", onSelect: () => setResetConfirmOpen(true) }] : []),
+              { label: "Deleted ›", onSelect: () => setDeletedPeopleOpen(true) },
+            ]}
+          />
         </div>
         <TapError message={orderError} />
         {relationships.length === 0 ? (
@@ -2501,8 +2570,12 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
         </div>
       )}
 
+      {/* SIM-09 (#142) — same treatment as PEOPLE's header above: this
+          history link sat at equal weight right above the primary "Log a
+          commitment" action, so it moves into its own overflow menu (the
+          modal it opens, historyOpen/CommitHistoryModal, is unchanged). */}
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 2 }}>
-        <button style={S.prioLogLink} onClick={() => setHistoryOpen(true)}>Kept &amp; Deleted history ›</button>
+        <OverflowMenu label="Commitment history options" items={[{ label: "Kept & Deleted history ›", onSelect: () => setHistoryOpen(true) }]} />
       </div>
       <button style={{ ...S.intakeBtn, marginBottom: 4 }} onClick={() => setLogOpen({})}>＋  Log a commitment</button>
 
@@ -3116,9 +3189,19 @@ function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit, onOp
       <h1 style={S.pageTitle}>Work</h1>
       <div style={S.pageSub}>Active jobs by pursuit. Tap a row to edit.</div>
       <FirstVisitTip id="work">Group your jobs under pursuits — a job, a business, a volunteer role — to see progress at a glance.</FirstVisitTip>
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 16, marginBottom: 2 }}>
-        <button style={S.prioLogLink} onClick={onOpenDeletedJobs}>Deleted Jobs ›</button>
-        <button style={S.prioLogLink} onClick={onOpenClosed}>Closed ›</button>
+      {/* SIM-09 (#142) — Deleted Jobs/Closed used to be the first
+          interactive thing on the whole screen, at the same weight as
+          the actual pursuit list below. Moved into a secondary overflow
+          menu; onOpenDeletedJobs/onOpenClosed (and the modals they open)
+          are unchanged. */}
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 2 }}>
+        <OverflowMenu
+          label="Work list options"
+          items={[
+            { label: "Deleted Jobs ›", onSelect: onOpenDeletedJobs },
+            { label: "Closed ›", onSelect: onOpenClosed },
+          ]}
+        />
       </div>
       {pursuits.length === 0 && jobs.length === 0 ? (
         <div style={S.card}><div style={S.empty}>No pursuits yet. Add one to start planning ahead.</div></div>
@@ -5938,6 +6021,17 @@ const S: Record<string, CSSProperties> = {
   prioHeadRow: { display: "flex", justifyContent: "space-between", alignItems: "center" },
   prioLogLink: { background: "none", border: "none", color: C.brassSoft, fontSize: 14, cursor: "pointer", fontFamily: F },
   prioExpandBtn: { width: "100%", background: "none", border: "1px dashed rgba(210,190,130,0.22)", borderRadius: 12, color: C.brassSoft, fontSize: 14, fontWeight: 600, padding: "10px", cursor: "pointer", fontFamily: F, marginTop: 4 },
+  // SIM-09 (#142) — the "⋯" overflow trigger + its popover menu, deliberately
+  // muted (icon only, dim parchment) next to a card's own eyebrow/heading so
+  // it reads as secondary, unlike prioLogLink's brass text links it replaces.
+  overflowWrap: { position: "relative", display: "inline-block" },
+  overflowBtn: { width: 30, height: 30, display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 8, color: C.parchmentDim, fontSize: 18, lineHeight: 1, cursor: "pointer", fontFamily: F },
+  // Invisible, full-screen — same "tap outside to dismiss" role M.overlay's
+  // onClick={onClose} plays for ProfileMenu/ModalSheet, just without the
+  // dimmed backdrop look (this is a small inline popover, not a dialog).
+  overflowBackdrop: { position: "fixed", inset: 0, zIndex: 90, background: "transparent" },
+  overflowMenu: { position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 91, minWidth: 190, display: "flex", flexDirection: "column", gap: 2, background: "linear-gradient(160deg,rgba(34,30,18,0.98),rgba(16,14,8,0.98))", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 12, padding: 6, boxShadow: "0 10px 30px rgba(0,0,0,0.6)" },
+  overflowMenuItem: { textAlign: "left", background: "none", border: "none", color: C.parchmentMid, fontSize: 14, padding: "10px 12px", borderRadius: 8, cursor: "pointer", fontFamily: F },
   eyeText: { fontSize: 11, letterSpacing: "0.16em", color: C.brassSoft, fontWeight: 600 },
   verseText: { fontSize: 18, lineHeight: 1.6, color: C.parchment, marginBottom: 14, textAlign: "center" },
   verseRef: { fontSize: 11, letterSpacing: "0.12em", color: C.brassSoft },
