@@ -1568,11 +1568,11 @@ router.get('/jobs/deleted', async (req: Request, res: Response) => {
 router.post('/jobs', async (req: Request, res: Response) => {
   try {
     const { name, stage, due, pct, pursuitId, materials, budget, risk, notes } = req.body;
-    if (!name) { res.status(400).json({ error: 'name is required' }); return; }
+    if (typeof name !== 'string' || !name.trim()) { res.status(400).json({ error: 'name is required' }); return; }
     const resolved = await resolvePursuitId(req.user!.id, pursuitId, res);
     if (!resolved.ok) return; // resolvePursuitId already responded
     const [row] = await db.insert(jobs).values({
-      userId: req.user!.id, name, stage: stage || '', due: due || '', pct: pct ?? 0, pursuitId: resolved.value,
+      userId: req.user!.id, name: name.trim(), stage: stage || '', due: due || '', pct: pct ?? 0, pursuitId: resolved.value,
       materials: typeof materials === 'string' ? materials : '',
       budget: typeof budget === 'string' ? budget : '',
       risk: typeof risk === 'string' ? risk : '',

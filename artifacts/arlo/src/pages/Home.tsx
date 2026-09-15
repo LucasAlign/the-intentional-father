@@ -4136,14 +4136,17 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
   const [empJobName, setEmpJobName] = useState("");
   const [empJobDue, setEmpJobDue] = useState("");
   const [empJobNotes, setEmpJobNotes] = useState("");
+  const [empNameErr, setEmpNameErr] = useState("");
   const empSaveStatus = useSaveStatus();
 
   async function submitEmployeeJob() {
+    if (!empJobName.trim()) { setEmpNameErr("Give this job a name to continue."); return; }
+    setEmpNameErr("");
     await empSaveStatus.save(async () => {
       const r = await apiFetch(`${API}/jobs`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: empJobName.trim() || "Untitled job", due: empJobDue.trim(), stage: "New", pct: 0, pursuitId,
+          name: empJobName.trim(), due: empJobDue.trim(), stage: "New", pct: 0, pursuitId,
           materials: "", budget: "", risk: "", notes: empJobNotes.trim(),
         }),
       });
@@ -4156,15 +4159,17 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
   const [wizardStep, setWizardStep] = useState(0);
   const [val, setVal] = useState("");
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [wizardNameErr, setWizardNameErr] = useState("");
   const wizardSaveStatus = useSaveStatus();
   const q = Qs[wizardStep];
+  const isNameStep = q.key === "name";
 
   async function submitWizardJob(final: Record<string, string>) {
     await wizardSaveStatus.save(async () => {
       const r = await apiFetch(`${API}/jobs`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: final.name || "Untitled job", due: final.due || "", stage: "New", pct: 0, pursuitId,
+          name: final.name, due: final.due || "", stage: "New", pct: 0, pursuitId,
           materials: final.materials || "", budget: final.budget || "", risk: final.risk || "",
         }),
       });
@@ -4173,7 +4178,10 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
     });
   }
   function advanceWizard(answer: string) {
-    const next = { ...answers, [q.key]: answer };
+    const trimmed = answer.trim();
+    if (isNameStep && !trimmed) { setWizardNameErr("Give this job a name to continue."); return; }
+    setWizardNameErr("");
+    const next = { ...answers, [q.key]: trimmed };
     setAnswers(next); setVal("");
     if (wizardStep < Qs.length - 1) setWizardStep(s => s + 1);
     else submitWizardJob(next);
@@ -4308,7 +4316,7 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
         <ModalSheet title="New Job" headExtra={selectedPursuitName ? <div style={S.prioSub}>{selectedPursuitName}</div> : undefined} onClose={onClose}>
           <div style={E.fieldGroup}>
             <div style={E.label}>Name</div>
-            <input style={M.input} value={empJobName} onChange={e => setEmpJobName(e.target.value)} placeholder="e.g. Finish Q3 report, or: Finish AWS certification" autoFocus />
+            <input style={M.input} value={empJobName} onChange={e => { setEmpJobName(e.target.value); if (empNameErr) setEmpNameErr(""); }} placeholder="e.g. Finish Q3 report, or: Finish AWS certification" autoFocus />
           </div>
           <div style={E.fieldGroup}>
             <div style={E.label}>Due date (optional)</div>
@@ -4318,7 +4326,8 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
             <div style={E.label}>Notes</div>
             <input style={M.input} value={empJobNotes} onChange={e => setEmpJobNotes(e.target.value)} placeholder="Optional" />
           </div>
-          <button style={M.next} disabled={empSaveStatus.status === "saving"} onClick={submitEmployeeJob}>{empSaveStatus.status === "saving" ? "Saving…" : "Add Job ✓"}</button>
+          <TapError message={empNameErr || null} />
+          <button style={M.next} disabled={empSaveStatus.status === "saving" || !empJobName.trim()} onClick={submitEmployeeJob}>{empSaveStatus.status === "saving" ? "Saving…" : "Add Job ✓"}</button>
           <SaveStatus status={empSaveStatus.status} onRetry={submitEmployeeJob} />
           <button style={M.cancel} onClick={onClose}>Cancel</button>
         </ModalSheet>
@@ -4379,8 +4388,9 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
         <div style={M.track}><div style={{ ...M.fill, width: ((wizardStep + 1) / Qs.length * 100) + "%" }} /></div>
         <div style={M.q}>{q.q}</div>
         <>
-          <input style={M.input} value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => e.key === "Enter" && val.trim() && advanceWizard(val)} placeholder={q.ph} autoFocus />
-          <button style={M.next} disabled={wizardSaveStatus.status === "saving"} onClick={() => advanceWizard(val)}>{wizardStep < Qs.length - 1 ? "Next →" : wizardSaveStatus.status === "saving" ? "Saving…" : "Add Job ✓"}</button>
+          <input style={M.input} value={val} onChange={e => { setVal(e.target.value); if (wizardNameErr) setWizardNameErr(""); }} onKeyDown={e => e.key === "Enter" && advanceWizard(val)} placeholder={q.ph} autoFocus />
+          <TapError message={isNameStep ? (wizardNameErr || null) : null} />
+          <button style={M.next} disabled={wizardSaveStatus.status === "saving" || (isNameStep && !val.trim())} onClick={() => advanceWizard(val)}>{wizardStep < Qs.length - 1 ? "Next →" : wizardSaveStatus.status === "saving" ? "Saving…" : "Add Job ✓"}</button>
         </>
         <SaveStatus status={wizardSaveStatus.status} onRetry={() => submitWizardJob(answers)} />
         <button style={M.cancel} onClick={onClose}>Cancel</button>
