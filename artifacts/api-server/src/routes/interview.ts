@@ -515,10 +515,12 @@ router.post("/interview", aiRateLimit, async (req: Request, res: Response) => {
           delete profileData.relationships;
           delete profileData.pursuits;
           if (!isRedo) {
-            // Helpful Hints (#83) — show automatically for a brand new
-            // user's first login, even though the general default
-            // (normalizeProfileData) is off. A redo leaves whatever the
-            // user already has for this alone.
+            // Helpful Hints (#83) — explicitly seeded true for a brand new
+            // user's first login. #142/SIM-08 made this the general
+            // normalizeProfileData default too (on unless explicitly
+            // turned off), so this write is now redundant but kept as an
+            // explicit statement of intent for the first-login case. A
+            // redo leaves whatever the user already has for this alone.
             profileData.hintsEnabled = true;
           }
         } else {

@@ -90,12 +90,17 @@ type SphereAnswerState = "up" | "mid" | "down" | null;
 // independent ways to arrive at the same state+note (see #82's spec).
 interface SphereAnswer { questionIndex: number; answer: SphereAnswerState; note: string; followup: string; subAnswer: "yes" | "no" | null; }
 interface SphereCheckEntry { category: SphereCategory; state: PulseState; note: string; answers: SphereAnswer[] | null; }
-const SPHERE_CATEGORIES: { id: SphereCategory; label: string; group: string | null }[] = [
+// #142/SIM-08: `hint` is a short, always-visible one-line definition
+// rendered under a category's own h2 label (see the Sphere category-card
+// loop below) — only set for the two labels the simulation report flagged
+// as unclear on their own (Provision, Leadership); Family/Yourself/
+// Community read fine unexplained.
+const SPHERE_CATEGORIES: { id: SphereCategory; label: string; group: string | null; hint?: string }[] = [
   { id: "family", label: "Family", group: "Protect" },
   { id: "yourself", label: "Yourself", group: "Protect" },
   { id: "community", label: "Community", group: "Protect" },
-  { id: "provide", label: "Provision", group: "Provision" },
-  { id: "lead", label: "Leadership", group: "Leadership" },
+  { id: "provide", label: "Provision", group: "Provision", hint: "Earning and stewarding what your household needs." },
+  { id: "lead", label: "Leadership", group: "Leadership", hint: "Guiding others — at work, at home, or in your community." },
 ];
 interface SphereWeek { weekStart: string; state: PulseState | "none"; note: string; }
 interface SphereDashboardCategory { category: SphereCategory; weeks: SphereWeek[]; }
@@ -1024,7 +1029,7 @@ export default function Home() {
       </header>
 
       <main style={R.screen}>
-        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} onOpenJournalHistory={() => setJournalHistoryOpen(true)} onOpenIntentionHistory={() => setIntentionHistoryOpen(true)} onToggleVerseFavorite={toggleVerseFavorite} onOpenVerseHistory={() => setVerseHistoryOpen(true)} onOpenVerseFavorites={() => setVerseFavoritesOpen(true)} />}
+        {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} onOpenJournalHistory={() => setJournalHistoryOpen(true)} onOpenIntentionHistory={() => setIntentionHistoryOpen(true)} onToggleVerseFavorite={toggleVerseFavorite} onOpenVerseHistory={() => setVerseHistoryOpen(true)} onOpenVerseFavorites={() => setVerseFavoritesOpen(true)} hasChatMessages={chat.length > 0} />}
         {tab === "her" && <Relationships relationships={relationships} refreshRelationships={refreshRelationships} commits={commits} refreshCommits={refreshCommits} />}
         {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} onOpenClosed={() => setClosedPursuitsOpen(true)} onOpenDeletedJobs={() => setDeletedJobsOpen(true)} />}
         {tab === "sphere" && <Sphere />}
@@ -1459,7 +1464,73 @@ function RemindersModal({ remindersEnabled, onSetRemindersEnabled, onSendTestRem
 }
 
 // ── Today ───────────────────────────────────────────────────────────────────
-function Today({ verse, tasks, journal, events, name, profile, relationships, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks, onOpenPriority, onViewCompleted, pulseChecks, onSavePulseCheck, onOpenJournalHistory, onOpenIntentionHistory, onToggleVerseFavorite, onOpenVerseHistory, onOpenVerseFavorites }: {
+// #142/SIM-08 — a per-device "have they ever done this" latch. Two of the
+// checklist's four signals below are day-scoped or session-only in the
+// state Today already has (today's Pulse Check resets to empty every new
+// day; `chat` messages, per Home()'s own `useState<Message[]>([])`, aren't
+// persisted server-side to the client at all and reset on reload), so a
+// live-only read would make the checklist un-complete itself the moment
+// that state resets, even though the user genuinely did the thing once.
+// This pins an item done forever, per device, the first time its live
+// condition is true — same per-device localStorage idiom
+// `useWeekVisibilityToggle` above already uses for this kind of UI-only,
+// non-data-bearing state; no new backend/schema work.
+function useLatchedFlag(storageKey: string, live: boolean): boolean {
+  const [latched, setLatched] = useState(() => {
+    try { return localStorage.getItem(storageKey) === "1"; } catch { return false; }
+  });
+  useEffect(() => {
+    if (live && !latched) {
+      setLatched(true);
+      try { localStorage.setItem(storageKey, "1"); } catch { /* private browsing, etc. */ }
+    }
+  }, [live, latched, storageKey]);
+  return latched || live;
+}
+
+// #142/SIM-08 — first-week checklist: set an intention, add one priority,
+// complete a Pulse Check, message Steward (SIM-08's own recommended four).
+// Self-hides once every item is done, or once dismissed — a long-time user
+// who's already done all four (the overwhelmingly common case) never sees
+// it; one who's missing an item and doesn't want the nudge can close it.
+function FirstWeekChecklist({ hasIntention, hasPriority, pulseCheckedToday, hasChatMessages }: {
+  hasIntention: boolean; hasPriority: boolean; pulseCheckedToday: boolean; hasChatMessages: boolean;
+}) {
+  const pulseChecked = useLatchedFlag("steward:checklist-pulse-done", pulseCheckedToday);
+  const messaged = useLatchedFlag("steward:checklist-chat-done", hasChatMessages);
+  const [dismissed, setDismissed] = useState(() => {
+    try { return localStorage.getItem("steward:checklist-dismissed") === "1"; } catch { return false; }
+  });
+  const items: { id: string; label: string; done: boolean }[] = [
+    { id: "intention", label: "Set today's intention", done: hasIntention },
+    { id: "priority", label: "Add one priority", done: hasPriority },
+    { id: "pulse", label: "Complete a Pulse Check", done: pulseChecked },
+    { id: "chat", label: "Message Steward", done: messaged },
+  ];
+  const allDone = items.every(i => i.done);
+  if (dismissed || allDone) return null;
+  function dismiss() {
+    setDismissed(true);
+    try { localStorage.setItem("steward:checklist-dismissed", "1"); } catch { /* private browsing, etc. */ }
+  }
+  return (
+    <div style={S.card}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+        <h2 style={S.eyeText}>GET STARTED THIS WEEK</h2>
+        <button style={S.tipClose} onClick={dismiss} aria-label="Dismiss checklist">✕</button>
+      </div>
+      <div style={{ fontSize: 12, color: C.parchmentDim, marginBottom: 10 }}>Four small steps to get the most out of Steward.</div>
+      {items.map(i => (
+        <div key={i.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 0" }}>
+          <span aria-hidden="true" style={{ fontSize: 15, color: i.done ? C.brass : C.parchmentLow }}>{i.done ? "✓" : "○"}</span>
+          <span style={{ fontSize: 14, color: i.done ? C.parchmentDim : C.parchment, textDecoration: i.done ? "line-through" : "none" }}>{i.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Today({ verse, tasks, journal, events, name, profile, relationships, primaryRel, onSend, ci, setCi, sending, onSaveJournal, refreshTasks, onOpenPriority, onViewCompleted, pulseChecks, onSavePulseCheck, onOpenJournalHistory, onOpenIntentionHistory, onToggleVerseFavorite, onOpenVerseHistory, onOpenVerseFavorites, hasChatMessages }: {
   verse: VerseEntry | null; tasks: Task[]; journal: Journal; events: Event[]; name?: string | null;
   profile: ProfileData | null; relationships: Relationship[]; primaryRel: Relationship | null;
   onSend: (m?: string) => void; ci: string; setCi: (v: string) => void; sending: boolean;
@@ -1468,6 +1539,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   pulseChecks: PulseCheckEntry[]; onSavePulseCheck: (category: PulseCategory, state: PulseState, note: string) => Promise<boolean>;
   onOpenJournalHistory: () => void; onOpenIntentionHistory: () => void;
   onToggleVerseFavorite: (ref: string, favorite: boolean, customId?: number) => Promise<boolean>; onOpenVerseHistory: () => void; onOpenVerseFavorites: () => void;
+  hasChatMessages: boolean;
 }) {
   const [intent, setIntent] = useState(journal.commit_text);
   const [reflect, setReflect] = useState(journal.reflect);
@@ -1614,6 +1686,13 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
       </div>
 
       <FirstVisitTip id="today">This is your daily home base — set today's intention, check your top priorities, log a Pulse Check, and reflect before you're done.</FirstVisitTip>
+
+      <FirstWeekChecklist
+        hasIntention={journal.commit_text.trim().length > 0}
+        hasPriority={tasks.length > 0}
+        pulseCheckedToday={pulseChecks.length > 0}
+        hasChatMessages={hasChatMessages}
+      />
 
       {/* #38: plain card, not the brass-glow hero border this used to have
           — Verse of the Day is read-only, non-actionable content, so it
@@ -3096,7 +3175,11 @@ function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit, onOp
     <div ref={scrollFade.ref} style={S.scroll}>
       {scrollFade.showFade && <div style={S.scrollFadeCue} />}
       <h1 style={S.pageTitle}>Work</h1>
-      <div style={S.pageSub}>Active jobs by pursuit. Tap a row to edit.</div>
+      {/* #142/SIM-08: names what a "pursuit" is (a job, a business, a
+          volunteer role — anything you group work under) directly in the
+          always-visible subtitle, since the FirstVisitTip below only ever
+          shows once. */}
+      <div style={S.pageSub}>Active jobs grouped by pursuit — a job, a business, a volunteer role, anything ongoing you're pursuing. Tap a row to edit.</div>
       <FirstVisitTip id="work">Group your jobs under pursuits — a job, a business, a volunteer role — to see progress at a glance.</FirstVisitTip>
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 16, marginBottom: 2 }}>
         <button style={S.prioLogLink} onClick={onOpenDeletedJobs}>Deleted Jobs ›</button>
@@ -3664,7 +3747,10 @@ function Sphere() {
     <div ref={scrollFade.ref} style={S.scroll}>
       {scrollFade.showFade && <div style={S.scrollFadeCue} />}
       <h1 style={S.pageTitle}>Sphere</h1>
-      <div style={S.pageSub}>Own your Sphere of Influence.</div>
+      {/* #142/SIM-08: this subtitle is the one place the term "Sphere" gets
+          defined for a user who's dismissed or never seen the FirstVisitTip
+          below (a one-time tip; this line is always visible). */}
+      <div style={S.pageSub}>Your Sphere of Influence — the people and responsibilities you protect, provide for, and lead. A weekly check-in, not a daily one.</div>
       <FirstVisitTip id="sphere">A weekly check-in on how you're protecting, providing for, and leading the people around you.</FirstVisitTip>
 
       <div style={S.card}>
@@ -3693,7 +3779,10 @@ function Sphere() {
             return (
               <div key={cat.id} style={S.card}>
                 <div style={S.pulseRowTop}>
-                  <h2 style={{ fontSize: 16, color: C.parchment, fontWeight: 600 }}>{cat.label}</h2>
+                  <div>
+                    <h2 style={{ fontSize: 16, color: C.parchment, fontWeight: 600 }}>{cat.label}</h2>
+                    {cat.hint && <div style={{ fontSize: 12, color: C.parchmentDim, marginTop: 2 }}>{cat.hint}</div>}
+                  </div>
                   <div style={S.pulseBtns}>
                     {(["down", "mid", "up"] as PulseState[]).map(s => (
                       <button
