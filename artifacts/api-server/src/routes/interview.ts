@@ -21,6 +21,14 @@ const MAX_INTERVIEW_MESSAGE_LENGTH = 4000;
 // work pursuit) — unlike [INTERVIEW_COMPLETE], which only ever fires once.
 const PURSUIT_TYPE_CHOICE_MARKER = "[PURSUIT_TYPE_CHOICE]";
 const PURSUIT_TYPE_QUICK_REPLIES = ["I own a business", "I work for someone else"];
+// #148 — "Skip this question" sends this as the user's turn instead of real
+// text. It still goes through a normal OpenAI call (the model, not the
+// server, decides what the next question actually is — there's no fixed
+// question bank to fall back to), just with a rule below telling it to
+// acknowledge briefly and move on rather than try to extract an answer from
+// it. The client never shows this literal string — it renders any user
+// turn with this exact content as "Skipped".
+const SKIP_MARKER = "[SKIPPED]";
 // Without this, a slow OpenAI response has no server-side bound — same gap
 // steward.ts's /chat route closed for the same reason (#68/#76): the
 // request just hangs, and POST /interview can chain two of these calls
@@ -61,8 +69,26 @@ Rules:
 - Tone: direct and warm, like a brother who tells the truth and sees potential.
 - By question 10 at the latest, give a clear summary of how you understand them and ask: "Does that sound right?"
 - When they confirm the summary is accurate, end your response with exactly this tag on its own line: [INTERVIEW_COMPLETE]
+- If the user's message is exactly ${SKIP_MARKER}, they chose to skip that question rather than answer it. Don't try to extract anything from it or re-ask it — acknowledge briefly (a sentence at most) and move straight to the next area.
 
 ${SCRIPTURE_GROUNDING}`;
+
+// #148 — prepended to INTERVIEW_SYSTEM_PROMPT only for the very first
+// message of a "Redo the Interview" run, so Steward's opening line
+// acknowledges a returning user instead of greeting them like a stranger.
+// Built from the same normalized profile fields buildStewardSystemPrompt
+// (steward.ts) already surfaces for chat — no new data, just reused here.
+function buildReturningUserContext(data: ReturnType<typeof normalizeProfileData>): string {
+  const lines = [
+    data?.name ? `Name: ${data.name}` : null,
+    data?.season_of_life ? `Season of life: ${data.season_of_life}` : null,
+    data?.core_identity?.top_priority ? `Top priority: ${data.core_identity.top_priority}` : null,
+  ].filter((line): line is string => Boolean(line));
+
+  return `RETURNING USER — this is not their first time. They already completed onboarding before and are redoing it now to update their answers. Open by acknowledging that directly and warmly (not a generic hello) — greet them by name if known, and make clear you're picking this back up together rather than starting cold.${
+    lines.length ? ` Here's what you already know about them — reference it naturally where it fits, don't just recite it:\n${lines.join("\n")}` : ""
+  }\nThen proceed through the same areas as normal, refining and updating rather than asking from scratch.`;
+}
 
 const EXTRACT_SYSTEM_PROMPT = `You are a data extraction assistant. Given an interview conversation, extract a structured user profile as JSON.
 Output ONLY valid JSON — no markdown, no code blocks, no explanation, no commentary. Just the JSON object.
@@ -397,7 +423,7 @@ router.get("/interview/history", async (req: Request, res: Response) => {
 router.post("/interview", aiRateLimit, async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
-    const { message } = req.body as { message?: string };
+    const { message, skip, restart } = req.body as { message?: string; skip?: boolean; restart?: boolean };
     if (message !== undefined && typeof message !== "string") {
       res.status(400).json({ error: "Message must be a string" });
       return;
@@ -406,7 +432,10 @@ router.post("/interview", aiRateLimit, async (req: Request, res: Response) => {
       res.status(400).json({ error: `Message must be under ${MAX_INTERVIEW_MESSAGE_LENGTH} characters` });
       return;
     }
-    const isStart = !message || message.trim() === "";
+    // #148 — a "Skip this question" tap: distinct from a start trigger even
+    // though it also carries no real message text.
+    const isSkip = skip === true;
+    const isStart = !isSkip && (!message || message.trim() === "");
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
@@ -426,12 +455,20 @@ router.post("/interview", aiRateLimit, async (req: Request, res: Response) => {
       content: m.content,
     }));
 
-    // Add current user message (or a start trigger)
-    const userContent = isStart ? "start" : message!.trim();
+    // Add current user message (or a start/skip trigger)
+    const userContent = isStart ? "start" : isSkip ? SKIP_MARKER : message!.trim();
+    let systemPrompt = INTERVIEW_SYSTEM_PROMPT;
     if (!isStart) {
       apiMessages.push({ role: "user", content: userContent });
     } else if (existing.length === 0) {
       apiMessages.push({ role: "user", content: "start" });
+      // #148 — only on the very first message of a genuine restart (a plain
+      // reload of an already-started conversation doesn't get here at all,
+      // see the "already started" branch below).
+      if (restart === true) {
+        const [profileRow] = await db.select().from(profileTable).where(eq(profileTable.userId, userId)).limit(1);
+        systemPrompt = `${INTERVIEW_SYSTEM_PROMPT}\n\n${buildReturningUserContext(normalizeProfileData(profileRow?.data ?? null))}`;
+      }
     } else {
       // Already started — just return current state
       const userCount = existing.filter((m) => m.role === "user").length;
@@ -442,7 +479,7 @@ router.post("/interview", aiRateLimit, async (req: Request, res: Response) => {
       return;
     }
 
-    const assistantText = await callOpenAI(apiKey, INTERVIEW_SYSTEM_PROMPT, apiMessages);
+    const assistantText = await callOpenAI(apiKey, systemPrompt, apiMessages);
 
     // Strip the pursuit-type marker before persisting/displaying — the
     // model shouldn't see its own internal tag echoed back on later turns,

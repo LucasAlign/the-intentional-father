@@ -25,6 +25,10 @@ const glass: CSSProperties = {
 
 const API = "/api";
 const WOOD = `${import.meta.env.BASE_URL}woodgrain.png`;
+// #148 — must match SKIP_MARKER in routes/interview.ts exactly. The server
+// persists this literal string as the user's turn when a question is
+// skipped; the client never shows it as-is, always rendering it as "Skipped".
+const SKIP_MARKER = "[SKIPPED]";
 
 interface Message { role: "user" | "assistant"; content: string; }
 
@@ -69,6 +73,10 @@ export default function Interview() {
   // it's asking that question. Cleared at the start of every send() so a
   // stale set never lingers past its own turn.
   const [quickReplies, setQuickReplies] = useState<string[] | null>(null);
+  // #148 — "End interview" (the old, now-secondary "Skip for now" behavior)
+  // is gated behind an inline confirm, same pattern as ProfileMenu's
+  // confirmRedo — it's the one action on this screen that can't be undone.
+  const [confirmEnd, setConfirmEnd] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
 
   const { listening, toggle: toggleMic } = useSpeech(setInput);
@@ -112,7 +120,7 @@ export default function Interview() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ message: "" }),
+        body: JSON.stringify({ message: "", restart: isRestart }),
       }, 70_000);
       if (!r.ok) {
         const errorText = await r.text();
@@ -176,7 +184,44 @@ export default function Interview() {
     setShowTour(true);
   }
 
-  async function skip() {
+  // #148 — skips only the current question: the server treats this turn as
+  // "no answer given, move on" (same shape as send(), a real OpenAI call —
+  // the model, not a fixed question bank, decides what comes next) rather
+  // than exiting onboarding. The locally-appended bubble shows "Skipped";
+  // the server persists the literal SKIP_MARKER it corresponds to.
+  async function skipQuestion() {
+    if (sending) return;
+    setQuickReplies(null);
+    setMessages(prev => [...prev, { role: "user", content: "Skipped" }]);
+    setSending(true);
+    try {
+      const r = await apiFetch(`${API}/interview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ skip: true }),
+      }, 70_000);
+      if (!r.ok) {
+        const errorText = await r.text();
+        setMessages(prev => [...prev, { role: "assistant", content: "Steward is connected, but onboarding failed (" + r.status + "): " + (errorText || "No error details returned.") }]);
+        return;
+      }
+      const d = await r.json() as { message: string; questionNumber: number; complete?: boolean; quickReplies?: string[] };
+      setMessages(prev => [...prev, { role: "assistant", content: d.message }]);
+      setQuestionNumber(d.questionNumber);
+      setQuickReplies(d.quickReplies ?? null);
+      if (d.complete) setComplete(true);
+    } catch {
+      setMessages(prev => [...prev, { role: "assistant", content: "Something went wrong. Try again." }]);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  // #148 — the old, now-secondary "close out entirely" action (renamed from
+  // skip()). Unchanged behavior: marks onboarding complete server-side and
+  // leaves. Now reached only through the confirmEnd inline confirmation.
+  async function endInterview() {
     try {
       await apiFetch(`${API}/interview/skip`, { method: "POST", credentials: "include" });
     } finally {
@@ -217,14 +262,34 @@ export default function Interview() {
       <div style={R.header}>
         <div>
           <div style={R.logo}><span style={R.logoText}>Steward</span><span style={R.logoDot}>.</span></div>
-          <div style={R.tagline}>GETTING TO KNOW YOU</div>
+          {/* #148 — a returning user redoing the interview sees this instead
+              of the first-timer tagline, reinforced by Steward's own greeting
+              (buildReturningUserContext, routes/interview.ts) once it streams in. */}
+          <div style={R.tagline}>{isRestart ? "UPDATING YOUR ANSWERS" : "GETTING TO KNOW YOU"}</div>
         </div>
         <div style={R.progressWrap}>
           <div style={R.progressLabel}>Question {Math.min(questionNumber, 10)} of 10</div>
           <div style={R.progressBar}>
             <div style={{ ...R.progressFill, width: `${Math.min((questionNumber / 10) * 100, 100)}%` }} />
           </div>
-          {!complete && <button style={R.skipBtn} onClick={skip}>Skip for now</button>}
+          {/* #148 — "Skip this question" (frequent, low-stakes) keeps the
+              same lightweight styling the old single button had; "End
+              interview" (rare, irreversible) is demoted further and gated
+              behind an inline confirm, same pattern as ProfileMenu's
+              confirmRedo. */}
+          {!complete && !confirmEnd && (
+            <>
+              <button style={R.skipBtn} disabled={sending} onClick={skipQuestion}>Skip this question</button>
+              <button style={R.endBtn} onClick={() => setConfirmEnd(true)}>End interview</button>
+            </>
+          )}
+          {!complete && confirmEnd && (
+            <div style={R.endConfirmWrap}>
+              <div style={R.endConfirmText}>End the interview?</div>
+              <button style={R.endConfirmYes} onClick={endInterview}>Yes, end it</button>
+              <button style={R.endConfirmCancel} onClick={() => setConfirmEnd(false)}>Cancel</button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -237,7 +302,7 @@ export default function Interview() {
           <div key={i} style={{ ...R.bubble, ...(m.role === "user" ? R.bubbleU : R.bubbleA) }}>
             {m.role === "assistant" && <div style={R.bubbleName}>STEWARD</div>}
             <div style={{ ...R.bubbleText, ...(m.role === "user" ? R.bubbleTextU : {}) }}>
-              {m.content}
+              {m.content === SKIP_MARKER ? "Skipped" : m.content}
             </div>
           </div>
         ))}
@@ -352,6 +417,25 @@ const R: Record<string, CSSProperties> = {
     background: "none", border: "none", padding: 0, marginTop: 8,
     color: C.parchmentLow, fontSize: 11, letterSpacing: "0.04em",
     textDecoration: "underline", textUnderlineOffset: 2, cursor: "pointer", fontFamily: F,
+  },
+  // #148 — deliberately quieter than skipBtn: no underline, smaller,
+  // dimmer — this is the rare, irreversible action, so it shouldn't compete
+  // visually with "Skip this question" for the thumb.
+  endBtn: {
+    background: "none", border: "none", padding: 0, marginTop: 6,
+    color: C.parchmentLow, fontSize: 10, letterSpacing: "0.04em", opacity: 0.6,
+    cursor: "pointer", fontFamily: F,
+  },
+  endConfirmWrap: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, marginTop: 8 },
+  endConfirmText: { fontSize: 11, color: C.brassSoft },
+  endConfirmYes: {
+    background: "none", border: "none", padding: 0,
+    color: C.brassSoft, fontSize: 11, textDecoration: "underline", textUnderlineOffset: 2,
+    cursor: "pointer", fontFamily: F,
+  },
+  endConfirmCancel: {
+    background: "none", border: "none", padding: 0,
+    color: C.parchmentLow, fontSize: 11, cursor: "pointer", fontFamily: F,
   },
   chatArea: {
     flex: 1, overflowY: "auto", padding: "8px 18px 12px",
