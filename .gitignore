@@ -53,3 +53,6 @@ Thumbs.db
 /e2e/test-results/
 /e2e/blob-report/
 /e2e/playwright/.cache/
+
+# Claude Code agent worktrees (local scratch checkouts, not project source)
+.claude/worktrees/

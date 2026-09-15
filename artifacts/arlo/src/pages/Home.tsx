@@ -1479,6 +1479,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   const introSave = useSaveStatus();
   const reflectSave = useSaveStatus();
   const addTaskSave = useSaveStatus();
+  const { error: addTaskError, flash: flashAddTaskError } = useTapError();
   useEffect(() => { setIntent(journal.commit_text); setReflect(journal.reflect); }, [journal.commit_text, journal.reflect]);
   // #94 — Marriage Intention persists until changed; this is the "hasn't
   // been updated in a while" note, purely informational, gone the moment
@@ -1522,7 +1523,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
 
   async function addTask() {
     const t = newTask.trim();
-    if (!t) return;
+    if (!t) { flashAddTaskError("Type a priority before adding it"); return; }
     const ok = await addTaskSave.save(async () => {
       const r = await apiFetch(`${API}/tasks`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: t }) });
       if (r.ok) refreshTasks();
@@ -1614,7 +1615,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
 
       <div style={S.cardCentered}>
         <div style={{ ...S.prioHeadRow, width: "100%" }}>
-          <div style={{ ...S.eyebrow, marginBottom: 0 }}><Icon name="heart" /><h2 style={S.eyeText}>{intentionLabel}</h2></div>
+          <div style={{ ...S.eyebrow, marginBottom: 0 }}><Icon name="heart" /><h2 id="intention-label" style={S.eyeText}>{intentionLabel}</h2></div>
           <button style={S.prioLogLink} onClick={onOpenIntentionHistory}>History ›</button>
         </div>
         <textarea
@@ -1622,6 +1623,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
           value={intent}
           rows={2}
           placeholder={intentionPlaceholder}
+          aria-labelledby="intention-label"
           onChange={e => { setIntent(e.target.value); if (introSave.status === "error") introSave.reset(); }}
           onBlur={() => { if (intent !== journal.commit_text) introSave.save(() => onSaveJournal({ ...journal, commit_text: intent })); }}
         />
@@ -1659,9 +1661,10 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
                 onChange={e => { setNewTask(e.target.value); if (addTaskSave.status === "error") addTaskSave.reset(); }}
                 onKeyDown={e => { if (e.key === "Enter") addTask(); }}
               />
-              <button style={S.logBtn} onClick={addTask}>Add</button>
+              <button style={S.logBtn} disabled={!newTask.trim()} onClick={addTask}>Add</button>
             </div>
             <SaveStatus status={addTaskSave.status} onRetry={addTask} />
+            <TapError message={addTaskError} />
           </div>
         ) : (
           <button style={{ ...S.intakeBtn, marginTop: 14 }} onClick={() => setAdding(true)}>＋  Add a priority</button>
@@ -3489,6 +3492,7 @@ function SphereWalkthroughModal({ category, label, savedAnswers, onClose, onSave
                 </button>
               ))}
             </div>
+            {!a.answer && <div role="status" aria-live="polite" style={{ ...S.sphereFieldLabel, margin: "8px 0 0" }}>Select an answer to continue</div>}
             <div style={S.sphereFieldLabel}>Add a note — elaborate on your answer (optional)</div>
             <textarea style={{ ...M.input, resize: "none" }} rows={2} value={a.note} onChange={e => updateCurrent({ note: e.target.value })} />
 
@@ -3533,7 +3537,7 @@ function SphereWalkthroughModal({ category, label, savedAnswers, onClose, onSave
 
             <div style={S.sphereWizNav}>
               <button style={{ ...S.sphereWizBtn, ...(step === 0 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => setStep(s => s - 1)}>‹ Back</button>
-              <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnPrimary, ...(!a.answer ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => setStep(s => s + 1)}>
+              <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnPrimary, ...(!a.answer ? { opacity: 0.3 } : {}) }} disabled={!a.answer} onClick={() => setStep(s => s + 1)}>
                 {step === questions.length - 1 ? "See summary ›" : "Next ›"}
               </button>
             </div>
@@ -3727,9 +3731,9 @@ function StewardChat({ messages, input, setInput, send, sending, tasks, onOpenPr
         <h1 style={S.pageTitle}>Chat</h1>
         <div style={S.pageSub}>Your partner, bringing just the truth.</div>
         <FirstVisitTip id="chat">Talk it through with Steward — brain dump, ask for a plan, or just think out loud.</FirstVisitTip>
-        <div style={S.toneRow}>
+        <div style={S.toneRow} role="radiogroup" aria-label="Steward tone">
           {(["straight_talk", "middle_of_the_road", "take_it_easy"] as const).map(t => (
-            <button key={t} style={{ ...S.toneOpt, ...(tone === t ? S.toneOptOn : {}) }} onClick={() => onSetTone(t)}>{TONE_LABEL[t]}</button>
+            <button key={t} style={{ ...S.toneOpt, ...(tone === t ? S.toneOptOn : {}) }} onClick={() => onSetTone(t)} role="radio" aria-checked={tone === t}>{TONE_LABEL[t]}</button>
           ))}
         </div>
       </div>
@@ -3881,6 +3885,26 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
     el.scrollTo({ top: targetTop - headerHeight, behavior });
   }
   const currentMonthIndex = months.findIndex(m => m.key === currentMonthKey);
+  // SIM-02 (#140) — all ~1,095 days stay mounted (see the #115 notes above
+  // for why: scrollToDay/the month-tracking listener both depend on every
+  // day row being a real, measurable DOM node), but only a small buffer
+  // around the currently-relevant month is exposed to assistive tech. Every
+  // day row outside this window gets aria-hidden, which affects only the
+  // accessibility tree — it doesn't touch layout, getBoundingClientRect(),
+  // or scroll behavior, so none of the #115 scroll/jump/sync mechanics
+  // above are affected. This does NOT reduce render/paint cost the way true
+  // virtualization would — offscreen rows are still in the DOM and painted,
+  // just no longer exposed to screen readers. currentMonthIndex already
+  // updates on both free-scroll (the listener above) and deliberate jumps
+  // (jumpMonth/Today), so this buffer re-derives automatically either way.
+  const activeMonthKeys = useMemo(() => {
+    const set = new Set<string>();
+    for (let i = currentMonthIndex - 1; i <= currentMonthIndex + 1; i++) {
+      const m = months[i];
+      if (m) set.add(m.key);
+    }
+    return set;
+  }, [months, currentMonthIndex]);
   // Instant, not smooth: the arrows are meant to be paged through quickly,
   // and a "smooth" scrollTo fired again before the previous one finishes
   // animating is exactly the case where mobile Safari's smooth-scroll
@@ -3933,7 +3957,7 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
       <div ref={headerRef} style={S.calendarHeader}>
         <div style={S.calendarMonthBar}>
           <button style={{ ...S.calendarMonthArrow, ...(currentMonthIndex <= 0 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => jumpMonth(-1)} aria-label="Previous month">‹</button>
-          <div style={S.calendarMonthLabel}>{months[currentMonthIndex]?.label ?? ""}</div>
+          <div style={S.calendarMonthLabel} aria-live="polite" aria-atomic="true">{months[currentMonthIndex]?.label ?? ""}</div>
           <button style={{ ...S.calendarMonthArrow, ...(currentMonthIndex >= months.length - 1 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => jumpMonth(1)} aria-label="Next month">›</button>
           <button style={S.calendarSyncBtn} onClick={handleSync} disabled={syncing} aria-label="Refresh calendar" title="Refresh calendar">
             <span style={{ display: "flex", animation: syncing ? "calendarSpin 0.6s linear infinite" : undefined }}>
@@ -3959,11 +3983,13 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
         const items = calendarEvents.filter(e => e.date === d.key);
         const isToday = d.key === todayKey;
         const past = d.key < todayKey;
+        const inBuffer = activeMonthKeys.has(d.monthKey);
         return (
           <div
             key={d.key}
             ref={el => { if (el) dayRefs.current.set(d.key, el); else dayRefs.current.delete(d.key); }}
             style={{ ...S.weekRow, ...(isToday ? S.weekToday : {}), ...(past ? { opacity: 0.3 } : {}) }}
+            aria-hidden={inBuffer ? undefined : true}
           >
             <div style={S.weekL}><div style={{ ...S.weekDay, ...(isToday ? { color: C.brass } : {}) }}>{d.day}</div><div style={S.prioSub}>{d.label}</div></div>
             <div style={{ flex: 1 }}>
@@ -4161,14 +4187,17 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
   const [empJobName, setEmpJobName] = useState("");
   const [empJobDue, setEmpJobDue] = useState("");
   const [empJobNotes, setEmpJobNotes] = useState("");
+  const [empNameErr, setEmpNameErr] = useState("");
   const empSaveStatus = useSaveStatus();
 
   async function submitEmployeeJob() {
+    if (!empJobName.trim()) { setEmpNameErr("Give this job a name to continue."); return; }
+    setEmpNameErr("");
     await empSaveStatus.save(async () => {
       const r = await apiFetch(`${API}/jobs`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: empJobName.trim() || "Untitled job", due: empJobDue.trim(), stage: "New", pct: 0, pursuitId,
+          name: empJobName.trim(), due: empJobDue.trim(), stage: "New", pct: 0, pursuitId,
           materials: "", budget: "", risk: "", notes: empJobNotes.trim(),
         }),
       });
@@ -4181,15 +4210,17 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
   const [wizardStep, setWizardStep] = useState(0);
   const [val, setVal] = useState("");
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [wizardNameErr, setWizardNameErr] = useState("");
   const wizardSaveStatus = useSaveStatus();
   const q = Qs[wizardStep];
+  const isNameStep = q.key === "name";
 
   async function submitWizardJob(final: Record<string, string>) {
     await wizardSaveStatus.save(async () => {
       const r = await apiFetch(`${API}/jobs`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: final.name || "Untitled job", due: final.due || "", stage: "New", pct: 0, pursuitId,
+          name: final.name, due: final.due || "", stage: "New", pct: 0, pursuitId,
           materials: final.materials || "", budget: final.budget || "", risk: final.risk || "",
         }),
       });
@@ -4198,7 +4229,10 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
     });
   }
   function advanceWizard(answer: string) {
-    const next = { ...answers, [q.key]: answer };
+    const trimmed = answer.trim();
+    if (isNameStep && !trimmed) { setWizardNameErr("Give this job a name to continue."); return; }
+    setWizardNameErr("");
+    const next = { ...answers, [q.key]: trimmed };
     setAnswers(next); setVal("");
     if (wizardStep < Qs.length - 1) setWizardStep(s => s + 1);
     else submitWizardJob(next);
@@ -4333,7 +4367,7 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
         <ModalSheet title="New Job" headExtra={selectedPursuitName ? <div style={S.prioSub}>{selectedPursuitName}</div> : undefined} onClose={onClose}>
           <div style={E.fieldGroup}>
             <div style={E.label}>Name</div>
-            <input style={M.input} value={empJobName} onChange={e => setEmpJobName(e.target.value)} placeholder="e.g. Finish Q3 report, or: Finish AWS certification" autoFocus />
+            <input style={M.input} value={empJobName} onChange={e => { setEmpJobName(e.target.value); if (empNameErr) setEmpNameErr(""); }} placeholder="e.g. Finish Q3 report, or: Finish AWS certification" autoFocus />
           </div>
           <div style={E.fieldGroup}>
             <div style={E.label}>Due date (optional)</div>
@@ -4343,7 +4377,8 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
             <div style={E.label}>Notes</div>
             <input style={M.input} value={empJobNotes} onChange={e => setEmpJobNotes(e.target.value)} placeholder="Optional" />
           </div>
-          <button style={M.next} disabled={empSaveStatus.status === "saving"} onClick={submitEmployeeJob}>{empSaveStatus.status === "saving" ? "Saving…" : "Add Job ✓"}</button>
+          <TapError message={empNameErr || null} />
+          <button style={M.next} disabled={empSaveStatus.status === "saving" || !empJobName.trim()} onClick={submitEmployeeJob}>{empSaveStatus.status === "saving" ? "Saving…" : "Add Job ✓"}</button>
           <SaveStatus status={empSaveStatus.status} onRetry={submitEmployeeJob} />
           <button style={M.cancel} onClick={onClose}>Cancel</button>
         </ModalSheet>
@@ -4404,8 +4439,9 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
         <div style={M.track}><div style={{ ...M.fill, width: ((wizardStep + 1) / Qs.length * 100) + "%" }} /></div>
         <div style={M.q}>{q.q}</div>
         <>
-          <input style={M.input} value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => e.key === "Enter" && val.trim() && advanceWizard(val)} placeholder={q.ph} autoFocus />
-          <button style={M.next} disabled={wizardSaveStatus.status === "saving"} onClick={() => advanceWizard(val)}>{wizardStep < Qs.length - 1 ? "Next →" : wizardSaveStatus.status === "saving" ? "Saving…" : "Add Job ✓"}</button>
+          <input style={M.input} value={val} onChange={e => { setVal(e.target.value); if (wizardNameErr) setWizardNameErr(""); }} onKeyDown={e => e.key === "Enter" && advanceWizard(val)} placeholder={q.ph} autoFocus />
+          <TapError message={isNameStep ? (wizardNameErr || null) : null} />
+          <button style={M.next} disabled={wizardSaveStatus.status === "saving" || (isNameStep && !val.trim())} onClick={() => advanceWizard(val)}>{wizardStep < Qs.length - 1 ? "Next →" : wizardSaveStatus.status === "saving" ? "Saving…" : "Add Job ✓"}</button>
         </>
         <SaveStatus status={wizardSaveStatus.status} onRetry={() => submitWizardJob(answers)} />
         <button style={M.cancel} onClick={onClose}>Cancel</button>
