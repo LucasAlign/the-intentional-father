@@ -1041,7 +1041,20 @@ export default function Home() {
         <div style={R.navLine} />
         <nav style={R.nav} aria-label="Main">
           {NAV.map(n => (
-            <button key={n.id} style={R.navBtn} onClick={() => setTab(n.id)} aria-current={tab === n.id ? "page" : undefined}>
+            <button
+              key={n.id}
+              style={R.navBtn}
+              onClick={() => setTab(n.id)}
+              aria-current={tab === n.id ? "page" : undefined}
+              // SIM-11 (#142): the visible label stays "Chat" (#39 — Steward is
+              // the assistant's own name, not a second name for this tab), but
+              // a screen-reader user landing straight on the nav, without the
+              // header logo's "Steward" for context, doesn't get that framing
+              // from "Chat" alone — so only this button gets a fuller
+              // accessible name. Every other tab's icon+visible-label pairing
+              // already reads unambiguously on its own.
+              aria-label={n.id === "steward" ? "Steward chat" : undefined}
+            >
               {n.icon === "stewardIcon"
                 ? <div style={{ ...R.stewardIcon, ...(tab === n.id ? R.stewardIconOn : {}) }} aria-hidden="true">S</div>
                 : <Icon name={n.icon as IconName} size={20} color={tab === n.id ? C.brass : C.parchmentLow} stroke={tab === n.id ? 1.9 : 1.6} />}
