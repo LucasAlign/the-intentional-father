@@ -2,6 +2,7 @@ import { Switch, Route, Router as WouterRouter } from "wouter";
 import Home from "@/pages/Home";
 import Interview from "@/pages/Interview";
 import Admin from "@/pages/Admin";
+import Privacy from "@/pages/Privacy";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -10,6 +11,7 @@ function Router() {
       <Route path="/" component={Home} />
       <Route path="/interview" component={Interview} />
       <Route path="/admin" component={Admin} />
+      <Route path="/privacy" component={Privacy} />
       <Route component={NotFound} />
     </Switch>
   );
