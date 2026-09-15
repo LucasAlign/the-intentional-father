@@ -1456,6 +1456,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   const introSave = useSaveStatus();
   const reflectSave = useSaveStatus();
   const addTaskSave = useSaveStatus();
+  const { error: addTaskError, flash: flashAddTaskError } = useTapError();
   useEffect(() => { setIntent(journal.commit_text); setReflect(journal.reflect); }, [journal.commit_text, journal.reflect]);
   // #94 — Marriage Intention persists until changed; this is the "hasn't
   // been updated in a while" note, purely informational, gone the moment
@@ -1499,7 +1500,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
 
   async function addTask() {
     const t = newTask.trim();
-    if (!t) return;
+    if (!t) { flashAddTaskError("Type a priority before adding it"); return; }
     const ok = await addTaskSave.save(async () => {
       const r = await apiFetch(`${API}/tasks`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: t }) });
       if (r.ok) refreshTasks();
@@ -1636,9 +1637,10 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
                 onChange={e => { setNewTask(e.target.value); if (addTaskSave.status === "error") addTaskSave.reset(); }}
                 onKeyDown={e => { if (e.key === "Enter") addTask(); }}
               />
-              <button style={S.logBtn} onClick={addTask}>Add</button>
+              <button style={S.logBtn} disabled={!newTask.trim()} onClick={addTask}>Add</button>
             </div>
             <SaveStatus status={addTaskSave.status} onRetry={addTask} />
+            <TapError message={addTaskError} />
           </div>
         ) : (
           <button style={{ ...S.intakeBtn, marginTop: 14 }} onClick={() => setAdding(true)}>＋  Add a priority</button>
@@ -3460,6 +3462,7 @@ function SphereWalkthroughModal({ category, label, savedAnswers, onClose, onSave
                 </button>
               ))}
             </div>
+            {!a.answer && <div role="status" aria-live="polite" style={{ ...S.sphereFieldLabel, margin: "8px 0 0" }}>Select an answer to continue</div>}
             <div style={S.sphereFieldLabel}>Add a note — elaborate on your answer (optional)</div>
             <textarea style={{ ...M.input, resize: "none" }} rows={2} value={a.note} onChange={e => updateCurrent({ note: e.target.value })} />
 
@@ -3504,7 +3507,7 @@ function SphereWalkthroughModal({ category, label, savedAnswers, onClose, onSave
 
             <div style={S.sphereWizNav}>
               <button style={{ ...S.sphereWizBtn, ...(step === 0 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => setStep(s => s - 1)}>‹ Back</button>
-              <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnPrimary, ...(!a.answer ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => setStep(s => s + 1)}>
+              <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnPrimary, ...(!a.answer ? { opacity: 0.3 } : {}) }} disabled={!a.answer} onClick={() => setStep(s => s + 1)}>
                 {step === questions.length - 1 ? "See summary ›" : "Next ›"}
               </button>
             </div>
