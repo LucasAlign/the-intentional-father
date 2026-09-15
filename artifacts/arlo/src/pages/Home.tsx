@@ -1576,7 +1576,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   return (
     <div ref={scrollFade.ref} style={S.scroll}>
       {scrollFade.showFade && <div style={S.scrollFadeCue} />}
-      <div style={S.greetRow}>
+      <div className="today-greet-row" style={S.greetRow}>
         <div><h1 style={S.greet}>{greeting}</h1><div style={S.greetSub}>Let's build something that matters.</div></div>
         <div style={S.dateChip}><Icon name="cal" size={13} color={C.parchmentMid} /><span style={{ marginLeft: 6 }}>{new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</span></div>
       </div>
@@ -1657,7 +1657,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
           <div style={{ marginTop: 14, marginBottom: 0 }}>
             <div style={S.logRow}>
               <input
-                style={S.logInput} value={newTask} autoFocus placeholder="One thing that moves it forward…"
+                style={S.logInput} value={newTask} autoFocus placeholder="Next priority…"
                 onChange={e => { setNewTask(e.target.value); if (addTaskSave.status === "error") addTaskSave.reset(); }}
                 onKeyDown={e => { if (e.key === "Enter") addTask(); }}
               />
