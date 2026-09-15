@@ -4206,14 +4206,19 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
     });
   }
 
-  // ── "Something I own" / "Something else" — the existing 5-question job wizard ──
+  // ── "Something I own" / "Something else" — the shared 5-question job wizard ──
+  // wizardStep runs 0..Qs.length-1 for the stepped questions, and
+  // Qs.length for the final editable review/summary screen (SIM-05) —
+  // mirrors SphereWalkthroughModal's `atSummary` pattern (step >= questions.length).
   const [wizardStep, setWizardStep] = useState(0);
   const [val, setVal] = useState("");
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [wizardNameErr, setWizardNameErr] = useState("");
+  const [quickAdd, setQuickAdd] = useState(false);
   const wizardSaveStatus = useSaveStatus();
-  const q = Qs[wizardStep];
-  const isNameStep = q.key === "name";
+  const atWizardSummary = wizardStep >= Qs.length;
+  const q = atWizardSummary ? null : Qs[wizardStep];
+  const isNameStep = q?.key === "name";
 
   async function submitWizardJob(final: Record<string, string>) {
     await wizardSaveStatus.save(async () => {
@@ -4228,14 +4233,53 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
       return false;
     });
   }
-  function advanceWizard(answer: string) {
-    const trimmed = answer.trim();
-    if (isNameStep && !trimmed) { setWizardNameErr("Give this job a name to continue."); return; }
+  // Jumps to any wizard step — used by Back and by the summary screen's
+  // per-field Edit links (SIM-05) — and syncs `val` to whatever was already
+  // answered for that step, so re-visiting a question shows the prior
+  // answer instead of a blank field.
+  function goToWizardStep(step: number) {
     setWizardNameErr("");
-    const next = { ...answers, [q.key]: trimmed };
-    setAnswers(next); setVal("");
-    if (wizardStep < Qs.length - 1) setWizardStep(s => s + 1);
-    else submitWizardJob(next);
+    setWizardStep(step);
+    setVal(answers[Qs[step].key] ?? "");
+  }
+  function advanceWizard(answer: string) {
+    const step = Qs[wizardStep];
+    const trimmed = answer.trim();
+    if (step.key === "name" && !trimmed) { setWizardNameErr("Give this job a name to continue."); return; }
+    setWizardNameErr("");
+    const next = { ...answers, [step.key]: trimmed };
+    setAnswers(next);
+    if (wizardStep < Qs.length - 1) {
+      const nextStep = wizardStep + 1;
+      setWizardStep(nextStep);
+      setVal(next[Qs[nextStep].key] ?? "");
+    } else {
+      // Last question answered — land on the review/summary screen instead
+      // of submitting immediately, so every answer (name included) stays
+      // editable one more time before it's actually saved.
+      setWizardStep(Qs.length);
+      setVal("");
+    }
+  }
+  // Quick-add (SIM-05, optional stretch goal): all 5 fields on one flat
+  // screen for experienced users, reachable from the wizard's first
+  // screen. Shares the same `answers`/submitWizardJob plumbing as the
+  // stepped path, so it can't create a second way to save a blank name.
+  function updateQuickAnswer(key: string, value: string) {
+    setAnswers(prev => ({ ...prev, [key]: value }));
+    if (key === "name" && wizardNameErr) setWizardNameErr("");
+  }
+  function submitQuickAdd() {
+    const name = (answers.name ?? "").trim();
+    if (!name) { setWizardNameErr("Give this job a name to continue."); return; }
+    setWizardNameErr("");
+    submitWizardJob({
+      name,
+      due: (answers.due ?? "").trim(),
+      materials: (answers.materials ?? "").trim(),
+      budget: (answers.budget ?? "").trim(),
+      risk: (answers.risk ?? "").trim(),
+    });
   }
 
   if (flowStep === "fork") {
@@ -4432,16 +4476,77 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
     );
   }
 
-  // flowStep === "a_wizard" || "c_wizard" — the original 5-question wizard, unchanged
+  // flowStep === "a_wizard" || "c_wizard" — the shared 5-question wizard
+  // (SIM-05: Back + a final editable review screen, plus an optional
+  // quick-add flat form — adapted from SphereWalkthroughModal's
+  // step/atSummary/nav idiom, using JobModal's own M.* styles).
+  if (quickAdd) {
+    return (
+      <div style={M.overlay}>
+        <ModalSheet title="New Job" headExtra={<div style={S.prioSub}>Quick add</div>} onClose={onClose}>
+          <div style={M.q}>Add everything at once</div>
+          {Qs.map(qq => (
+            <div key={qq.key} style={E.fieldGroup}>
+              <div style={E.label}>{qq.q}{qq.key === "name" ? "" : " (optional)"}</div>
+              <input
+                style={M.input}
+                value={answers[qq.key] ?? ""}
+                onChange={e => updateQuickAnswer(qq.key, e.target.value)}
+                placeholder={qq.ph}
+                autoFocus={qq.key === "name"}
+              />
+            </div>
+          ))}
+          <TapError message={wizardNameErr || null} />
+          <button style={M.next} disabled={wizardSaveStatus.status === "saving"} onClick={submitQuickAdd}>{wizardSaveStatus.status === "saving" ? "Saving…" : "Add Job ✓"}</button>
+          <SaveStatus status={wizardSaveStatus.status} onRetry={submitQuickAdd} />
+          <button style={M.cancel} onClick={() => { setQuickAdd(false); setWizardNameErr(""); }}>‹ Back to guided questions</button>
+          <button style={M.cancel} onClick={onClose}>Cancel</button>
+        </ModalSheet>
+      </div>
+    );
+  }
+
+  if (atWizardSummary) {
+    return (
+      <div style={M.overlay}>
+        <ModalSheet title="New Job" headExtra={<div style={S.prioSub}>Review</div>} onClose={onClose}>
+          <div style={M.q}>Review before adding</div>
+          <div style={M.summaryBox}>
+            {Qs.map((qq, i) => (
+              <div key={qq.key} style={M.summaryRow}>
+                <div>
+                  <div style={M.summaryLabel}>{qq.q}</div>
+                  <div style={M.summaryValue}>{answers[qq.key]?.trim() ? answers[qq.key] : <span style={{ color: C.parchmentLow }}>—</span>}</div>
+                </div>
+                <button style={M.summaryEdit} onClick={() => goToWizardStep(i)}>Edit</button>
+              </div>
+            ))}
+          </div>
+          <TapError message={wizardNameErr || null} />
+          <button style={M.next} disabled={wizardSaveStatus.status === "saving" || !(answers.name ?? "").trim()} onClick={() => submitWizardJob(answers)}>{wizardSaveStatus.status === "saving" ? "Saving…" : "Add Job ✓"}</button>
+          <SaveStatus status={wizardSaveStatus.status} onRetry={() => submitWizardJob(answers)} />
+          <button style={M.cancel} onClick={onClose}>Cancel</button>
+        </ModalSheet>
+      </div>
+    );
+  }
+
   return (
     <div style={M.overlay}>
       <ModalSheet title="New Job" headExtra={<div style={S.prioSub}>{wizardStep + 1} / {Qs.length}</div>} onClose={onClose}>
         <div style={M.track}><div style={{ ...M.fill, width: ((wizardStep + 1) / Qs.length * 100) + "%" }} /></div>
-        <div style={M.q}>{q.q}</div>
+        <div style={M.q}>{q!.q}</div>
         <>
-          <input style={M.input} value={val} onChange={e => { setVal(e.target.value); if (wizardNameErr) setWizardNameErr(""); }} onKeyDown={e => e.key === "Enter" && advanceWizard(val)} placeholder={q.ph} autoFocus />
+          <input style={M.input} value={val} onChange={e => { setVal(e.target.value); if (wizardNameErr) setWizardNameErr(""); }} onKeyDown={e => e.key === "Enter" && advanceWizard(val)} placeholder={q!.ph} autoFocus />
           <TapError message={isNameStep ? (wizardNameErr || null) : null} />
-          <button style={M.next} disabled={wizardSaveStatus.status === "saving" || (isNameStep && !val.trim())} onClick={() => advanceWizard(val)}>{wizardStep < Qs.length - 1 ? "Next →" : wizardSaveStatus.status === "saving" ? "Saving…" : "Add Job ✓"}</button>
+          <div style={M.wizNav}>
+            <button style={{ ...M.wizBack, ...(wizardStep === 0 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => goToWizardStep(wizardStep - 1)}>‹ Back</button>
+            <button style={{ ...M.wizNext, ...(wizardSaveStatus.status === "saving" || (isNameStep && !val.trim()) ? { opacity: 0.4 } : {}) }} disabled={wizardSaveStatus.status === "saving" || (isNameStep && !val.trim())} onClick={() => advanceWizard(val)}>
+              {wizardStep < Qs.length - 1 ? "Next →" : "Review →"}
+            </button>
+          </div>
+          {wizardStep === 0 && <button style={{ ...M.cancel, marginTop: 4 }} onClick={() => setQuickAdd(true)}>Or fill in all fields at once →</button>}
         </>
         <SaveStatus status={wizardSaveStatus.status} onRetry={() => submitWizardJob(answers)} />
         <button style={M.cancel} onClick={onClose}>Cancel</button>
@@ -6006,6 +6111,18 @@ const M: Record<string, CSSProperties> = {
   notesArea: { width: "100%", minHeight: 80, background: "rgba(8,10,5,0.7)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: 14, outline: "none", marginBottom: 4, resize: "vertical" },
   next: { width: "100%", background: `linear-gradient(135deg,${C.brass},${C.brassDeep})`, border: "none", borderRadius: 12, color: C.ink, fontSize: 15, fontWeight: 700, padding: "15px", cursor: "pointer", marginBottom: 8, fontFamily: F, boxShadow: `0 4px 18px ${C.brassGlow}` },
   cancel: { width: "100%", background: "none", border: "none", color: C.parchmentDim, fontSize: 14, cursor: "pointer", padding: "10px", fontFamily: F },
+  // Back/Next side-by-side step nav (SIM-05, JobModal's own wizard —
+  // same idiom as SphereWalkthroughModal's sphereWizNav/sphereWizBtn*,
+  // rebuilt here with M's own tokens instead of reusing those directly).
+  wizNav: { display: "flex", gap: 10, marginBottom: 8 },
+  wizBack: { flex: "0 0 auto", background: "none", border: "1px solid rgba(210,190,130,0.28)", borderRadius: 12, color: C.parchmentDim, fontSize: 14, padding: "15px 18px", cursor: "pointer", fontFamily: F },
+  wizNext: { flex: 1, background: `linear-gradient(135deg,${C.brass},${C.brassDeep})`, border: "none", borderRadius: 12, color: C.ink, fontSize: 15, fontWeight: 700, padding: "15px", cursor: "pointer", fontFamily: F, boxShadow: `0 4px 18px ${C.brassGlow}` },
+  // Final editable review/summary screen (SIM-05).
+  summaryBox: { background: "rgba(8,10,5,0.5)", border: "1px solid rgba(210,190,130,0.14)", borderRadius: 12, padding: 14, marginBottom: 16, maxHeight: 320, overflowY: "auto" },
+  summaryRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 12 },
+  summaryLabel: { fontSize: 11, letterSpacing: "0.06em", textTransform: "uppercase", color: C.brassSoft },
+  summaryValue: { fontSize: 14, color: C.parchment, marginTop: 2 },
+  summaryEdit: { flex: "none", background: "none", border: "1px solid rgba(210,190,130,0.28)", borderRadius: 14, color: C.brassSoft, fontSize: 12, padding: "5px 12px", cursor: "pointer", fontFamily: F },
 };
 const E: Record<string, CSSProperties> = {
   fieldGroup: { marginBottom: 12 },
