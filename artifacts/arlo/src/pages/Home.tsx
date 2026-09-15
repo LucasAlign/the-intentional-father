@@ -443,6 +443,8 @@ function unlockBodyScroll() {
 // every modal gets it uniformly instead of retrofitting each one by hand.
 // Callers still own the overlay div (and whatever click-outside behavior
 // it has, if any) — this only replaces the sheet and its header.
+const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
 function ModalSheet({ title, headExtra, onClose, sheetOnClick, children }: {
   title: ReactNode; headExtra?: ReactNode; onClose: () => void;
   sheetOnClick?: (e: React.MouseEvent) => void; children: ReactNode;
@@ -464,7 +466,25 @@ function ModalSheet({ title, headExtra, onClose, sheetOnClick, children }: {
     }
     lockBodyScroll();
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") { onClose(); return; }
+      // Focus trap (SIM-03): while the dialog is open, Tab/Shift+Tab must
+      // cycle only through its own focusable descendants — without this,
+      // Tab from the last field (or Shift+Tab from the first) escapes to
+      // whatever's behind the overlay, which a modal must never allow.
+      if (e.key !== "Tab") return;
+      const sheet = sheetRef.current;
+      if (!sheet) return;
+      const focusable = Array.from(sheet.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
+        .filter(el => el.offsetParent !== null || el === document.activeElement);
+      if (focusable.length === 0) { e.preventDefault(); sheet.focus(); return; }
+      const first = focusable[0]!;
+      const last = focusable[focusable.length - 1]!;
+      const active = document.activeElement;
+      if (e.shiftKey) {
+        if (active === first || !sheet.contains(active)) { e.preventDefault(); last.focus(); }
+      } else {
+        if (active === last || !sheet.contains(active)) { e.preventDefault(); first.focus(); }
+      }
     }
     document.addEventListener("keydown", onKeyDown);
     return () => {
@@ -480,7 +500,10 @@ function ModalSheet({ title, headExtra, onClose, sheetOnClick, children }: {
   return (
     <div ref={sheetRef} style={M.sheet} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} onClick={sheetOnClick}>
       <div style={M.strip} />
-      <div style={M.head}><div style={M.title} id={titleId}>{title}</div>{headExtra}</div>
+      {/* h2: a modal is a sub-view opened from whatever page/screen (itself
+          an h1) is behind it, so its own accessible title sits one level
+          down — see CLAUDE.md's SIM-03 note for the full reasoning. */}
+      <div style={M.head}><h2 style={M.title} id={titleId}>{title}</h2>{headExtra}</div>
       {children}
     </div>
   );
@@ -1228,7 +1251,7 @@ function MyAnswersModal({ profile, relationshipCount, pursuitCount, onClose, onS
         </div>
 
         <div style={{ ...S.card, marginTop: 4 }}>
-          <div style={S.eyebrow}><span style={S.eyeText}>PEOPLE &amp; PURSUITS</span></div>
+          <div style={S.eyebrow}><h3 style={S.eyeText}>PEOPLE &amp; PURSUITS</h3></div>
           <div style={S.prioSub}>Managed from their own tabs, not here.</div>
           <div style={{ display: "flex", gap: 16, marginTop: 8 }}>
             <button style={S.prioLogLink} onClick={onOpenTribe}>{relationshipCount} {relationshipCount === 1 ? "person" : "people"} in Tribe ›</button>
@@ -1354,7 +1377,7 @@ function RemindersModal({ remindersEnabled, onSetRemindersEnabled, onSendTestRem
         {remindersEnabled && (
           <>
             <div style={{ marginTop: 16 }}>
-              <div style={S.eyebrow}><span style={S.eyeText}>SENDS TO</span></div>
+              <div style={S.eyebrow}><h3 style={S.eyeText}>SENDS TO</h3></div>
               {(entries ?? []).map(entry => (
                 <div key={entry.id} style={{ ...S.card, marginTop: 8 }}>
                   <div style={S.prioHeadRow}>
@@ -1553,7 +1576,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
     <div ref={scrollFade.ref} style={S.scroll}>
       {scrollFade.showFade && <div style={S.scrollFadeCue} />}
       <div style={S.greetRow}>
-        <div><div style={S.greet}>{greeting}</div><div style={S.greetSub}>Let's build something that matters.</div></div>
+        <div><h1 style={S.greet}>{greeting}</h1><div style={S.greetSub}>Let's build something that matters.</div></div>
         <div style={S.dateChip}><Icon name="cal" size={13} color={C.parchmentMid} /><span style={{ marginLeft: 6 }}>{new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</span></div>
       </div>
 
@@ -1564,7 +1587,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
           shouldn't outrank the actionable cards below it. */}
       <div style={S.cardCentered}>
         <div style={{ ...S.prioHeadRow, width: "100%", marginBottom: 12 }}>
-          <div style={{ ...S.eyebrow, marginBottom: 0 }}><Icon name="book" /><span style={S.eyeText}>VERSE OF THE DAY</span></div>
+          <div style={{ ...S.eyebrow, marginBottom: 0 }}><Icon name="book" /><h2 style={S.eyeText}>VERSE OF THE DAY</h2></div>
           <div style={{ display: "flex", gap: 10 }}>
             <button style={S.prioLogLink} onClick={onOpenVerseHistory}>History ›</button>
             <button style={S.prioLogLink} onClick={onOpenVerseFavorites}>Favorites ›</button>
@@ -1591,7 +1614,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
 
       <div style={S.cardCentered}>
         <div style={{ ...S.prioHeadRow, width: "100%" }}>
-          <div style={{ ...S.eyebrow, marginBottom: 0 }}><Icon name="heart" /><span style={S.eyeText}>{intentionLabel}</span></div>
+          <div style={{ ...S.eyebrow, marginBottom: 0 }}><Icon name="heart" /><h2 style={S.eyeText}>{intentionLabel}</h2></div>
           <button style={S.prioLogLink} onClick={onOpenIntentionHistory}>History ›</button>
         </div>
         <textarea
@@ -1608,7 +1631,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
 
       <div style={S.card}>
         <div style={S.prioHeadRow}>
-          <div style={S.eyebrow}><Icon name="target" /><span style={S.eyeText}>PRIORITIES</span></div>
+          <div style={S.eyebrow}><Icon name="target" /><h2 style={S.eyeText}>PRIORITIES</h2></div>
           <button style={S.prioLogLink} onClick={onViewCompleted}>View completed ›</button>
         </div>
         {openTasks.length === 0 ? (
@@ -1648,7 +1671,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
       <PulseCheckCard pulseChecks={pulseChecks} onSave={onSavePulseCheck} />
 
       <div style={S.card}>
-        <div style={S.eyebrow}><Icon name="cal" /><span style={S.eyeText}>COMING UP</span></div>
+        <div style={S.eyebrow}><Icon name="cal" /><h2 style={S.eyeText}>COMING UP</h2></div>
         {events.length === 0 ? (
           <div style={S.empty}>Nothing scheduled today.</div>
         ) : (
@@ -1668,7 +1691,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
       <div style={S.journalCard}>
         <div style={{ flex: 1 }}>
           <div style={S.prioHeadRow}>
-            <div style={S.eyebrow}><Icon name="pen" /><span style={S.eyeText}>DAILY JOURNAL PROMPT</span></div>
+            <div style={S.eyebrow}><Icon name="pen" /><h2 style={S.eyeText}>DAILY JOURNAL PROMPT</h2></div>
             <button style={S.prioLogLink} onClick={onOpenJournalHistory}>History ›</button>
           </div>
           <div style={S.journalText}>{journalPrompt}</div>
@@ -1744,7 +1767,7 @@ function PulseCheckCard({ pulseChecks, onSave }: {
 
   return (
     <div style={S.card}>
-      <div style={S.eyebrow}><Icon name="sun" /><span style={S.eyeText}>PULSE CHECK</span></div>
+      <div style={S.eyebrow}><Icon name="sun" /><h2 style={S.eyeText}>PULSE CHECK</h2></div>
       <div style={S.pulseSub}>How are you holding up?</div>
       <FirstVisitTip id="pulse-check">A quick daily check on how work, family, and faith are actually going — not a task list, just an honest read.</FirstVisitTip>
       {PULSE_CATEGORIES.map(({ id, label }) => {
@@ -2370,14 +2393,14 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
   return (
     <div ref={scrollFade.ref} style={S.scroll}>
       {scrollFade.showFade && <div style={S.scrollFadeCue} />}
-      <div style={S.pageTitle}>Tribe</div>
+      <h1 style={S.pageTitle}>Tribe</h1>
       <div style={S.pageSub}>The people you're prioritizing.</div>
       <FirstVisitTip id="tribe">Track the people you're prioritizing — spouse, kids, family, friends — and the commitments you've made to them.</FirstVisitTip>
-      <div style={S.card}><div style={S.eyebrow}><Icon name="heart" /><span style={S.eyeText}>TODAY'S INTENTION</span></div><div style={S.intent}>{intentionText}</div></div>
+      <div style={S.card}><div style={S.eyebrow}><Icon name="heart" /><h2 style={S.eyeText}>TODAY'S INTENTION</h2></div><div style={S.intent}>{intentionText}</div></div>
 
       <div style={S.card}>
         <div style={S.prioHeadRow}>
-          <div style={S.eyebrow}><span style={S.eyeText}>PEOPLE</span></div>
+          <div style={S.eyebrow}><h2 style={S.eyeText}>PEOPLE</h2></div>
           <div>
             {relationships.length > 0 && <button style={S.prioLogLink} onClick={() => setResetConfirmOpen(true)}>Reset order</button>}
             <button style={{ ...S.prioLogLink, marginLeft: 12 }} onClick={() => setDeletedPeopleOpen(true)}>Deleted ›</button>
@@ -2431,7 +2454,7 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
 
       {open.length > 0 && (
         <div style={S.card}>
-          <div style={S.eyebrow}><span style={S.eyeText}>OPEN</span></div>
+          <div style={S.eyebrow}><h2 style={S.eyeText}>OPEN</h2></div>
           <div ref={openCommitsFade.ref} style={S.scrollCap5}>
             {openCommitsFade.showFade && <div style={S.scrollFadeCue} />}
             {open.map(c => (
@@ -2442,7 +2465,7 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
       )}
       {done.length > 0 && (
         <div style={{ ...S.card, opacity: 0.85 }}>
-          <div style={S.eyebrow}><span style={S.eyeText}>KEPT</span></div>
+          <div style={S.eyebrow}><h2 style={S.eyeText}>KEPT</h2></div>
           {done.slice(0, KEPT_VISIBLE_CAP).map(c => (
             <SwipeCommitment key={c.id} commit={c} byId={byId} onToggleDone={setCommitDone} onDelete={deleteCommit} onEdit={setEditingCommit} />
           ))}
@@ -3036,7 +3059,7 @@ function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit, onOp
   return (
     <div ref={scrollFade.ref} style={S.scroll}>
       {scrollFade.showFade && <div style={S.scrollFadeCue} />}
-      <div style={S.pageTitle}>Work</div>
+      <h1 style={S.pageTitle}>Work</h1>
       <div style={S.pageSub}>Active jobs by pursuit. Tap a row to edit.</div>
       <FirstVisitTip id="work">Group your jobs under pursuits — a job, a business, a volunteer role — to see progress at a glance.</FirstVisitTip>
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 16, marginBottom: 2 }}>
@@ -3052,9 +3075,15 @@ function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit, onOp
             const pursuitJobs = jobsByPursuit.get(p.id) ?? [];
             return (
               <div key={p.id}>
-                <button style={{ ...S.workGroup, color, background: "none", border: "none", cursor: "pointer", textAlign: "left", padding: 0 }} onClick={() => onEditPursuit(p)}>
-                  {p.name.toUpperCase()}
-                </button>
+                {/* h2: this pursuit's name is this group of job rows'
+                    section heading — kept interactive (opens the pursuit
+                    editor) by nesting the existing button inside it, per
+                    the standard "heading wraps a control" pattern. */}
+                <h2 style={{ margin: 0 }}>
+                  <button style={{ ...S.workGroup, color, background: "none", border: "none", cursor: "pointer", textAlign: "left", padding: 0 }} onClick={() => onEditPursuit(p)}>
+                    {p.name.toUpperCase()}
+                  </button>
+                </h2>
                 {pursuitJobs.length === 0
                   ? <div style={{ ...S.empty, textAlign: "left", padding: "0 0 10px" }}>No jobs yet.</div>
                   : pursuitJobs.map(j => renderJobRow(j, color))}
@@ -3063,7 +3092,7 @@ function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit, onOp
           })}
           {unsorted.length > 0 && (
             <div>
-              <div style={S.workGroup}>UNSORTED</div>
+              <h2 style={S.workGroup}>UNSORTED</h2>
               {unsorted.map(j => renderJobRow(j, C.parchmentLow))}
             </div>
           )}
@@ -3332,7 +3361,7 @@ function SphereHistoryModal({ onClose, thisWeekChecks }: { onClose: () => void; 
       <ModalSheet title="Sphere History" onClose={onClose}>
         <div style={{ marginBottom: 18, paddingBottom: 16, borderBottom: "1px solid rgba(210,190,130,0.12)" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-            <div style={S.eyeText}>THIS WEEK</div>
+            <h3 style={S.eyeText}>THIS WEEK</h3>
             <button style={S.prioLogLink} onClick={() => setWeekDetailOpen(true)}>Details ›</button>
           </div>
           {SPHERE_CATEGORIES.map(cat => (
@@ -3597,13 +3626,13 @@ function Sphere() {
   return (
     <div ref={scrollFade.ref} style={S.scroll}>
       {scrollFade.showFade && <div style={S.scrollFadeCue} />}
-      <div style={S.pageTitle}>Sphere</div>
+      <h1 style={S.pageTitle}>Sphere</h1>
       <div style={S.pageSub}>Own your Sphere of Influence.</div>
       <FirstVisitTip id="sphere">A weekly check-in on how you're protecting, providing for, and leading the people around you.</FirstVisitTip>
 
       <div style={S.card}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-          <div style={S.eyeText}>SPHERE DASHBOARD</div>
+          <h2 style={S.eyeText}>SPHERE DASHBOARD</h2>
           <button style={S.prioLogLink} onClick={() => setHistoryOpen(true)}>History ›</button>
         </div>
         <div style={{ fontSize: 11, color: C.parchmentLow, marginBottom: 10 }}>This week's check-in resets Saturday night at 11:59 PM, your time.</div>
@@ -3619,7 +3648,7 @@ function Sphere() {
 
       {groups.map(group => (
         <div key={group.name ?? "ungrouped"}>
-          {group.name && <div style={{ ...S.eyeText, margin: "22px 0 10px" }}>{group.name.toUpperCase()}</div>}
+          {group.name && <h2 style={{ ...S.eyeText, margin: "22px 0 10px" }}>{group.name.toUpperCase()}</h2>}
           {group.items.map(cat => {
             const entry = byCategory.get(cat.id);
             const displayState = pendingState[cat.id] ?? entry?.state;
@@ -3627,7 +3656,7 @@ function Sphere() {
             return (
               <div key={cat.id} style={S.card}>
                 <div style={S.pulseRowTop}>
-                  <div style={{ fontSize: 16, color: C.parchment, fontWeight: 600 }}>{cat.label}</div>
+                  <h2 style={{ fontSize: 16, color: C.parchment, fontWeight: 600 }}>{cat.label}</h2>
                   <div style={S.pulseBtns}>
                     {(["down", "mid", "up"] as PulseState[]).map(s => (
                       <button
@@ -3695,7 +3724,7 @@ function StewardChat({ messages, input, setInput, send, sending, tasks, onOpenPr
         {/* #39: matches the "Chat" nav label — Steward is the assistant's
             name (chat bubbles already label its replies "STEWARD"), not
             this screen's own title. */}
-        <div style={S.pageTitle}>Chat</div>
+        <h1 style={S.pageTitle}>Chat</h1>
         <div style={S.pageSub}>Your partner, bringing just the truth.</div>
         <FirstVisitTip id="chat">Talk it through with Steward — brain dump, ask for a plan, or just think out loud.</FirstVisitTip>
         <div style={S.toneRow}>
@@ -3913,7 +3942,7 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
           </button>
           <button style={S.calendarTodayBtn} onClick={() => { scrollToDay(todayKey, "auto"); setCurrentMonthKey(todayMonthKey); }} aria-label="Jump to today">Today</button>
         </div>
-        <div style={S.pageTitle}>Calendar</div>
+        <h1 style={S.pageTitle}>Calendar</h1>
         <div style={S.pageSub}>Work, commitments, and calendar events — scroll ahead or back.</div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button style={{ ...E.chip, ...(hideCommitments ? { opacity: 0.5 } : { borderColor: C.brass, color: C.brass }) }} onClick={toggleCommitments}>
@@ -5319,7 +5348,11 @@ function MyVersesSection() {
 
   return (
     <div style={{ marginTop: 20 }}>
-      <div style={S.eyebrow}>MY VERSES</div>
+      {/* This label was plain, ambient-styled text (no S.eyeText span) before
+          this change — kept that way (font/color: inherit neutralizes the
+          browser's own h3 bold/size default) rather than newly adopting
+          eyeText's brass small-caps look, to stay a pure semantics change. */}
+      <div style={S.eyebrow}><h3 style={{ margin: 0, font: "inherit", color: "inherit" }}>MY VERSES</h3></div>
       {(verses ?? []).map(v => (
         <div key={v.id} style={{ ...S.card, marginTop: 10 }}>
           {editingId === v.id ? (
@@ -5435,7 +5468,7 @@ function VerseFavoritesModal({ onClose, onToggleFavorite }: { onClose: () => voi
         <div style={{ marginTop: 16 }}>
           {addOpen ? (
             <div style={S.card}>
-              <div style={S.eyebrow}>ADD YOUR OWN VERSE</div>
+              <div style={S.eyebrow}><h3 style={{ margin: 0, font: "inherit", color: "inherit" }}>ADD YOUR OWN VERSE</h3></div>
               <input style={{ ...M.input, marginTop: 8 }} value={newRef} onChange={e => setNewRef(e.target.value)} placeholder="Reference (e.g. John 3:16)" autoFocus />
               <textarea style={{ ...M.input, marginTop: 8 }} rows={2} value={newText} onChange={e => setNewText(e.target.value)} placeholder="Verse text" />
               <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, fontSize: 13, color: C.parchmentDim }}>
