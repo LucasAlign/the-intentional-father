@@ -8,7 +8,11 @@
   --parchment-bright: #EEE4C4;
   --parchment-body: #D2C7A2;
   --parchment-dim: #9C9272;
-  --parchment-faint: #6E664C;
+  /* #142 (SIM-12): was #6E664C (~3.39:1 against --ink, fails WCAG AA's
+     4.5:1 for normal text); #8C805F lands at ~4.96:1, mirroring the same
+     fix applied to C.parchmentLow in pages/Home.tsx. Currently unreferenced
+     elsewhere in src/ — kept in sync anyway since it's the same token. */
+  --parchment-faint: #8C805F;
 
   --brass-bright: #D8AA3E;
   --brass-soft: #C89A34;
