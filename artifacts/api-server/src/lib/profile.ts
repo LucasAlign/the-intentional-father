@@ -31,15 +31,12 @@ export interface ProfileData {
   // way voice is.
   remindersEnabled: boolean;
   // Helpful Hints (#83) — a profile-page master switch over the per-hint
-  // <FirstVisitTip> close buttons scattered across the tabs. #142/SIM-08:
-  // defaults to true here (on unless the user has explicitly turned it
-  // off) — a never-configured `hintsEnabled` (null/undefined, the state
-  // for anyone who hasn't touched the Profile-menu toggle) reads as on,
-  // so hints show without requiring that toggle to be found and flipped
-  // first. routes/interview.ts still seeds hintsEnabled: true explicitly
-  // at onboarding completion/skip for a brand new user — now redundant
-  // with this default, left in place as a harmless, explicit statement of
-  // intent rather than relied on as the only place hints turn on.
+  // <FirstVisitTip> close buttons scattered across the tabs. Defaults to
+  // false here (existing users see hints off until they opt in); a brand
+  // new user gets hintsEnabled seeded true at onboarding completion
+  // (routes/interview.ts) so hints still show automatically on first login.
+  // #142/SIM-08 traced a real bug in that seeding, not this default — see
+  // the onConflictDoUpdate fix in routes/interview.ts.
   hintsEnabled: boolean;
   // Hint ids the user has individually closed while the master switch is
   // on. Turning the switch on (from off) always clears this array — that's
@@ -99,9 +96,7 @@ export function normalizeProfileData(raw: unknown): ProfileData | null {
     },
     voice: isToneVoice(raw.voice) ? raw.voice : DEFAULT_TONE_VOICE,
     remindersEnabled: raw.remindersEnabled !== false,
-    // #142/SIM-08: on by default (only an explicit `false` turns it off),
-    // same "opt out, not opt in" shape as remindersEnabled above.
-    hintsEnabled: raw.hintsEnabled !== false,
+    hintsEnabled: raw.hintsEnabled === true,
     dismissedHints: stringArray(raw.dismissedHints),
   };
 }

@@ -515,12 +515,10 @@ router.post("/interview", aiRateLimit, async (req: Request, res: Response) => {
           delete profileData.relationships;
           delete profileData.pursuits;
           if (!isRedo) {
-            // Helpful Hints (#83) — explicitly seeded true for a brand new
-            // user's first login. #142/SIM-08 made this the general
-            // normalizeProfileData default too (on unless explicitly
-            // turned off), so this write is now redundant but kept as an
-            // explicit statement of intent for the first-login case. A
-            // redo leaves whatever the user already has for this alone.
+            // Helpful Hints (#83) — show automatically for a brand new
+            // user's first login, even though the general default
+            // (normalizeProfileData) is off. A redo leaves whatever the
+            // user already has for this alone.
             profileData.hintsEnabled = true;
           }
         } else {
@@ -544,13 +542,20 @@ router.post("/interview", aiRateLimit, async (req: Request, res: Response) => {
         req.log?.error({ extractErr }, "Profile extraction failed");
         if (!isRedo) {
           // Still mark complete even if extraction failed — hintsEnabled:
-          // true for the same first-login reason as the success branch above.
+          // true for the same first-login reason as the success branch
+          // above. #142/SIM-08: the onConflictDoUpdate's `set` previously
+          // omitted `data` entirely, so a row already created by an earlier
+          // interview-message autosave (existingProfileRow, fetched above)
+          // never actually got hintsEnabled written — silently leaving
+          // Helpful Hints off for a real first-time user. Merge into
+          // whatever's already there instead of dropping it.
+          const failureData = { ...(isRecord(existingProfileRow?.data) ? existingProfileRow.data : {}), hintsEnabled: true };
           await db
             .insert(profileTable)
-            .values({ userId, data: { hintsEnabled: true }, onboarded: true, updatedAt: new Date() })
+            .values({ userId, data: failureData, onboarded: true, updatedAt: new Date() })
             .onConflictDoUpdate({
               target: profileTable.userId,
-              set: { onboarded: true, updatedAt: new Date() },
+              set: { data: failureData, onboarded: true, updatedAt: new Date() },
             });
         }
         // A redo's failed extraction leaves the already-saved profile
@@ -578,12 +583,20 @@ router.post("/interview/skip", async (req: Request, res: Response) => {
     const userId = req.user!.id;
     // hintsEnabled: true — skipping the interview still counts as this
     // user's first login, so Helpful Hints (#83) should show automatically.
+    // #142/SIM-08: the onConflictDoUpdate's `set` previously omitted
+    // `data` entirely, so a row already created by an earlier
+    // interview-message autosave never actually got hintsEnabled written —
+    // silently leaving Helpful Hints off for a real first-time user who
+    // answered a question or two before hitting Skip. Merge into whatever's
+    // already there instead of dropping it.
+    const [existingProfileRow] = await db.select().from(profileTable).where(eq(profileTable.userId, userId)).limit(1);
+    const skipData = { ...(isRecord(existingProfileRow?.data) ? existingProfileRow.data : {}), hintsEnabled: true };
     await db
       .insert(profileTable)
-      .values({ userId, data: { hintsEnabled: true }, onboarded: true, updatedAt: new Date() })
+      .values({ userId, data: skipData, onboarded: true, updatedAt: new Date() })
       .onConflictDoUpdate({
         target: profileTable.userId,
-        set: { onboarded: true, updatedAt: new Date() },
+        set: { data: skipData, onboarded: true, updatedAt: new Date() },
       });
     res.json({ success: true });
   } catch (err) {
