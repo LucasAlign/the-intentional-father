@@ -3,6 +3,7 @@ import Home from "@/pages/Home";
 import Interview from "@/pages/Interview";
 import Admin from "@/pages/Admin";
 import Privacy from "@/pages/Privacy";
+import Terms from "@/pages/Terms";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -12,6 +13,7 @@ function Router() {
       <Route path="/interview" component={Interview} />
       <Route path="/admin" component={Admin} />
       <Route path="/privacy" component={Privacy} />
+      <Route path="/terms" component={Terms} />
       <Route component={NotFound} />
     </Switch>
   );
