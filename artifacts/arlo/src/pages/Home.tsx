@@ -3396,12 +3396,17 @@ function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit, onOp
                     editor) by nesting the existing button inside it, per
                     the standard "heading wraps a control" pattern. */}
                 <h2 style={{ margin: 0 }}>
-                  <button style={{ ...S.workGroup, color, background: "none", border: "none", cursor: "pointer", textAlign: "left", padding: 0 }} onClick={() => onEditPursuit(p)}>
+                  {/* This button's own padding:0 used to wipe out
+                      S.workGroup's horizontal inset entirely, which is why
+                      an earlier padding bump to workGroup/workRow never
+                      actually reached these pursuit headings — they stayed
+                      flush against the card's left edge regardless. */}
+                  <button style={{ ...S.workGroup, color, background: "none", border: "none", cursor: "pointer", textAlign: "left" }} onClick={() => onEditPursuit(p)}>
                     {p.name.toUpperCase()}
                   </button>
                 </h2>
                 {pursuitJobs.length === 0
-                  ? <div style={{ ...S.empty, textAlign: "left", padding: "0 0 10px" }}>No jobs yet.</div>
+                  ? <div style={{ ...S.empty, textAlign: "left", padding: "0 20px 10px" }}>No jobs yet.</div>
                   : pursuitJobs.map(j => renderJobRow(j, color))}
               </div>
             );
@@ -6548,13 +6553,21 @@ const S: Record<string, CSSProperties> = {
   // the same role as R.navLine: the brass divider that actually separates
   // persistent chrome from the content underneath it.
   calendarHeader: {
-    position: "sticky", top: -16, zIndex: 2,
+    position: "sticky", top: -16, zIndex: 2, overflow: "hidden",
     background: "linear-gradient(180deg, rgba(8,10,5,0.97) 0%, rgba(8,10,5,0.90) 100%)",
     backdropFilter: "blur(20px)",
     // #162 — bottom padding tightened from 14 to 10 (on top of dropping the
     // subtitle entirely, above) to reclaim a little more of this sticky
     // header's footprint on a short screen.
     margin: "-16px -18px 10px", padding: "16px 18px 10px",
+    // Bottom corners only, matching glass's own 18px card radius — the top
+    // stays square since it deliberately hugs the scroll container's top
+    // edge (see the note above on the negative top margin). The soft shadow
+    // is the same "fade the hard edge" treatment M.sheet already uses on
+    // its own rounded corners, so this reads as consistent with the rest
+    // of the app rather than a flat cutout.
+    borderRadius: "0 0 18px 18px",
+    boxShadow: "0 10px 24px rgba(0,0,0,0.45)",
   },
   calendarHeaderLine: {
     position: "absolute", left: 0, right: 0, bottom: 0, height: 1,
@@ -6615,7 +6628,13 @@ const M: Record<string, CSSProperties> = {
   // wizard) while shorter Work-tab forms never scrolled far enough to show
   // it. "none" is a strict superset of "contain" (still blocks chaining,
   // additionally suppresses the local bounce too), so there's no tradeoff.
-  sheet: { width: "100%", maxWidth: 440, margin: "0 auto", maxHeight: "88dvh", position: "relative", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "none", background: "linear-gradient(160deg,rgba(34,30,18,0.98),rgba(16,14,8,0.98))", backdropFilter: "blur(24px)", borderRadius: "22px 22px 0 0", padding: "24px 24px 48px", border: "1px solid rgba(210,190,130,0.18)", borderBottom: "none", boxShadow: "0 -10px 50px rgba(0,0,0,0.7)" },
+  // Raised from 88dvh to 94dvh — reported on the Sphere Walkthrough (and
+  // applies to every modal, since they all share this one sheet style):
+  // the sheet's own bottom edge wasn't reaching far enough down the real
+  // screen, leaving the app's bottom nav visibly exposed below it instead
+  // of fully covered. Still dvh, not vh, for the reason below; just a
+  // taller fraction of it.
+  sheet: { width: "100%", maxWidth: 440, margin: "0 auto", maxHeight: "94dvh", position: "relative", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "none", background: "linear-gradient(160deg,rgba(34,30,18,0.98),rgba(16,14,8,0.98))", backdropFilter: "blur(24px)", borderRadius: "22px 22px 0 0", padding: "24px 24px 48px", border: "1px solid rgba(210,190,130,0.18)", borderBottom: "none", boxShadow: "0 -10px 50px rgba(0,0,0,0.7)" },
   strip: { position: "absolute", top: 0, left: 0, right: 0, height: 2, zIndex: 3, background: `linear-gradient(90deg,transparent,${C.brass},transparent)`, boxShadow: `0 0 14px ${C.brassGlow}` },
   // #160 — sticky so the title and close (×) button stay reachable without
   // scrolling, even once a modal's content (plus, on a short device, the
