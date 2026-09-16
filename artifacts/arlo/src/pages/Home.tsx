@@ -1101,7 +1101,7 @@ export default function Home() {
         {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} onOpenClosed={() => setClosedPursuitsOpen(true)} onOpenDeletedJobs={() => setDeletedJobsOpen(true)} />}
         {tab === "sphere" && <Sphere />}
         {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} />}
-        {tab === "week" && <WeekView events={week} jobs={jobs} pursuits={pursuits} calendarAccounts={calendarAccounts} onRefresh={refreshWeek} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await apiFetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
+        {tab === "week" && <WeekView events={week} jobs={jobs} pursuits={pursuits} calendarAccounts={calendarAccounts} commits={commits} relationships={relationships} refreshCommits={refreshCommits} refreshRelationships={refreshRelationships} onRefresh={refreshWeek} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await apiFetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
       </main>
 
       <div style={R.navWrap}>
@@ -4031,8 +4031,19 @@ function useWeekVisibilityToggle(key: string): [boolean, () => void] {
   return [hidden, toggle];
 }
 
-function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConnectCalendar, onDisconnectCalendar }: {
+// #128 — a commitment row (tag: "Commitment", from GET /coming-up's #97
+// merge) carries a synthetic negative id, -(1_000_000 + the real commit
+// id) — this reverses that so the full Commit object (untruncated text,
+// notes, relationship targets) can be looked up for the expand/edit
+// affordance below, rather than the truncated display-only projection
+// /coming-up returns.
+function commitIdFromEventId(eventId: number): number {
+  return -eventId - 1_000_000;
+}
+
+function WeekView({ events, jobs, pursuits, calendarAccounts, commits, relationships, refreshCommits, refreshRelationships, onRefresh, onConnectCalendar, onDisconnectCalendar }: {
   events: Event[]; jobs: Job[]; pursuits: Pursuit[]; calendarAccounts: string[];
+  commits: Commit[]; relationships: Relationship[]; refreshCommits: () => void; refreshRelationships: () => void;
   onRefresh: () => Promise<void>; onConnectCalendar: () => void; onDisconnectCalendar: (email: string) => void;
 }) {
   // #115 — a fixed, generous window (see calendarRange) computed once per
@@ -4050,6 +4061,14 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
   // (see #97), so there's no third toggle for those.
   const [hideCommitments, toggleCommitments] = useWeekVisibilityToggle("commitments");
   const [hideExternal, toggleExternal] = useWeekVisibilityToggle("external");
+  // #128 — expandable commitment rows, in place (no tab switch): Home
+  // already loads `commits`/`relationships` for the Tribe tab, so the same
+  // CommitEditModal can just be reused here too, rather than building a
+  // second edit surface or a cross-tab "open this on landing" mechanism.
+  const relById = useMemo(() => new Map(relationships.map(r => [r.id, r])), [relationships]);
+  const commitById = useMemo(() => new Map(commits.map(c => [c.id, c])), [commits]);
+  const [expandedEventIds, setExpandedEventIds] = useState<Set<number>>(new Set());
+  const [editingCommit, setEditingCommit] = useState<Commit | null>(null);
   const visibleEvents = events.filter(e =>
     !(hideCommitments && e.tag === "Commitment") && !(hideExternal && e.tag === "Google Calendar"));
   const calendarEvents = [...visibleEvents, ...datedWork].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
@@ -4223,12 +4242,48 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
           >
             <div style={S.weekL}><div style={{ ...S.weekDay, ...(isToday ? { color: C.brass } : {}) }}>{d.day}</div><div style={S.prioSub}>{d.label}</div></div>
             <div style={{ flex: 1 }}>
-              {items.length === 0 ? <div style={S.prioSub}>—</div> : items.map(it => (
-                <div key={it.id} style={S.weekItem}>
-                  <div style={S.weekItemTop}><span style={S.prioTitle}>{it.title}</span>{it.time && <span style={S.weekTime}>{it.time}</span>}</div>
-                  {(it.sub || it.tag) && <div style={S.prioSub}>{[it.sub, it.tag].filter(Boolean).join("  •  ")}</div>}
-                </div>
-              ))}
+              {items.length === 0 ? <div style={S.prioSub}>—</div> : items.map(it => {
+                const commit = it.tag === "Commitment" ? commitById.get(commitIdFromEventId(it.id)) : undefined;
+                if (!commit) {
+                  return (
+                    <div key={it.id} style={S.weekItem}>
+                      <div style={S.weekItemTop}><span style={S.prioTitle}>{it.title}</span>{it.time && <span style={S.weekTime}>{it.time}</span>}</div>
+                      {(it.sub || it.tag) && <div style={S.prioSub}>{[it.sub, it.tag].filter(Boolean).join("  •  ")}</div>}
+                    </div>
+                  );
+                }
+                // #128 — expandable in place: a read-only preview (who it's
+                // for, notes) plus an Edit button, mirroring SwipeCommitment's
+                // own collapsed/expanded shape in Tribe rather than forking a
+                // second look for the same data.
+                const expanded = expandedEventIds.has(it.id);
+                return (
+                  <div key={it.id} style={S.weekItem}>
+                    <div style={S.weekItemTop}>
+                      <span style={S.prioTitle}>{commit.text}</span>
+                      <button
+                        style={S.commitExpandBtn}
+                        onClick={() => setExpandedEventIds(prev => {
+                          const next = new Set(prev);
+                          if (next.has(it.id)) next.delete(it.id); else next.add(it.id);
+                          return next;
+                        })}
+                        aria-label={expanded ? "Show less" : "Show more"}
+                      >
+                        {expanded ? "▴" : "▾"}
+                      </button>
+                    </div>
+                    <div style={S.prioSub}>{[it.sub, it.tag].filter(Boolean).join("  •  ")}</div>
+                    {expanded && (
+                      <div style={{ ...S.commitExpandPanel, marginLeft: 0 }}>
+                        <div style={S.prioSub}>For {commitTargetLabel(commit, relById)}{commitTargetSub(commit, relById) ? ` (${commitTargetSub(commit, relById)})` : ""}</div>
+                        {commit.notes && <div style={S.prioSub}>Note: {commit.notes}</div>}
+                        <button style={S.prioEditBtn} onClick={() => setEditingCommit(commit)}>Edit</button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
             {isToday && <div style={S.todayPill}>Today</div>}
           </div>
@@ -4244,6 +4299,15 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, onRefresh, onConne
         <button style={S.calendarSmallBtn} onClick={onConnectCalendar}>Add Google Calendar</button>
       </div>
       <div style={{ height: 32 }} />
+      {editingCommit && (
+        <CommitEditModal
+          commit={editingCommit} relationships={relationships}
+          onClose={() => setEditingCommit(null)}
+          onSaved={() => { refreshCommits(); onRefresh(); }}
+          onDeleted={() => { refreshCommits(); onRefresh(); }}
+          onRelationshipAdded={refreshRelationships}
+        />
+      )}
     </div>
   );
 }
