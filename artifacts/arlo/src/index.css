@@ -40,6 +40,12 @@ body {
 button {
   font-family: inherit;
   cursor: pointer;
+  /* #160 — the browser's default mobile tap-highlight (a translucent
+     gray/white flash) had no override anywhere in the app, and could
+     visibly linger on an unselected button after a tap (reported on the
+     Sphere walkthrough's "Some" option, which otherwise never renders a
+     white background at any state). */
+  -webkit-tap-highlight-color: transparent;
 }
 
 input {

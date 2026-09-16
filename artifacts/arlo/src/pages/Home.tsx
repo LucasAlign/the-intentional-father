@@ -365,7 +365,7 @@ function TapError({ message }: { message: string | null }) {
 }
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
-type IconName = "book" | "heart" | "target" | "cal" | "clock" | "pen" | "chat" | "sun" | "work" | "user" | "send" | "mic" | "globe" | "sync";
+type IconName = "book" | "heart" | "target" | "cal" | "clock" | "pen" | "chat" | "sun" | "work" | "user" | "send" | "mic" | "globe" | "sync" | "close" | "more";
 function Icon({ name, size = 15, color = C.brassSoft, stroke = 1.6 }: { name: IconName; size?: number; color?: string; stroke?: number }) {
   const p = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: color, strokeWidth: stroke, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
   const m: Record<IconName, ReactElement> = {
@@ -383,6 +383,8 @@ function Icon({ name, size = 15, color = C.brassSoft, stroke = 1.6 }: { name: Ic
     mic: <><path d="M12 1a3 3 0 0 1 3 3v8a3 3 0 0 1-6 0V4a3 3 0 0 1 3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" /></>,
     globe: <><circle cx="12" cy="12" r="9" /><ellipse cx="12" cy="12" rx="4" ry="9" /><line x1="3.3" y1="8.5" x2="20.7" y2="8.5" /><line x1="3.3" y1="15.5" x2="20.7" y2="15.5" /></>,
     sync: <><path d="M21 12a9 9 0 0 1-15.5 6.36" /><path d="M3 12a9 9 0 0 1 15.5-6.36" /><path d="M21 3v6h-6" /><path d="M3 21v-6h6" /></>,
+    close: <><line x1="5" y1="5" x2="19" y2="19" /><line x1="19" y1="5" x2="5" y2="19" /></>,
+    more: <><circle cx="5" cy="12" r="1.6" fill={color} stroke="none" /><circle cx="12" cy="12" r="1.6" fill={color} stroke="none" /><circle cx="19" cy="12" r="1.6" fill={color} stroke="none" /></>,
   };
   // Every icon in the app is decorative — paired with a visible label, or
   // sitting inside a button that carries its own aria-label — so it's
@@ -513,7 +515,15 @@ function ModalSheet({ title, headExtra, onClose, sheetOnClick, children }: {
       {/* h2: a modal is a sub-view opened from whatever page/screen (itself
           an h1) is behind it, so its own accessible title sits one level
           down — see CLAUDE.md's SIM-03 note for the full reasoning. */}
-      <div style={M.head}><h2 style={M.title} id={titleId}>{title}</h2>{headExtra}</div>
+      <div style={M.head}>
+        <h2 style={M.title} id={titleId}>{title}</h2>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {headExtra}
+          <button type="button" style={M.headClose} onClick={onClose} aria-label="Close">
+            <Icon name="close" size={15} color={C.parchmentDim} stroke={2} />
+          </button>
+        </div>
+      </div>
       {children}
     </div>
   );
@@ -557,7 +567,7 @@ function OverflowMenu({ label, items }: { label: string; items: { label: string;
         aria-label={label}
         onClick={() => setOpen(o => !o)}
       >
-        ⋯
+        <Icon name="more" size={16} color={C.parchmentDim} />
       </button>
       {open && (
         <>
@@ -6209,7 +6219,10 @@ const R: Record<string, CSSProperties> = {
   navLabelOn: { color: C.brass },
 };
 const S: Record<string, CSSProperties> = {
-  scroll: { flex: 1, overflowY: "auto", padding: "16px 18px 0", position: "relative" },
+  // #160 — bottom padding so the last card/button in a tab's scrollable
+  // content gets breathing room before the nav bar begins, instead of its
+  // bottom border sitting flush against (and reading as cut off by) it.
+  scroll: { flex: 1, overflowY: "auto", padding: "16px 18px 20px", position: "relative" },
   // Bottom fade cue (#37) — hints there's more to scroll without a visible
   // scrollbar; ScrollFadeArea shows/hides it based on actual scroll position.
   scrollFadeCue: { position: "absolute", left: 0, right: 0, bottom: 0, height: 28, background: "linear-gradient(to bottom, transparent, rgba(8,10,5,0.85))", pointerEvents: "none" },
@@ -6232,7 +6245,7 @@ const S: Record<string, CSSProperties> = {
   // muted (icon only, dim parchment) next to a card's own eyebrow/heading so
   // it reads as secondary, unlike prioLogLink's brass text links it replaces.
   overflowWrap: { position: "relative", display: "inline-block" },
-  overflowBtn: { width: 30, height: 30, display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 8, color: C.parchmentDim, fontSize: 18, lineHeight: 1, cursor: "pointer", fontFamily: F },
+  overflowBtn: { width: 30, height: 30, display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 8, cursor: "pointer" },
   // Invisible, full-screen — same "tap outside to dismiss" role M.overlay's
   // onClick={onClose} plays for ProfileMenu/ModalSheet, just without the
   // dimmed backdrop look (this is a small inline popover, not a dialog).
@@ -6450,8 +6463,16 @@ const M: Record<string, CSSProperties> = {
   // it. "none" is a strict superset of "contain" (still blocks chaining,
   // additionally suppresses the local bounce too), so there's no tradeoff.
   sheet: { width: "100%", maxWidth: 440, margin: "0 auto", maxHeight: "88dvh", position: "relative", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "none", background: "linear-gradient(160deg,rgba(34,30,18,0.98),rgba(16,14,8,0.98))", backdropFilter: "blur(24px)", borderRadius: "22px 22px 0 0", padding: "24px 24px 48px", border: "1px solid rgba(210,190,130,0.18)", borderBottom: "none", boxShadow: "0 -10px 50px rgba(0,0,0,0.7)" },
-  strip: { position: "absolute", top: 0, left: 0, right: 0, height: 2, background: `linear-gradient(90deg,transparent,${C.brass},transparent)`, boxShadow: `0 0 14px ${C.brassGlow}` },
-  head: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
+  strip: { position: "absolute", top: 0, left: 0, right: 0, height: 2, zIndex: 3, background: `linear-gradient(90deg,transparent,${C.brass},transparent)`, boxShadow: `0 0 14px ${C.brassGlow}` },
+  // #160 — sticky so the title and close (×) button stay reachable without
+  // scrolling, even once a modal's content (plus, on a short device, the
+  // on-screen keyboard) pushes the rest of the sheet — including the
+  // bottom Cancel/Close button — below the fold. Bleeds a negative margin
+  // matching M.sheet's own padding (same technique as S.calendarHeader)
+  // so the sticky band spans the sheet's full width instead of floating
+  // inset from it once scrolled.
+  head: { position: "sticky", top: -24, zIndex: 2, display: "flex", justifyContent: "space-between", alignItems: "center", background: "linear-gradient(160deg,rgba(34,30,18,0.98),rgba(16,14,8,0.98))", margin: "-24px -24px 14px", padding: "24px 24px 14px" },
+  headClose: { flexShrink: 0, width: 30, height: 30, display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 8, cursor: "pointer" },
   title: { fontSize: 23, color: C.parchment, fontWeight: 400 },
   track: { height: 3, background: "rgba(0,0,0,0.45)", borderRadius: 2, overflow: "hidden", marginBottom: 24 },
   fill: { height: "100%", background: `linear-gradient(90deg,${C.brassDeep},${C.brass})`, borderRadius: 2, transition: "width 0.3s", boxShadow: `0 0 7px ${C.brassGlow}` },
