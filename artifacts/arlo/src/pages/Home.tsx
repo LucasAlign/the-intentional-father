@@ -466,8 +466,8 @@ function unlockBodyScroll() {
 // it has, if any) — this only replaces the sheet and its header.
 const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-function ModalSheet({ title, headExtra, onClose, sheetOnClick, children }: {
-  title: ReactNode; headExtra?: ReactNode; onClose: () => void;
+function ModalSheet({ title, headExtra, footer, onClose, sheetOnClick, children }: {
+  title: ReactNode; headExtra?: ReactNode; footer?: ReactNode; onClose: () => void;
   sheetOnClick?: (e: React.MouseEvent) => void; children: ReactNode;
 }) {
   const sheetRef = useRef<HTMLDivElement>(null);
@@ -534,6 +534,17 @@ function ModalSheet({ title, headExtra, onClose, sheetOnClick, children }: {
         </div>
       </div>
       {children}
+      {/* #160 follow-up — the sticky header alone only fixed dismissing a
+          modal without scrolling; it did nothing for actually reaching the
+          primary action (Save/Next/etc.), which is the part that matters
+          most and is exactly what stayed broken (reported live on the
+          Sphere Walkthrough after the header fix shipped). A sticky footer,
+          mirroring the header's own bleed technique but pinned to the
+          bottom, keeps that action reachable too. Opt-in via this prop
+          rather than always-on, since not every modal has a single
+          "primary action" cluster worth pinning (e.g. PeopleDeletedModal's
+          list of per-row actions). */}
+      {footer && <div style={M.footer}>{footer}</div>}
     </div>
   );
 }
@@ -2894,9 +2905,29 @@ function CommitLogModal({ relationships, lockedPerson, initialText, defaultNewCa
     });
   }
 
+  // #160 follow-up — the sticky header alone didn't help reach "Log
+  // commitment"/Cancel, which is what actually stayed unreachable on a
+  // short viewport with the keyboard open. Moved into ModalSheet's sticky
+  // footer instead.
+  const footer = (
+    <>
+      <SaveStatus status={saveStatus.status} onRetry={save} />
+      {attemptedSave && whoErr && <TapError message={`Fix before saving: ${whoErr}`} />}
+      <button style={M.next} disabled={!canSave || saveStatus.status === "saving"} onClick={save}>
+        {saveStatus.status === "saving" ? "Saving…" : "Log commitment"}
+      </button>
+      {onOpenReminders && (
+        <button style={{ ...S.prioLogLink, display: "block", width: "100%", textAlign: "center", marginTop: 4 }} onClick={onOpenReminders}>
+          Commitment Reminders
+        </button>
+      )}
+      <button style={M.cancel} onClick={onClose}>Cancel</button>
+    </>
+  );
+
   return (
     <div style={M.overlay}>
-      <ModalSheet title="Log a Commitment" onClose={onClose}>
+      <ModalSheet title="Log a Commitment" onClose={onClose} footer={footer}>
         <CommitTargetPicker
           relationships={relationships}
           relationshipIds={relationshipIds} setRelationshipIds={setRelationshipIds}
@@ -2920,18 +2951,6 @@ function CommitLogModal({ relationships, lockedPerson, initialText, defaultNewCa
           <div style={E.label}>DUE DATE (OPTIONAL)</div>
           <input type="date" style={M.input} value={dueDate} onChange={e => setDueDate(e.target.value)} />
         </div>
-
-        <SaveStatus status={saveStatus.status} onRetry={save} />
-        {attemptedSave && whoErr && <TapError message={`Fix before saving: ${whoErr}`} />}
-        <button style={M.next} disabled={!canSave || saveStatus.status === "saving"} onClick={save}>
-          {saveStatus.status === "saving" ? "Saving…" : "Log commitment"}
-        </button>
-        {onOpenReminders && (
-          <button style={{ ...S.prioLogLink, display: "block", width: "100%", textAlign: "center", marginTop: 4 }} onClick={onOpenReminders}>
-            Commitment Reminders
-          </button>
-        )}
-        <button style={M.cancel} onClick={onClose}>Cancel</button>
       </ModalSheet>
     </div>
   );
@@ -3154,9 +3173,34 @@ function RelationshipModal({ relationship, onClose, onSaved, onDeleted, onAddAsC
     } catch { setDelErr("Couldn't reach the server."); setDeleting(false); }
   }
 
+  // #160 follow-up — the sticky header alone didn't help reach Save/Delete/
+  // Cancel, which is what actually stayed unreachable on a short viewport
+  // with the keyboard open. Moved into ModalSheet's sticky footer instead.
+  const footer = (
+    <>
+      <SaveStatus status={saveStatus.status} onRetry={save} />
+      <button style={M.next} disabled={saveStatus.status === "saving"} onClick={save}>{saveStatus.status === "saving" ? "Saving…" : "Save"}</button>
+      <TapError message={delErr || null} />
+      {relationship && confirmingDelete && (
+        <div style={{ ...S.prioSub, color: "#C87060", margin: "6px 0" }}>
+          Delete {relationshipLabel(relationship)}? They'll move to Deleted, where you can bring them back.
+        </div>
+      )}
+      {relationship && (confirmingDelete ? (
+        <>
+          <button style={{ ...M.next, background: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Yes, delete"}</button>
+          <button style={M.cancel} disabled={deleting} onClick={() => setConfirmingDelete(false)}>Cancel</button>
+        </>
+      ) : (
+        <button style={{ ...M.cancel, color: "#C87060" }} onClick={() => setConfirmingDelete(true)}>Delete Person</button>
+      ))}
+      <button style={M.cancel} onClick={onClose}>Cancel</button>
+    </>
+  );
+
   return (
     <div style={M.overlay}>
-      <ModalSheet title={relationship ? "Edit Person" : "Add Person"} onClose={onClose}>
+      <ModalSheet title={relationship ? "Edit Person" : "Add Person"} onClose={onClose} footer={footer}>
         <div style={E.fieldGroup}>
           <div style={E.label}>Name</div>
           <input style={M.input} value={name} onChange={e => setName(e.target.value)} placeholder="Name (optional)" />
@@ -3193,24 +3237,6 @@ function RelationshipModal({ relationship, onClose, onSaved, onDeleted, onAddAsC
           <div style={E.label}>Biggest challenge</div>
           <input style={M.input} value={biggestChallenge} onChange={e => setBiggestChallenge(e.target.value)} placeholder="Where it's hardest right now" />
         </div>
-
-        <SaveStatus status={saveStatus.status} onRetry={save} />
-        <button style={M.next} disabled={saveStatus.status === "saving"} onClick={save}>{saveStatus.status === "saving" ? "Saving…" : "Save"}</button>
-        <TapError message={delErr || null} />
-        {relationship && confirmingDelete && (
-          <div style={{ ...S.prioSub, color: "#C87060", margin: "6px 0" }}>
-            Delete {relationshipLabel(relationship)}? They'll move to Deleted, where you can bring them back.
-          </div>
-        )}
-        {relationship && (confirmingDelete ? (
-          <>
-            <button style={{ ...M.next, background: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Yes, delete"}</button>
-            <button style={M.cancel} disabled={deleting} onClick={() => setConfirmingDelete(false)}>Cancel</button>
-          </>
-        ) : (
-          <button style={{ ...M.cancel, color: "#C87060" }} onClick={() => setConfirmingDelete(true)}>Delete Person</button>
-        ))}
-        <button style={M.cancel} onClick={onClose}>Cancel</button>
       </ModalSheet>
     </div>
   );
@@ -3734,9 +3760,36 @@ function SphereWalkthroughModal({ category, label, savedAnswers, onClose, onSave
     else { setSaving(false); setSaveErr("Couldn't save — try again"); }
   }
 
+  // #160 follow-up — the sticky header alone didn't help reach this modal's
+  // actual primary action (Use this / Next), which is what stayed broken on
+  // longer steps (a follow-up textarea can push this well below the fold).
+  // Moved into ModalSheet's sticky footer instead; the two states (summary
+  // vs. a question step) each have their own nav shape, so this is built
+  // per-render rather than always the same JSX.
+  const footer = atSummary ? (
+    <>
+      <TapError message={saveErr || null} />
+      <div style={S.sphereWizNav}>
+        <button style={S.sphereWizBtn} onClick={() => setStep(questions.length - 1)}>‹ Review answers</button>
+        <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnPrimary }} disabled={saving} onClick={handleUseThis}>{saving ? "Saving…" : "Use this ✓"}</button>
+      </div>
+      <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnDanger }} onClick={onClose}>Close without saving</button>
+    </>
+  ) : q && a ? (
+    <>
+      <div style={S.sphereWizNav}>
+        <button style={{ ...S.sphereWizBtn, ...(step === 0 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => setStep(s => s - 1)}>‹ Back</button>
+        <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnPrimary, ...(!a.answer ? { opacity: 0.3 } : {}) }} disabled={!a.answer} onClick={() => setStep(s => s + 1)}>
+          {step === questions.length - 1 ? "See summary ›" : "Next ›"}
+        </button>
+      </div>
+      <button style={{ ...S.sphereWizBtn, marginTop: 10, width: "100%" }} onClick={onClose}>Close</button>
+    </>
+  ) : null;
+
   return (
     <div style={M.overlay}>
-      <ModalSheet title={`Walk through: ${label}`} onClose={onClose}>
+      <ModalSheet title={`Walk through: ${label}`} onClose={onClose} footer={footer}>
         {atSummary ? (
           <>
             <div style={S.sphereSummaryBox}>
@@ -3754,12 +3807,6 @@ function SphereWalkthroughModal({ category, label, savedAnswers, onClose, onSave
               })}
             </div>
             <div style={S.sphereQuestion}>Suggested state: <b style={{ color: suggestedColor }}>{suggested.toUpperCase()}</b> — the note and state stay yours to edit before saving.</div>
-            <TapError message={saveErr || null} />
-            <div style={S.sphereWizNav}>
-              <button style={S.sphereWizBtn} onClick={() => setStep(questions.length - 1)}>‹ Review answers</button>
-              <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnPrimary }} disabled={saving} onClick={handleUseThis}>{saving ? "Saving…" : "Use this ✓"}</button>
-            </div>
-            <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnDanger }} onClick={onClose}>Close without saving</button>
           </>
         ) : q && a && (
           <>
@@ -3821,14 +3868,6 @@ function SphereWalkthroughModal({ category, label, savedAnswers, onClose, onSave
                 <textarea style={{ ...M.input, resize: "none" }} rows={2} value={a.followup} onChange={e => updateCurrent({ followup: e.target.value })} />
               </div>
             ))}
-
-            <div style={S.sphereWizNav}>
-              <button style={{ ...S.sphereWizBtn, ...(step === 0 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => setStep(s => s - 1)}>‹ Back</button>
-              <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnPrimary, ...(!a.answer ? { opacity: 0.3 } : {}) }} disabled={!a.answer} onClick={() => setStep(s => s + 1)}>
-                {step === questions.length - 1 ? "See summary ›" : "Next ›"}
-              </button>
-            </div>
-            <button style={{ ...S.sphereWizBtn, marginTop: 10, width: "100%" }} onClick={onClose}>Close</button>
           </>
         )}
       </ModalSheet>
@@ -6517,6 +6556,12 @@ const M: Record<string, CSSProperties> = {
   // inset from it once scrolled.
   head: { position: "sticky", top: -24, zIndex: 2, display: "flex", justifyContent: "space-between", alignItems: "center", background: "linear-gradient(160deg,rgba(34,30,18,0.98),rgba(16,14,8,0.98))", margin: "-24px -24px 14px", padding: "24px 24px 14px" },
   headClose: { flexShrink: 0, width: 30, height: 30, display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 8, cursor: "pointer" },
+  // Mirrors M.head's own sticky-bleed technique, flipped to the bottom —
+  // `bottom: -48` and the -48 bottom margin match M.sheet's own 48px
+  // bottom padding the same way `head`'s `top: -24`/-24 margin match its
+  // 24px top padding, so this bleeds all the way to the sheet's true
+  // bottom edge instead of floating inset from it once scrolled.
+  footer: { position: "sticky", bottom: -48, zIndex: 2, background: "linear-gradient(160deg,rgba(34,30,18,0.98),rgba(16,14,8,0.98))", margin: "14px -24px -48px", padding: "14px 24px 48px" },
   title: { fontSize: 23, color: C.parchment, fontWeight: 400 },
   track: { height: 3, background: "rgba(0,0,0,0.45)", borderRadius: 2, overflow: "hidden", marginBottom: 24 },
   fill: { height: "100%", background: `linear-gradient(90deg,${C.brassDeep},${C.brass})`, borderRadius: 2, transition: "width 0.3s", boxShadow: `0 0 7px ${C.brassGlow}` },
