@@ -71,6 +71,60 @@ const BRAND = {
 };
 const EMAIL_FONT = "'Calibri','Segoe UI','Gill Sans MT','Helvetica Neue',Arial,sans-serif";
 
+// The branded header shared by every Steward transactional email that wants
+// it: wood-grain band, "Steward." wordmark, compass badge, and a short
+// tagline-style subheading naming what this particular email is about —
+// mirrors the sign-in screen's own logo-then-tagline pairing. Pulled out as
+// its own function (not inlined into sendReminderDigest) because the header
+// itself, not the body content, is the reusable brand unit here.
+//
+// Two production-safety departures from the design as originally rendered
+// in preview:
+//   - No absolutely-positioned darkening overlay div — position:absolute
+//     support in email clients is too inconsistent to rely on. Legibility
+//     instead comes from text-shadow (harmless where unsupported) plus the
+//     wood texture's own fairly dark tone.
+//   - The wood-grain photo and the compass badge are separate small static
+//     assets (artifacts/arlo/public/email-header-wood.jpg,
+///    email-compass-badge.png — the compass pre-rendered to a flat PNG,
+//     not shipped as live SVG/CSS gradients/absolute-positioned rivets),
+//     referenced by absolute URL, not inlined as a data: URI — Gmail clips
+//     any message over ~102KB, and the compass's gradients/positioning
+//     wouldn't survive Outlook's rendering engine as inline markup anyway.
+// Both need PUBLIC_URL to build an absolute URL from; without it, the header
+// degrades to a plain walnut band with no images rather than shipping a
+// broken image tag (a relative URL can't resolve inside an email at all).
+function emailHeaderHtml(appUrl: string | undefined, subheading: string): string {
+  const woodUrl = appUrl ? `${appUrl}/email-header-wood.jpg` : null;
+  const compassUrl = appUrl ? `${appUrl}/email-compass-badge.png` : null;
+  const bandAttrs = woodUrl
+    ? `background="${woodUrl}" style="background-image:url('${woodUrl}');background-size:cover;background-position:center;background-color:${BRAND.walnutDark};border-radius:14px 14px 0 0;padding:26px;"`
+    : `style="background-color:${BRAND.walnutDark};border-radius:14px 14px 0 0;padding:26px;"`;
+  const compassCell = compassUrl ? `
+    <td align="right" valign="middle" width="80">
+      <img src="${compassUrl}" width="72" height="72" alt="" style="display:block;border:0;">
+    </td>` : "";
+
+  return `
+<tr><td ${bandAttrs}>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+    <td align="left" valign="middle">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+        <td style="padding-bottom:6px;">
+          <span style="font-family:${EMAIL_FONT};font-size:34px;font-weight:400;color:${BRAND.parchmentBright};letter-spacing:-0.02em;line-height:1;text-shadow:0 2px 6px rgba(0,0,0,0.6);">Steward</span><span style="font-family:${EMAIL_FONT};font-size:34px;color:${BRAND.brassBright};line-height:1;text-shadow:0 0 14px rgba(216,170,62,0.6);">.</span>
+        </td>
+      </tr><tr>
+        <td>
+          <span style="font-family:${EMAIL_FONT};font-size:11px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:${BRAND.parchmentDim};text-shadow:0 1px 3px rgba(0,0,0,0.6);">${escapeHtml(subheading)}</span>
+        </td>
+      </tr></table>
+    </td>
+    ${compassCell}
+  </tr></table>
+</td></tr>
+<tr><td style="height:3px;background:${BRAND.brassBright};line-height:3px;font-size:0;">&nbsp;</td></tr>`;
+}
+
 function reminderSectionHtml(title: string, items: ReminderDigestItem[], accentColor: string): string {
   if (items.length === 0) return "";
   const rows = items.map(({ commit, who }) => `
@@ -116,10 +170,7 @@ export async function sendReminderDigest(email: string, digest: ReminderDigest):
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#EFEAE0;padding:32px 16px;">
 <tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;background:${BRAND.ink};border-radius:14px;">
-<tr><td style="background:${BRAND.walnutDark};padding:24px 28px 20px;border-radius:14px 14px 0 0;">
-  <span style="font-family:${EMAIL_FONT};font-size:26px;font-weight:400;color:${BRAND.parchmentBright};">Steward</span><span style="font-family:${EMAIL_FONT};font-size:26px;color:${BRAND.brassBright};">.</span>
-</td></tr>
-<tr><td style="height:3px;background:${BRAND.brassBright};line-height:3px;font-size:0;">&nbsp;</td></tr>
+${emailHeaderHtml(appUrl, "Steady. Faithful. Accountable.")}
 <tr><td style="padding:24px 28px 4px;">
   <span style="font-family:${EMAIL_FONT};font-size:15px;color:${BRAND.parchmentBright};">Here&rsquo;s what needs your attention today.</span>
 </td></tr>
