@@ -4285,12 +4285,31 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, commits, relations
             reclaim that space. Scoped to Calendar only; other tabs' subtitles
             sit once at the top of a normal scroll, not repeated sticky chrome. */}
         <h1 style={S.pageTitle}>Calendar</h1>
+        {/* #162 follow-up — "Commitments shown"/"External calendars shown"
+            wrapped onto two separate full-width rows on any phone-width
+            screen (a real iPhone SE screenshot showed it costing almost a
+            full extra chip-row of height on top of everything else this
+            header already takes). Shortened labels fit both chips on one
+            row; the on/off state, previously spelled out in the visible
+            text, is now carried by aria-pressed/aria-label instead — the
+            border-color/opacity distinction was already the primary visual
+            signal anyway. */}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button style={{ ...E.chip, ...(hideCommitments ? { opacity: 0.5 } : { borderColor: C.brass, color: C.brass }) }} onClick={toggleCommitments}>
-            Commitments {hideCommitments ? "hidden" : "shown"}
+          <button
+            style={{ ...E.chip, ...(hideCommitments ? { opacity: 0.5 } : { borderColor: C.brass, color: C.brass }) }}
+            onClick={toggleCommitments}
+            aria-pressed={!hideCommitments}
+            aria-label={`Commitments ${hideCommitments ? "hidden" : "shown"} — tap to toggle`}
+          >
+            Commitments
           </button>
-          <button style={{ ...E.chip, ...(hideExternal ? { opacity: 0.5 } : { borderColor: C.brass, color: C.brass }) }} onClick={toggleExternal}>
-            External calendars {hideExternal ? "hidden" : "shown"}
+          <button
+            style={{ ...E.chip, ...(hideExternal ? { opacity: 0.5 } : { borderColor: C.brass, color: C.brass }) }}
+            onClick={toggleExternal}
+            aria-pressed={!hideExternal}
+            aria-label={`Calendar events ${hideExternal ? "hidden" : "shown"} — tap to toggle`}
+          >
+            Calendar
           </button>
         </div>
         <div style={S.calendarHeaderLine} />
@@ -6368,8 +6387,10 @@ const S: Record<string, CSSProperties> = {
   dotDone: { background: "rgba(120,180,106,0.25)", borderColor: "#7AB46A" },
   jobRow: { marginBottom: 14, paddingBottom: 14, borderBottom: "1px solid rgba(210,190,130,0.12)" },
   workList: { ...glass, padding: "10px 0", marginBottom: 12 },
-  workGroup: { fontSize: 14, fontWeight: 800, letterSpacing: "0.13em", padding: "8px 16px 5px" },
-  workRow: { width: "100%", display: "grid", gridTemplateColumns: "1fr auto", gap: "2px 10px", alignItems: "center", background: "transparent", border: "none", borderTop: "1px solid rgba(210,190,130,0.09)", color: C.parchment, textAlign: "left", padding: "9px 16px 10px", cursor: "pointer", fontFamily: F },
+  // Horizontal inset widened from 16 to 20 (reported as crowding the
+  // card's edge, most visibly the "%" figure on the right).
+  workGroup: { fontSize: 14, fontWeight: 800, letterSpacing: "0.13em", padding: "8px 20px 5px" },
+  workRow: { width: "100%", display: "grid", gridTemplateColumns: "1fr auto", gap: "2px 10px", alignItems: "center", background: "transparent", border: "none", borderTop: "1px solid rgba(210,190,130,0.09)", color: C.parchment, textAlign: "left", padding: "9px 20px 10px", cursor: "pointer", fontFamily: F },
   workMain: { minWidth: 0 },
   workName: { fontSize: 14, color: C.parchment, lineHeight: 1.25, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   workMeta: { fontSize: 14, color: C.parchmentDim, lineHeight: 1.35, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
