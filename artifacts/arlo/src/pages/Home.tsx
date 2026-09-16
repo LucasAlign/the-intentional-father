@@ -6634,7 +6634,13 @@ const M: Record<string, CSSProperties> = {
   // screen, leaving the app's bottom nav visibly exposed below it instead
   // of fully covered. Still dvh, not vh, for the reason below; just a
   // taller fraction of it.
-  sheet: { width: "100%", maxWidth: 440, margin: "0 auto", maxHeight: "94dvh", position: "relative", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "none", background: "linear-gradient(160deg,rgba(34,30,18,0.98),rgba(16,14,8,0.98))", backdropFilter: "blur(24px)", borderRadius: "22px 22px 0 0", padding: "24px 24px 48px", border: "1px solid rgba(210,190,130,0.18)", borderBottom: "none", boxShadow: "0 -10px 50px rgba(0,0,0,0.7)" },
+  // WebkitOverflowScrolling: "touch" — reported as "can't scroll at all"
+  // while a modal is open, specifically once lockBodyScroll (below) pins
+  // <body> to position:fixed. A scrollable element nested inside a
+  // position:fixed overlay, while the body itself is also position:fixed,
+  // is a known WebKit gap in native momentum/touch scroll handling; this
+  // is the standard, harmless mitigation (a no-op on non-WebKit browsers).
+  sheet: { WebkitOverflowScrolling: "touch", width: "100%", maxWidth: 440, margin: "0 auto", maxHeight: "94dvh", position: "relative", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "none", background: "linear-gradient(160deg,rgba(34,30,18,0.98),rgba(16,14,8,0.98))", backdropFilter: "blur(24px)", borderRadius: "22px 22px 0 0", padding: "24px 24px 48px", border: "1px solid rgba(210,190,130,0.18)", borderBottom: "none", boxShadow: "0 -10px 50px rgba(0,0,0,0.7)" },
   strip: { position: "absolute", top: 0, left: 0, right: 0, height: 2, zIndex: 3, background: `linear-gradient(90deg,transparent,${C.brass},transparent)`, boxShadow: `0 0 14px ${C.brassGlow}` },
   // #160 — sticky so the title and close (×) button stay reachable without
   // scrolling, even once a modal's content (plus, on a short device, the
