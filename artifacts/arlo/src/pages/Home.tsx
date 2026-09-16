@@ -406,7 +406,16 @@ const NAV: { id: TabId; icon: IconName | "stewardIcon"; label: string }[] = [
 ];
 type TabId = "today" | "her" | "work" | "sphere" | "steward" | "week";
 
-const BIZ_PALETTE = ["#8AB46A", "#6AAEC8", "#C89840", "#B080C0", "#C87060", "#60A8B4", "#A890C0"];
+// #163 — was a 7-color rainbow (green/blue/gold/purple/red/teal/lavender)
+// that stood out against the rest of the app's woodgrain/brass/parchment
+// theme; one entry (#C87060) even collided exactly with the app's own
+// semantic warning/delete red used elsewhere, so a pursuit could look like
+// a danger indicator by coincidence. Kept as 7 distinguishable hues (the
+// per-pursuit color-coding is genuinely useful for scanning a long Work
+// list) but re-picked entirely within a warm, muted brass/bronze/tan/
+// terracotta register so it reads as part of this app's theme rather than
+// a generic dashboard palette.
+const BIZ_PALETTE = ["#B08D4A", "#9C7A3D", "#8A7A52", "#A67C52", "#B8905E", "#8C6F4A", "#C2A06A"];
 function pursuitColor(pursuitId: number | null, ids: number[]) {
   const i = pursuitId === null ? -1 : ids.indexOf(pursuitId);
   return BIZ_PALETTE[i >= 0 ? i % BIZ_PALETTE.length : 0];
@@ -4269,8 +4278,13 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, commits, relations
           </button>
           <button style={S.calendarTodayBtn} onClick={() => { scrollToDay(todayKey, "auto"); setCurrentMonthKey(todayMonthKey); }} aria-label="Jump to today">Today</button>
         </div>
+        {/* #162 — the descriptive subtitle every other tab has was pure
+            filler here (nothing it said wasn't already obvious from the
+            screen itself), and this is the one tab where header chrome is
+            sticky and always eating into the visible day list — dropped to
+            reclaim that space. Scoped to Calendar only; other tabs' subtitles
+            sit once at the top of a normal scroll, not repeated sticky chrome. */}
         <h1 style={S.pageTitle}>Calendar</h1>
-        <div style={S.pageSub}>Work, commitments, and calendar events — scroll ahead or back.</div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button style={{ ...E.chip, ...(hideCommitments ? { opacity: 0.5 } : { borderColor: C.brass, color: C.brass }) }} onClick={toggleCommitments}>
             Commitments {hideCommitments ? "hidden" : "shown"}
@@ -6332,7 +6346,10 @@ const S: Record<string, CSSProperties> = {
   pageTitle: { fontSize: 28, fontWeight: 400, color: C.parchment, marginBottom: 4, textShadow: "0 2px 6px rgba(0,0,0,0.5)" },
   pageSub: { fontSize: 14, color: C.parchmentDim, marginBottom: 18 },
   toneRow: { display: "flex", gap: 6, marginBottom: 14, marginTop: -4 },
-  toneOpt: { flex: 1, background: "rgba(24,20,12,0.55)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 14, color: C.parchmentDim, fontSize: 14, fontWeight: 600, padding: "7px 4px", cursor: "pointer", fontFamily: F },
+  // #161 — flatter: less vertical padding and a smaller radius so this
+  // reads as a flat segmented control instead of three rounded pills,
+  // freeing a little more height for the chat window below it.
+  toneOpt: { flex: 1, background: "rgba(24,20,12,0.55)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 8, color: C.parchmentDim, fontSize: 14, fontWeight: 600, padding: "5px 4px", cursor: "pointer", fontFamily: F },
   toneOptOn: { borderColor: C.brass, background: "rgba(216,170,62,0.16)", color: C.parchment },
   logRow: { display: "flex", gap: 8, marginBottom: 14 },
   logInput: { flex: 1, background: "rgba(8,10,5,0.6)", border: "1px solid rgba(210,190,130,0.16)", borderRadius: 12, color: C.parchment, fontSize: 14, fontFamily: F, padding: "12px 14px", outline: "none", boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)" },
@@ -6364,7 +6381,10 @@ const S: Record<string, CSSProperties> = {
   track: { flex: 1, height: 5, background: "rgba(0,0,0,0.45)", borderRadius: 3, overflow: "hidden", boxShadow: "inset 0 1px 3px rgba(0,0,0,0.5)" },
   trackFill: { height: "100%", borderRadius: 3, transition: "width 0.4s" },
   intakeBtn: { width: "100%", borderRadius: 14, border: `1px dashed ${C.walnutLite}80`, background: "rgba(90,58,32,0.18)", color: C.parchmentMid, fontSize: 14, fontWeight: 600, padding: "15px", cursor: "pointer", fontFamily: F },
-  chatWrap: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", paddingTop: 12 },
+  // #161 — was 12 (+ the header row's own 4px), pulling "Chat" a bit closer
+  // to the persistent "Steward." header on request; bespoke to this screen,
+  // not shared with other tabs' spacing.
+  chatWrap: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", paddingTop: 4 },
   chatMsgs: { flex: 1, overflowY: "auto", padding: "12px 18px", position: "relative" },
   bubble: { marginBottom: 14, maxWidth: "86%" },
   bubbleA: { marginRight: "auto" },
@@ -6407,14 +6427,17 @@ const S: Record<string, CSSProperties> = {
     position: "sticky", top: -16, zIndex: 2,
     background: "linear-gradient(180deg, rgba(8,10,5,0.97) 0%, rgba(8,10,5,0.90) 100%)",
     backdropFilter: "blur(20px)",
-    margin: "-16px -18px 14px", padding: "16px 18px 14px",
+    // #162 — bottom padding tightened from 14 to 10 (on top of dropping the
+    // subtitle entirely, above) to reclaim a little more of this sticky
+    // header's footprint on a short screen.
+    margin: "-16px -18px 10px", padding: "16px 18px 10px",
   },
   calendarHeaderLine: {
     position: "absolute", left: 0, right: 0, bottom: 0, height: 1,
     background: `linear-gradient(90deg,transparent,${C.brassDeep},${C.brass},${C.brassDeep},transparent)`,
     boxShadow: `0 0 10px ${C.brassGlow}`,
   },
-  calendarMonthBar: { display: "flex", alignItems: "center", gap: 10, marginBottom: 10 },
+  calendarMonthBar: { display: "flex", alignItems: "center", gap: 10, marginBottom: 8 },
   calendarMonthArrow: {
     background: "rgba(255,255,255,0.04)", border: "1px solid rgba(210,190,130,0.35)", borderRadius: "50%",
     width: 30, height: 30, color: C.brassSoft, fontSize: 16, cursor: "pointer", fontFamily: F,
