@@ -1235,9 +1235,9 @@ function ProfileMenu({ name, email, onClose, onLogout, hintsEnabled, onSetHintsE
         <div style={{ textAlign: "center", marginTop: 4, marginBottom: 10 }}>
           <a href="https://lucasalign.com/steward/index.html" target="_blank" rel="noreferrer" style={{ color: C.parchmentDim, fontSize: 12, textDecoration: "underline" }}>About Steward</a>
           <span style={{ color: C.parchmentDim, fontSize: 12, margin: "0 8px" }}>&middot;</span>
-          <a href="/privacy" style={{ color: C.parchmentDim, fontSize: 12, textDecoration: "underline" }}>Privacy Policy</a>
+          <a href="https://lucasalign.com/steward/privacy.html" target="_blank" rel="noreferrer" style={{ color: C.parchmentDim, fontSize: 12, textDecoration: "underline" }}>Privacy Policy</a>
           <span style={{ color: C.parchmentDim, fontSize: 12, margin: "0 8px" }}>&middot;</span>
-          <a href="/terms" style={{ color: C.parchmentDim, fontSize: 12, textDecoration: "underline" }}>Terms of Service</a>
+          <a href="https://lucasalign.com/steward/terms.html" target="_blank" rel="noreferrer" style={{ color: C.parchmentDim, fontSize: 12, textDecoration: "underline" }}>Terms of Service</a>
         </div>
         <button style={M.cancel} onClick={onClose}>Close</button>
       </ModalSheet>

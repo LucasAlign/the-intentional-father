@@ -9,6 +9,7 @@ Built from an 8-point compass rose (bronze bezel, brass rivets, graduated dial) 
 - `steward-logo.png` — the final exported asset. Use this one.
 - `steward-logo.source.html` — the standalone HTML the PNG was rendered from (plain HTML/CSS/SVG, no build step). Open it in a browser, or re-screenshot it (e.g. via Playwright/Chromium at a higher `deviceScaleFactor`) to produce a new export at a different resolution.
 - `wood-square.jpg` — the square-cropped, brightened wood-grain background the source HTML references. Re-crop from `artifacts/arlo/public/woodgrain.png` if the app's texture ever changes.
+- `lucasalign-steward-privacy.html` / `lucasalign-steward-terms.html` — standalone (no build step, no external dependencies) Privacy Policy and Terms of Service pages, meant to be uploaded to LucasAlign.com alongside `/steward/index.html` (as `/steward/privacy.html` and `/steward/terms.html`) — Google's OAuth consent screen requires the Privacy Policy/Terms links to live on the same verified domain as the Application home page, and `1arlo.replit.app` doesn't satisfy that once the home page moved to `lucasalign.com`. Content is kept in sync with the in-app versions at `artifacts/arlo/src/pages/Privacy.tsx`/`Terms.tsx` — when one changes, update the other. Cross-links between the two files use relative paths (`./privacy.html`, `./terms.html`) and assume both live in the same directory as `index.html`; adjust if uploaded elsewhere.
 
 ## Provenance
 
