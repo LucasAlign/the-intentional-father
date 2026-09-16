@@ -1097,7 +1097,7 @@ export default function Home() {
 
       <main style={R.screen}>
         {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} onOpenJournalHistory={() => setJournalHistoryOpen(true)} onOpenIntentionHistory={() => setIntentionHistoryOpen(true)} onToggleVerseFavorite={toggleVerseFavorite} onOpenVerseHistory={() => setVerseHistoryOpen(true)} onOpenVerseFavorites={() => setVerseFavoritesOpen(true)} hasChatMessages={chat.length > 0} />}
-        {tab === "her" && <Relationships relationships={relationships} refreshRelationships={refreshRelationships} commits={commits} refreshCommits={refreshCommits} />}
+        {tab === "her" && <Relationships relationships={relationships} refreshRelationships={refreshRelationships} commits={commits} refreshCommits={refreshCommits} onOpenReminders={() => setRemindersOpen(true)} />}
         {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} onOpenClosed={() => setClosedPursuitsOpen(true)} onOpenDeletedJobs={() => setDeletedJobsOpen(true)} />}
         {tab === "sphere" && <Sphere />}
         {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} />}
@@ -2500,9 +2500,10 @@ function DraggableRelationshipList({ items, onReorder, renderRow }: {
   );
 }
 
-function Relationships({ relationships, refreshRelationships, commits, refreshCommits }: {
+function Relationships({ relationships, refreshRelationships, commits, refreshCommits, onOpenReminders }: {
   relationships: Relationship[]; refreshRelationships: () => void;
   commits: Commit[]; refreshCommits: () => void;
+  onOpenReminders: () => void;
 }) {
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<Relationship | null>(null);
@@ -2696,6 +2697,7 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
         <CommitLogModal
           relationships={relationships} lockedPerson={logOpen.lockedPerson} initialText={logOpen.initialText}
           onClose={() => setLogOpen(false)} onSaved={refreshCommits} onRelationshipAdded={refreshRelationships}
+          onOpenReminders={() => { setLogOpen(false); onOpenReminders(); }}
         />
       )}
       {editingCommit && (
@@ -2822,9 +2824,13 @@ async function createAdHocRelationship(name: string, category: RelationshipCateg
 // creation flow, and the free-text Commitments field's current value seeds
 // the commitment text. Neither carries any special meaning once saved: a
 // later edit treats everyone the same.
-function CommitLogModal({ relationships, lockedPerson, initialText, defaultNewCategory, onClose, onSaved, onRelationshipAdded }: {
+function CommitLogModal({ relationships, lockedPerson, initialText, defaultNewCategory, onClose, onSaved, onRelationshipAdded, onOpenReminders }: {
   relationships: Relationship[]; lockedPerson?: { id: number; label: string }; initialText?: string; defaultNewCategory?: RelationshipCategory;
   onClose: () => void; onSaved: () => void; onRelationshipAdded: () => void;
+  // Optional: not passed by IntentionTransferModal's own use of this same
+  // component, which is a locked, single-purpose flow where a detour into
+  // Reminders settings wouldn't make sense.
+  onOpenReminders?: () => void;
 }) {
   const [relationshipIds, setRelationshipIds] = useState<number[]>(lockedPerson ? [lockedPerson.id] : []);
   const [newCategory, setNewCategory] = useState<RelationshipCategory | "">(defaultNewCategory ?? "");
@@ -2901,6 +2907,11 @@ function CommitLogModal({ relationships, lockedPerson, initialText, defaultNewCa
         <button style={M.next} disabled={!canSave || saveStatus.status === "saving"} onClick={save}>
           {saveStatus.status === "saving" ? "Saving…" : "Log commitment"}
         </button>
+        {onOpenReminders && (
+          <button style={{ ...S.prioLogLink, display: "block", width: "100%", textAlign: "center", marginTop: 4 }} onClick={onOpenReminders}>
+            Commitment Reminders
+          </button>
+        )}
         <button style={M.cancel} onClick={onClose}>Cancel</button>
       </ModalSheet>
     </div>
