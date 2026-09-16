@@ -2722,13 +2722,30 @@ function Relationships({ relationships, refreshRelationships, commits, refreshCo
 // from a specific person's profile) renders those chips selected and
 // un-toggleable — #72's "can't swap out who started it," creation-time
 // only, so CommitEditModal never passes this.
-function CommitTargetPicker({ relationships, relationshipIds, setRelationshipIds, lockedIds, newCategory, setNewCategory, newName, setNewName, addToTribe, setAddToTribe }: {
+// #78 — "who is this to?" is invalid in two genuinely different ways, and
+// telling them apart matters: picking a new-relationship category doesn't
+// satisfy it alone (a name is still required), but the old single message
+// ("Select who this commitment is for.") never changed once a category was
+// picked — so someone who'd already fixed half the problem saw the exact
+// same text on the next failed Save and read it as "nothing happens,"
+// since nothing about the message told them the name was the remaining gap.
+function whoValidationMessage(hasExisting: boolean, newCategory: RelationshipCategory | "", newName: string): string {
+  if (hasExisting) return "";
+  if (newCategory === "") return "Select who this commitment is for — pick an existing person or a relationship type for someone new.";
+  if (newName.trim() === "") return "Enter their name.";
+  return "";
+}
+
+function CommitTargetPicker({ relationships, relationshipIds, setRelationshipIds, lockedIds, newCategory, setNewCategory, newName, setNewName, addToTribe, setAddToTribe, invalidPart }: {
   relationships: Relationship[];
   relationshipIds: number[]; setRelationshipIds: (v: number[]) => void;
   lockedIds?: number[];
   newCategory: RelationshipCategory | ""; setNewCategory: (v: RelationshipCategory | "") => void;
   newName: string; setNewName: (v: string) => void;
   addToTribe: boolean; setAddToTribe: (v: boolean) => void;
+  // #78 — which half of "someone new" is still missing, once a Save attempt
+  // has failed on it; null before any attempt, or once it's fixed.
+  invalidPart?: "category" | "name" | null;
 }) {
   const hasNew = newCategory !== "" && newName.trim() !== "";
   const locked = new Set(lockedIds ?? []);
@@ -2760,7 +2777,7 @@ function CommitTargetPicker({ relationships, relationshipIds, setRelationshipIds
           </div>
         )}
         <div style={{ ...S.prioSub, marginTop: relationships.length > 0 ? 10 : 0, marginBottom: 6 }}>Someone new:</div>
-        <div style={E.chipRow}>
+        <div style={{ ...E.chipRow, ...(invalidPart === "category" ? { outline: "1.5px solid #C87060", outlineOffset: 4, borderRadius: 10 } : {}) }}>
           {RELATIONSHIP_CATEGORIES.map(cat => (
             <button key={cat} style={{ ...E.chip, ...(newCategory === cat ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => pickNewCategory(cat)}>
               {RELATIONSHIP_CATEGORY_LABEL[cat]}
@@ -2768,7 +2785,11 @@ function CommitTargetPicker({ relationships, relationshipIds, setRelationshipIds
           ))}
         </div>
         {newCategory !== "" && (
-          <input style={{ ...M.input, marginTop: 8 }} value={newName} onChange={e => setNewName(e.target.value)} placeholder="Their name" autoFocus />
+          <input
+            style={{ ...M.input, marginTop: 8, ...(invalidPart === "name" ? { borderColor: "#C87060" } : {}) }}
+            value={newName} onChange={e => setNewName(e.target.value)} placeholder="Their name" autoFocus
+            aria-invalid={invalidPart === "name" ? true : undefined}
+          />
         )}
       </div>
       {hasNew && (
@@ -2813,16 +2834,21 @@ function CommitLogModal({ relationships, lockedPerson, initialText, defaultNewCa
   const [notes, setNotes] = useState("");
   const [dueDate, setDueDate] = useState("");
   const saveStatus = useSaveStatus();
-  const [validationErr, setValidationErr] = useState("");
+  // #78 — shown only after a first failed Save attempt (not eagerly while
+  // still filling the form), then stays live: fixing the field that's named
+  // clears the message immediately, without needing to hit Save again.
+  const [attemptedSave, setAttemptedSave] = useState(false);
 
   const hasExisting = relationshipIds.length > 0;
   const hasNew = newCategory !== "" && newName.trim() !== "";
   const canSave = text.trim() !== "";
+  const whoErr = whoValidationMessage(hasExisting, newCategory, newName);
+  const invalidPart: "category" | "name" | null = !attemptedSave || hasExisting ? null : newCategory === "" ? "category" : newName.trim() === "" ? "name" : null;
 
   async function save() {
     if (!canSave) return;
-    if (!hasExisting && !hasNew) { setValidationErr("Select who this commitment is for."); return; }
-    setValidationErr("");
+    setAttemptedSave(true);
+    if (whoErr) return;
     await saveStatus.save(async () => {
       let targetRelationshipIds = relationshipIds;
       if (!hasExisting && hasNew && addToTribe) {
@@ -2853,8 +2879,9 @@ function CommitLogModal({ relationships, lockedPerson, initialText, defaultNewCa
           newCategory={newCategory} setNewCategory={setNewCategory}
           newName={newName} setNewName={setNewName}
           addToTribe={addToTribe} setAddToTribe={setAddToTribe}
+          invalidPart={invalidPart}
         />
-        <TapError message={validationErr || null} />
+        <TapError message={attemptedSave ? whoErr || null : null} />
 
         <div style={E.fieldGroup}>
           <div style={E.label}>WHAT DID YOU COMMIT TO?</div>
@@ -2870,6 +2897,7 @@ function CommitLogModal({ relationships, lockedPerson, initialText, defaultNewCa
         </div>
 
         <SaveStatus status={saveStatus.status} onRetry={save} />
+        {attemptedSave && whoErr && <TapError message={`Fix before saving: ${whoErr}`} />}
         <button style={M.next} disabled={!canSave || saveStatus.status === "saving"} onClick={save}>
           {saveStatus.status === "saving" ? "Saving…" : "Log commitment"}
         </button>
@@ -2894,16 +2922,19 @@ function CommitEditModal({ commit, relationships, onClose, onSaved, onDeleted, o
   const saveStatus = useSaveStatus();
   const [deleting, setDeleting] = useState(false);
   const [delErr, setDelErr] = useState("");
-  const [validationErr, setValidationErr] = useState("");
+  // #78 — see CommitLogModal's identical comment.
+  const [attemptedSave, setAttemptedSave] = useState(false);
 
   const hasExisting = relationshipIds.length > 0;
   const hasNew = newCategory !== "" && newName.trim() !== "";
   const canSave = text.trim() !== "";
+  const whoErr = whoValidationMessage(hasExisting, newCategory, newName);
+  const invalidPart: "category" | "name" | null = !attemptedSave || hasExisting ? null : newCategory === "" ? "category" : newName.trim() === "" ? "name" : null;
 
   async function save() {
     if (!canSave) return;
-    if (!hasExisting && !hasNew) { setValidationErr("Select who this commitment is for."); return; }
-    setValidationErr("");
+    setAttemptedSave(true);
+    if (whoErr) return;
     await saveStatus.save(async () => {
       let targetRelationshipIds = relationshipIds;
       if (!hasExisting && hasNew && addToTribe) {
@@ -2942,8 +2973,9 @@ function CommitEditModal({ commit, relationships, onClose, onSaved, onDeleted, o
           newCategory={newCategory} setNewCategory={setNewCategory}
           newName={newName} setNewName={setNewName}
           addToTribe={addToTribe} setAddToTribe={setAddToTribe}
+          invalidPart={invalidPart}
         />
-        <TapError message={validationErr || null} />
+        <TapError message={attemptedSave ? whoErr || null : null} />
 
         <div style={E.fieldGroup}>
           <div style={E.label}>WHAT DID YOU COMMIT TO?</div>
@@ -2959,6 +2991,7 @@ function CommitEditModal({ commit, relationships, onClose, onSaved, onDeleted, o
         </div>
 
         <SaveStatus status={saveStatus.status} onRetry={save} />
+        {attemptedSave && whoErr && <TapError message={`Fix before saving: ${whoErr}`} />}
         <button style={M.next} disabled={!canSave || saveStatus.status === "saving"} onClick={save}>
           {saveStatus.status === "saving" ? "Saving…" : "Save"}
         </button>
