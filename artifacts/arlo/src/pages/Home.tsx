@@ -1233,6 +1233,8 @@ function ProfileMenu({ name, email, onClose, onLogout, hintsEnabled, onSetHintsE
             visitor before they've seen the product. */}
         <AddToHomeScreen />
         <div style={{ textAlign: "center", marginTop: 4, marginBottom: 10 }}>
+          <a href="https://lucasalign.com/steward/index.html" target="_blank" rel="noreferrer" style={{ color: C.parchmentDim, fontSize: 12, textDecoration: "underline" }}>About Steward</a>
+          <span style={{ color: C.parchmentDim, fontSize: 12, margin: "0 8px" }}>&middot;</span>
           <a href="/privacy" style={{ color: C.parchmentDim, fontSize: 12, textDecoration: "underline" }}>Privacy Policy</a>
           <span style={{ color: C.parchmentDim, fontSize: 12, margin: "0 8px" }}>&middot;</span>
           <a href="/terms" style={{ color: C.parchmentDim, fontSize: 12, textDecoration: "underline" }}>Terms of Service</a>
@@ -5991,6 +5993,9 @@ function AuthGate({
             <button style={{ ...G.addHomeToggle, marginTop: 10 }} onClick={() => { setError(""); setCode(""); setStep("email"); }}>Use a different email</button>
           </>
         )}
+        <a href="https://lucasalign.com/steward/index.html" target="_blank" rel="noreferrer" style={{ ...G.notice, display: "block", marginTop: 24, textDecoration: "underline" }}>
+          About Steward
+        </a>
       </main>
     </div>
   );
