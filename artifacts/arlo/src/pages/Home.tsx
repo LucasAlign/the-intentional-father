@@ -4143,6 +4143,56 @@ function commitIdFromEventId(eventId: number): number {
   return -eventId - 1_000_000;
 }
 
+// #167 — a faint brass compass-rose watermark for the Calendar header,
+// reusing the exact ring/tick/ray/hub construction from the compass badge
+// (docs/brand/steward-logo.source.html) at a small size and low opacity
+// rather than a simplified redraw, so it reads as the same mark. Kept as
+// its own component (not inlined into WeekView's JSX) since it's a fixed,
+// self-contained decoration with no props — nothing here varies per render.
+function CalendarGhostCompass() {
+  return (
+    <svg style={S.calendarGhostCompass} viewBox="0 0 104 104" opacity={0.22} aria-hidden="true">
+      <g transform="translate(52,52)" stroke={C.brass} fill="none">
+        <circle r="42" strokeWidth={1.4} />
+        <circle r="33" strokeWidth={0.9} />
+        <g strokeWidth={1.2}>
+          <line x1="0" y1="-42" x2="0" y2="-36" />
+          <line x1="0" y1="42" x2="0" y2="36" />
+          <line x1="-42" y1="0" x2="-36" y2="0" />
+          <line x1="42" y1="0" x2="36" y2="0" />
+          <line x1="-29.7" y1="-29.7" x2="-25.5" y2="-25.5" />
+          <line x1="29.7" y1="-29.7" x2="25.5" y2="-25.5" />
+          <line x1="-29.7" y1="29.7" x2="-25.5" y2="25.5" />
+          <line x1="29.7" y1="29.7" x2="25.5" y2="25.5" />
+        </g>
+        <g stroke="none">
+          <path d="M0,-42 L2,-28.4 L0,-20.9 Z" fill={C.brass} />
+          <path d="M0,-42 L0,-20.9 L-2,-28.4 Z" fill={C.brassDeep} />
+          <path d="M29.7,-29.7 L19.5,-19.5 L16,-17.7 Z" fill={C.brass} />
+          <path d="M29.7,-29.7 L16,-17.7 L17.7,-16 Z" fill={C.brassDeep} />
+          <path d="M42,0 L28.4,2 L20.9,0 Z" fill={C.brass} />
+          <path d="M42,0 L20.9,0 L28.4,-2 Z" fill={C.brassDeep} />
+          <path d="M29.7,29.7 L17.7,16 L16,17.7 Z" fill={C.brass} />
+          <path d="M29.7,29.7 L16,17.7 L19.5,19.5 Z" fill={C.brassDeep} />
+          <path d="M0,42 L-2,28.4 L0,20.9 Z" fill={C.brass} />
+          <path d="M0,42 L0,20.9 L2,28.4 Z" fill={C.brassDeep} />
+          <path d="M-29.7,29.7 L-16,17.7 L-19.5,19.5 Z" fill={C.brass} />
+          <path d="M-29.7,29.7 L-19.5,19.5 L-17.7,16 Z" fill={C.brassDeep} />
+          <path d="M-42,0 L-20.9,0 L-28.4,2 Z" fill={C.brass} />
+          <path d="M-42,0 L-28.4,-2 L-20.9,0 Z" fill={C.brassDeep} />
+          <path d="M-29.7,-29.7 L-17.7,-16 L-16,-17.7 Z" fill={C.brass} />
+          <path d="M-29.7,-29.7 L-19.5,-19.5 L-17.7,-16 Z" fill={C.brassDeep} />
+        </g>
+        <circle r="4.5" fill="none" stroke={C.brass} strokeWidth={1.4} />
+        <text x="0" y="-46" textAnchor="middle" dominantBaseline="middle" fontFamily="Georgia, 'Times New Roman', serif" fontWeight={700} fontSize={8.5} fill={C.brass} stroke="none">N</text>
+        <text x="46" y="1.5" textAnchor="middle" dominantBaseline="middle" fontFamily="Georgia, 'Times New Roman', serif" fontWeight={700} fontSize={8.5} fill={C.brass} stroke="none">E</text>
+        <text x="0" y="48" textAnchor="middle" dominantBaseline="middle" fontFamily="Georgia, 'Times New Roman', serif" fontWeight={700} fontSize={8.5} fill={C.brass} stroke="none">S</text>
+        <text x="-46" y="1.5" textAnchor="middle" dominantBaseline="middle" fontFamily="Georgia, 'Times New Roman', serif" fontWeight={700} fontSize={8.5} fill={C.brass} stroke="none">W</text>
+      </g>
+    </svg>
+  );
+}
+
 function WeekView({ events, jobs, pursuits, calendarAccounts, commits, relationships, refreshCommits, refreshRelationships, onRefresh, onConnectCalendar, onDisconnectCalendar }: {
   events: Event[]; jobs: Job[]; pursuits: Pursuit[]; calendarAccounts: string[];
   commits: Commit[]; relationships: Relationship[]; refreshCommits: () => void; refreshRelationships: () => void;
@@ -4323,33 +4373,47 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, commits, relations
             sticky and always eating into the visible day list — dropped to
             reclaim that space. Scoped to Calendar only; other tabs' subtitles
             sit once at the top of a normal scroll, not repeated sticky chrome. */}
-        <h1 style={S.pageTitle}>Calendar</h1>
-        {/* #162 follow-up — "Commitments shown"/"External calendars shown"
-            wrapped onto two separate full-width rows on any phone-width
-            screen (a real iPhone SE screenshot showed it costing almost a
-            full extra chip-row of height on top of everything else this
-            header already takes). Shortened labels fit both chips on one
-            row; the on/off state, previously spelled out in the visible
-            text, is now carried by aria-pressed/aria-label instead — the
-            border-color/opacity distinction was already the primary visual
-            signal anyway. */}
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button
-            style={{ ...E.chip, ...(hideCommitments ? { opacity: 0.5 } : { borderColor: C.brass, color: C.brass }) }}
-            onClick={toggleCommitments}
-            aria-pressed={!hideCommitments}
-            aria-label={`Commitments ${hideCommitments ? "hidden" : "shown"} — tap to toggle`}
-          >
-            Commitments
-          </button>
-          <button
-            style={{ ...E.chip, ...(hideExternal ? { opacity: 0.5 } : { borderColor: C.brass, color: C.brass }) }}
-            onClick={toggleExternal}
-            aria-pressed={!hideExternal}
-            aria-label={`Calendar events ${hideExternal ? "hidden" : "shown"} — tap to toggle`}
-          >
-            Calendar
-          </button>
+        {/* #167 — a faint compass-rose watermark, echoing the app's logo, as
+            an "old-time adventurer" touch on the one tab whose header has
+            real empty space to spend on it. Positioned absolutely and
+            centered via top:50%/translateY(-50%) against calendarMid's own
+            height (set only by the real title+chips content) rather than a
+            fixed pixel offset — that keeps it correctly centered regardless
+            of how tall this block renders on a given device/font, instead
+            of drifting the way a hand-measured offset did during design
+            review. Pure decoration: aria-hidden, non-interactive, and
+            structurally incapable of shifting the real content since it
+            never participates in the block's own layout. */}
+        <div style={S.calendarMid}>
+          <h1 style={S.pageTitle}>Calendar</h1>
+          {/* #162 follow-up — "Commitments shown"/"External calendars shown"
+              wrapped onto two separate full-width rows on any phone-width
+              screen (a real iPhone SE screenshot showed it costing almost a
+              full extra chip-row of height on top of everything else this
+              header already takes). Shortened labels fit both chips on one
+              row; the on/off state, previously spelled out in the visible
+              text, is now carried by aria-pressed/aria-label instead — the
+              border-color/opacity distinction was already the primary visual
+              signal anyway. */}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              style={{ ...E.chip, ...(hideCommitments ? { opacity: 0.5 } : { borderColor: C.brass, color: C.brass }) }}
+              onClick={toggleCommitments}
+              aria-pressed={!hideCommitments}
+              aria-label={`Commitments ${hideCommitments ? "hidden" : "shown"} — tap to toggle`}
+            >
+              Commitments
+            </button>
+            <button
+              style={{ ...E.chip, ...(hideExternal ? { opacity: 0.5 } : { borderColor: C.brass, color: C.brass }) }}
+              onClick={toggleExternal}
+              aria-pressed={!hideExternal}
+              aria-label={`Calendar events ${hideExternal ? "hidden" : "shown"} — tap to toggle`}
+            >
+              Calendar
+            </button>
+          </div>
+          <CalendarGhostCompass />
         </div>
         <div style={S.calendarHeaderLine} />
       </div>
@@ -6498,6 +6562,12 @@ const S: Record<string, CSSProperties> = {
     boxShadow: `0 0 10px ${C.brassGlow}`,
   },
   calendarMonthBar: { display: "flex", alignItems: "center", gap: 10, marginBottom: 8 },
+  // #167 — wraps just the title+chips so CalendarGhostCompass can center
+  // itself against this block's own real height (top:50%/translateY(-50%)
+  // on the compass, below) rather than a fixed pixel offset that would
+  // drift with font metrics.
+  calendarMid: { position: "relative" },
+  calendarGhostCompass: { position: "absolute", top: "50%", right: 0, transform: "translateY(-50%)", width: 74, height: 74, pointerEvents: "none" },
   calendarMonthArrow: {
     background: "rgba(255,255,255,0.04)", border: "1px solid rgba(210,190,130,0.35)", borderRadius: "50%",
     width: 30, height: 30, color: C.brassSoft, fontSize: 16, cursor: "pointer", fontFamily: F,
