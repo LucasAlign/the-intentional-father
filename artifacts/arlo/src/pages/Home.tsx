@@ -1083,7 +1083,7 @@ export default function Home() {
       <header style={R.header}>
         <div>
           <div style={R.logo}><span style={R.logoText}>Steward</span><span style={R.logoDot}>.</span></div>
-          <div style={R.tagline}>FOCUSED. FAITHFUL. FREE.</div>
+          <div style={R.tagline}>FAITH. FOCUS. FREEDOM.</div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {isAdmin && (
@@ -6031,7 +6031,7 @@ function AuthGate({
           the signed-out screen with none). */}
       <main style={G.wrap}>
         <div style={R.logo}><span style={R.logoText}>Steward</span><span style={R.logoDot}>.</span></div>
-        <div style={{ ...R.tagline, textAlign: "center", marginBottom: 38 }}>FOCUSED. FAITHFUL. FREE.</div>
+        <div style={{ ...R.tagline, textAlign: "center", marginBottom: 38 }}>FAITH. FOCUS. FREEDOM.</div>
         {loading ? (
           <div style={G.loading}>Loading...</div>
         ) : pendingApproval ? (
