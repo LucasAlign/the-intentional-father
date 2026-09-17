@@ -4614,18 +4614,17 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
     setFlowStep(productServiceApplicable(cat) ? "product_service" : "simple_form");
   }
 
-  // Mirrors "My job"'s pre-#167 0/1/2+ auto-behavior (create straight away
-  // with none yet, auto-select the only one, otherwise show a picker) —
-  // generalized here across all six categories instead of just employee jobs.
+  // #167 follow-up — only skip straight to "new" when there's genuinely
+  // nothing to choose from (0 existing). Any count 1+ always shows the
+  // explicit new-vs-existing pick screen — auto-selecting a lone existing
+  // pursuit silently (the original behavior, generalized from "My job"'s
+  // pre-#167 0/1/2+ auto-select) meant a second job for the same category
+  // got attached to whatever pursuit happened to exist without ever
+  // asking, which read as the app just guessing.
   function selectCategory(cat: PursuitCategory) {
     setCategory(cat);
     const existing = pursuitsInCategory(cat);
     if (existing.length === 0) { setFlowStep("new_pursuit"); return; }
-    if (existing.length === 1) {
-      setPursuitId(existing[0]!.id); setSelectedPursuitName(existing[0]!.name);
-      proceedPastPursuit(cat);
-      return;
-    }
     setFlowStep("pick");
   }
 
@@ -4844,16 +4843,20 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
 
   if (flowStep === "pick" && category) {
     const existing = pursuitsInCategory(category);
+    const catLabel = PURSUIT_CATEGORY_LABEL[category].toLowerCase();
     return (
       <div style={M.overlay}>
         <ModalSheet title="New Job" onClose={onClose}>
-          <div style={M.q}>Which {PURSUIT_CATEGORY_LABEL[category].toLowerCase()} is this for?</div>
+          <div style={M.q}>Is this a new {catLabel}, or one you already have?</div>
+          <button style={{ ...M.choice, display: "block", width: "100%", textAlign: "left", marginBottom: 14 }} onClick={() => setFlowStep("new_pursuit")}>
+            <strong>＋ A new {catLabel}</strong>
+          </button>
+          <div style={{ ...S.prioSub, marginBottom: 8 }}>Or one you already have:</div>
           <div style={E.chipRow}>
             {existing.map(p => (
               <button key={p.id} style={E.chip} onClick={() => { setPursuitId(p.id); setSelectedPursuitName(p.name); proceedPastPursuit(category); }}>{p.name}</button>
             ))}
           </div>
-          <button style={M.cancel} onClick={() => setFlowStep("new_pursuit")}>＋ New {PURSUIT_CATEGORY_LABEL[category].toLowerCase()}</button>
           {category !== "job" && (
             <button style={M.cancel} onClick={() => { setPursuitId(null); setSelectedPursuitName(null); proceedPastPursuit(category); }}>Skip — not tied to a pursuit</button>
           )}
