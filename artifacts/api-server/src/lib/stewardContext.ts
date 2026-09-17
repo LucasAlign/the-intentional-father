@@ -235,7 +235,11 @@ export async function buildTodayContext(userId: string, today: string): Promise<
         if (daysOld >= 7) status = `[NO DUE DATE — LOGGED ${daysOld} DAYS AGO]`;
       }
       const note = j.notes ? ` — note: "${j.notes.slice(0, 150)}"` : '';
-      context += `- ${j.name}${pursuitName ? ` (${pursuitName})` : ''}${status ? ' ' + status : ''}${note}\n`;
+      // #174 — client name alongside the pursuit name already shown here,
+      // when there is one (Business/Side Hustle only in practice, since
+      // that's the only UI path that ever sets it).
+      const forClient = j.clientName ? ` for ${j.clientName}` : '';
+      context += `- ${j.name}${pursuitName ? ` (${pursuitName})` : ''}${forClient}${status ? ' ' + status : ''}${note}\n`;
     });
     context += '\n';
   }

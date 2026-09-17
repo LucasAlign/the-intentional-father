@@ -246,6 +246,18 @@ export const jobs = pgTable("jobs", {
   invoicedDate: text("invoiced_date"),
   paymentReceived: boolean("payment_received").notNull().default(false),
   paymentReceivedDate: text("payment_received_date"),
+  // #174 — Business/Side Hustle only (UI-gated, not schema-gated, same
+  // treatment every other per-category field on this table got). Job-scoped
+  // fields directly on jobs, not a separate reusable clients table — same
+  // "don't build shared-entity reuse plumbing that wasn't asked for" call
+  // made for #173's job-scoped job_people. A real Clients table (like
+  // Relationships/Pursuits) is a future upgrade if retyping the same
+  // client's info across several jobs turns out to be a real pain point.
+  // One combined free-text field for phone/email/address rather than three
+  // separate structured fields — nothing here needs to be independently
+  // searchable or sortable.
+  clientName: text("client_name").notNull().default(""),
+  clientContact: text("client_contact").notNull().default(""),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
