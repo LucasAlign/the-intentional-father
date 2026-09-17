@@ -479,6 +479,36 @@ function ModalSheet({ title, headExtra, footer, onClose, sheetOnClick, children 
   // pre-focused field.
   const [previouslyFocused] = useState<HTMLElement | null>(() => document.activeElement as HTMLElement | null);
 
+  // #165 follow-up — 94dvh (and 88dvh before it) left the sheet's own
+  // bottom edge (and the sticky footer pinned to it) below the actually
+  // visible area on at least one real testing setup: scrolling the content
+  // above the sticky footer worked, but the footer itself — correctly
+  // "stuck" at the sheet's own bottom — never came into view, since it was
+  // already as far down as it was going to go. That points at `dvh` not
+  // tracking the real visible viewport in whatever browsing context it was
+  // measured in (nested iframes are a known case where this drifts).
+  // window.visualViewport.height is the API built specifically to report
+  // the actual visible area regardless of embedding context or dynamic
+  // browser chrome, so it's measured directly here instead of trusted to
+  // a CSS unit — updates on resize/orientation change and (via
+  // visualViewport's own resize event) when a browser toolbar or the
+  // on-screen keyboard changes how much is actually visible.
+  const [maxSheetHeight, setMaxSheetHeight] = useState<number | null>(null);
+  useEffect(() => {
+    function measure() {
+      const h = window.visualViewport?.height ?? window.innerHeight;
+      setMaxSheetHeight(Math.round(h * 0.94));
+    }
+    measure();
+    const vv = window.visualViewport;
+    vv?.addEventListener("resize", measure);
+    window.addEventListener("resize", measure);
+    return () => {
+      vv?.removeEventListener("resize", measure);
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
+
   useEffect(() => {
     // A child field with autoFocus may have already claimed focus in this
     // same commit — respect it instead of yanking focus back to the sheet.
@@ -519,7 +549,7 @@ function ModalSheet({ title, headExtra, footer, onClose, sheetOnClick, children 
   }, []);
 
   return (
-    <div ref={sheetRef} style={M.sheet} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} onClick={sheetOnClick}>
+    <div ref={sheetRef} style={{ ...M.sheet, ...(maxSheetHeight ? { maxHeight: maxSheetHeight } : {}) }} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} onClick={sheetOnClick}>
       <div style={M.strip} />
       {/* h2: a modal is a sub-view opened from whatever page/screen (itself
           an h1) is behind it, so its own accessible title sits one level
