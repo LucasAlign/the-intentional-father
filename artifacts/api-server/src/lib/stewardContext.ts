@@ -1,5 +1,5 @@
 import { and, desc, eq, gte, inArray, lt, ne } from "drizzle-orm";
-import { db, journalEntries, tasks, taskCompletions, pulseChecks, commits, commitRelationshipTargets, relationships, type Relationship, sphereChecks } from "@workspace/db";
+import { db, journalEntries, tasks, taskCompletions, pulseChecks, commits, commitRelationshipTargets, relationships, type Relationship, sphereChecks, jobs, pursuits } from "@workspace/db";
 import { isSlipping, type RecurrencePeriod } from "./priorityPeriods";
 import { PULSE_STATE_LABEL, type PulseState } from "./pulseCheck";
 import { SPHERE_CATEGORIES, SPHERE_CATEGORY_LABEL, SPHERE_STATE_LABEL, getWeekStart, summarizeFlaggedSphereAnswers, type SphereCategory, type SphereState } from "./sphere";
@@ -59,7 +59,7 @@ export async function buildTodayContext(userId: string, today: string): Promise<
   earliestTrendDate.setUTCDate(earliestTrendDate.getUTCDate() - SPHERE_TREND_WEEKS * 7);
   const earliestTrendWeekStart = getWeekStart(earliestTrendDate);
 
-  const [recentJournal, latestIntention, openTasks, todayPulse, openCommits, thisWeekSphere, priorSphereWeeks] = await Promise.all([
+  const [recentJournal, latestIntention, openTasks, todayPulse, openCommits, thisWeekSphere, priorSphereWeeks, openJobs] = await Promise.all([
     db.select().from(journalEntries).where(eq(journalEntries.userId, userId)).orderBy(desc(journalEntries.date)).limit(3),
     // Marriage Intention persists until changed (#94) — a separate query
     // since recentJournal above is capped at 3 *dates*, which could miss an
@@ -76,6 +76,11 @@ export async function buildTodayContext(userId: string, today: string): Promise<
       gte(sphereChecks.weekStart, earliestTrendWeekStart),
       lt(sphereChecks.weekStart, currentWeekStart),
     )),
+    // #169 — pct 100 stands in for "done" until #170's real completion
+    // state ships; sorted/capped in JS below (due-date-first, nulls last)
+    // rather than in the query, same as resolveCommitWhoLabels' approach
+    // to shaping elsewhere in this file.
+    db.select().from(jobs).where(and(eq(jobs.userId, userId), eq(jobs.deleted, false), ne(jobs.pct, 100))),
   ]);
 
   let context = '';
@@ -195,6 +200,42 @@ export async function buildTodayContext(userId: string, today: string): Promise<
       }
       const note = c.notes ? ` — note: "${c.notes.slice(0, 150)}"` : '';
       context += `- To ${who}: ${c.text} (said ${c.madeDate})${status ? ' ' + status : ''}${note}\n`;
+    });
+    context += '\n';
+  }
+
+  if (openJobs.length > 0) {
+    // #169 — same status-tag scheme and thresholds as Commitments above
+    // (OVERDUE/DUE SOON/NO DUE DATE, 3-day/7-day cutoffs) for consistency;
+    // sorted due-date-first (soonest, nulls last) since those are the ones
+    // actually worth a proactive nudge, then capped to 5 like every other
+    // section here.
+    const pursuitIds = [...new Set(openJobs.map((j) => j.pursuitId).filter((id): id is number => id !== null))];
+    const pursuitRows = pursuitIds.length > 0 ? await db.select().from(pursuits).where(inArray(pursuits.id, pursuitIds)) : [];
+    const pursuitNameById = new Map(pursuitRows.map((p) => [p.id, p.name]));
+
+    const sortedJobs = [...openJobs].sort((a, b) => {
+      if (a.dueDate && b.dueDate) return a.dueDate.localeCompare(b.dueDate);
+      if (a.dueDate) return -1;
+      if (b.dueDate) return 1;
+      return 0;
+    }).slice(0, 5);
+
+    context += '## Open jobs:\n';
+    sortedJobs.forEach((j) => {
+      const pursuitName = j.pursuitId !== null ? pursuitNameById.get(j.pursuitId) : undefined;
+
+      let status = '';
+      if (j.dueDate) {
+        const dueInDays = Math.round((new Date(j.dueDate).getTime() - new Date(today).getTime()) / 86400000);
+        if (dueInDays < 0) status = `[OVERDUE — was due ${j.dueDate}]`;
+        else if (dueInDays <= 3) status = `[DUE SOON — ${j.dueDate}]`;
+      } else {
+        const daysOld = Math.floor((Date.now() - j.createdAt.getTime()) / 86400000);
+        if (daysOld >= 7) status = `[NO DUE DATE — LOGGED ${daysOld} DAYS AGO]`;
+      }
+      const note = j.notes ? ` — note: "${j.notes.slice(0, 150)}"` : '';
+      context += `- ${j.name}${pursuitName ? ` (${pursuitName})` : ''}${status ? ' ' + status : ''}${note}\n`;
     });
     context += '\n';
   }
