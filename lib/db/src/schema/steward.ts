@@ -234,6 +234,29 @@ export const insertJobSchema = createInsertSchema(jobs).omit({ id: true, created
 export type InsertJob = z.infer<typeof insertJobSchema>;
 export type Job = typeof jobs.$inferSelect;
 
+// #171 — a multi-step Business/Side Hustle job (design approval → materials
+// ordered → fabrication → install) tracked as a checklist rather than one
+// hand-dragged percentage. Deliberately minimal — text + done only, no
+// per-step due date/notes, which would re-implement a mini Job inside a
+// Job. Insertion order only (createdAt), no manual reordering in v1. Hard
+// delete, no soft-delete/undo tier — lightweight, easily-retyped content,
+// same treatment custom_verses (#96) got rather than Jobs/Relationships'
+// heavier soft-delete pattern. `userId` is denormalized from the owning
+// job, matching commitRelationshipTargets' rationale (#72) — consistent
+// per-user scoping without an extra join on every query.
+export const jobTasks = pgTable("job_tasks", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  jobId: integer("job_id").notNull().references(() => jobs.id, { onDelete: "cascade" }),
+  text: text("text").notNull(),
+  done: boolean("done").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertJobTaskSchema = createInsertSchema(jobTasks).omit({ id: true, createdAt: true });
+export type InsertJobTask = z.infer<typeof insertJobTaskSchema>;
+export type JobTask = typeof jobTasks.$inferSelect;
+
 export const comingUp = pgTable("coming_up", {
   id: serial("id").primaryKey(),
   userId: text("user_id").notNull(),
