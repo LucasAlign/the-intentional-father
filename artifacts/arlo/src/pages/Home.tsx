@@ -27,7 +27,7 @@ interface Commit {
   // 1+ Tribe people, or an ad-hoc one-time target — never both (#72).
   relationshipIds: number[]; adHocName: string | null; adHocCategory: RelationshipCategory | null;
 }
-interface Job { id: number; biz: string; name: string; stage: string; due: string; dueDate: string | null; pct: number; pursuitId: number | null; materials: string; budget: string; risk: string; notes: string; productOrService: string; completed: boolean; }
+interface Job { id: number; biz: string; name: string; stage: string; due: string; dueDate: string | null; pct: number; pursuitId: number | null; materials: string; budget: string; risk: string; notes: string; productOrService: string; completed: boolean; clientName: string; clientContact: string; }
 type PursuitCategory = "job" | "business" | "volunteer" | "hobby" | "side_hustle" | "other";
 interface Pursuit { id: number; name: string; category: PursuitCategory; notes: string; }
 const PURSUIT_CATEGORIES: PursuitCategory[] = ["job", "business", "volunteer", "hobby", "side_hustle", "other"];
@@ -3303,7 +3303,7 @@ function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit, onOp
       <button key={j.id} style={S.workRow} onClick={() => onEdit(j)}>
         <div style={S.workMain}>
           <div style={S.workName}>{j.name}</div>
-          <div style={S.workMeta}>{[j.stage, j.due].filter(Boolean).join("  •  ") || "No stage or due date"}</div>
+          <div style={S.workMeta}>{[j.clientName ? `for ${j.clientName}` : "", j.stage, j.due].filter(Boolean).join("  •  ") || "No stage or due date"}</div>
         </div>
         <div style={S.workPct}>{j.pct}%</div>
         <div style={S.workTrack}><div style={{ ...S.workTrackFill, width: j.pct + "%", background: j.pct >= 80 ? C.brass : color }} /></div>
@@ -5070,13 +5070,24 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
   const [completing, setCompleting] = useState(false);
   const [completeErr, setCompleteErr] = useState("");
 
+  // #174 — client info, Business/Side Hustle only, reacting to the
+  // *current* pursuit selection. Job-scoped fields directly on jobs, not a
+  // separate reusable clients table — same "don't build shared-entity
+  // reuse plumbing that wasn't asked for" call made for #173's job_people.
+  const clientInfoApplicable = (() => {
+    const cat = pursuits.find(p => p.id === pursuitId)?.category;
+    return cat === "business" || cat === "side_hustle";
+  })();
+  const [clientName, setClientName] = useState(job.clientName);
+  const [clientContact, setClientContact] = useState(job.clientContact);
+
   async function save() {
     if (!name.trim()) { setValidationErr("Name is required."); return; }
     setValidationErr("");
     await saveStatus.save(async () => {
       const r = await apiFetch(`${API}/jobs/${job.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), pursuitId, stage: stage.trim(), due: due.trim(), pct, materials: materials.trim(), budget: budget.trim(), risk: risk.trim(), notes: notes.trim(), dueDate: dueDate || null }),
+        body: JSON.stringify({ name: name.trim(), pursuitId, stage: stage.trim(), due: due.trim(), pct, materials: materials.trim(), budget: budget.trim(), risk: risk.trim(), notes: notes.trim(), dueDate: dueDate || null, clientName: clientName.trim(), clientContact: clientContact.trim() }),
       });
       if (r.ok) { onSaved(pursuitId); onClose(); return true; }
       return false;
@@ -5119,6 +5130,18 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
           <div style={E.label}>Job name</div>
           <input style={M.input} value={name} onChange={e => setName(e.target.value)} placeholder="Job name" />
         </div>
+        {clientInfoApplicable && (
+          <div style={{ display: "flex", gap: 10 }}>
+            <div style={{ ...E.fieldGroup, flex: 1 }}>
+              <div style={E.label}>Client name</div>
+              <input style={M.input} value={clientName} onChange={e => setClientName(e.target.value)} placeholder="Optional" />
+            </div>
+            <div style={{ ...E.fieldGroup, flex: 1 }}>
+              <div style={E.label}>Contact info</div>
+              <input style={M.input} value={clientContact} onChange={e => setClientContact(e.target.value)} placeholder="Phone, email, address" />
+            </div>
+          </div>
+        )}
         <div style={E.fieldGroup}>
           <div style={E.label}>Pursuit</div>
           <select style={S.tribeTagSelect} value={pursuitId ?? ""} onChange={e => setPursuitId(e.target.value ? Number(e.target.value) : null)}>
