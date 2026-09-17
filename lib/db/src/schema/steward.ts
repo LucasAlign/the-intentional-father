@@ -1,4 +1,4 @@
-import { pgTable, text, serial, boolean, timestamp, integer, unique, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, boolean, timestamp, integer, unique, jsonb, numeric } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -227,6 +227,13 @@ export const jobs = pgTable("jobs", {
   completed: boolean("completed").notNull().default(false),
   completedAt: timestamp("completed_at"),
   pctBeforeCompletion: integer("pct_before_completion"),
+  // #175 — Business, Side Hustle, and Job only (the two named use cases in
+  // the issue: job-costing a business job, tracking hours at an employee
+  // job — Volunteer/Hobby/Other have no time-tracking use case). A single
+  // running-total number, same shape as #172's expensesAmount, not
+  // itemized time entries — that would be real time-tracking software, a
+  // much bigger build than anything else on this roadmap.
+  hoursLogged: numeric("hours_logged", { mode: "number" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

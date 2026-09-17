@@ -27,7 +27,7 @@ interface Commit {
   // 1+ Tribe people, or an ad-hoc one-time target — never both (#72).
   relationshipIds: number[]; adHocName: string | null; adHocCategory: RelationshipCategory | null;
 }
-interface Job { id: number; biz: string; name: string; stage: string; due: string; dueDate: string | null; pct: number; pursuitId: number | null; materials: string; budget: string; risk: string; notes: string; productOrService: string; completed: boolean; }
+interface Job { id: number; biz: string; name: string; stage: string; due: string; dueDate: string | null; pct: number; pursuitId: number | null; materials: string; budget: string; risk: string; notes: string; productOrService: string; completed: boolean; hoursLogged: number | null; }
 type PursuitCategory = "job" | "business" | "volunteer" | "hobby" | "side_hustle" | "other";
 interface Pursuit { id: number; name: string; category: PursuitCategory; notes: string; }
 const PURSUIT_CATEGORIES: PursuitCategory[] = ["job", "business", "volunteer", "hobby", "side_hustle", "other"];
@@ -1115,7 +1115,7 @@ export default function Home() {
       </div>
 
       {jobModal && <JobModal pursuits={pursuits} onClose={() => setJobModal(false)} onCreated={refreshJobs} onPursuitCreated={refreshPursuits} />}
-      {editJob && <JobEditModal job={editJob} pursuits={pursuits} onClose={() => setEditJob(null)} onSaved={maybePromptPursuitClose} onDeleted={refreshJobs} />}
+      {editJob && <JobEditModal job={editJob} pursuits={pursuits} onClose={() => setEditJob(null)} onSaved={maybePromptPursuitClose} onDeleted={refreshJobs} onDuplicated={refreshJobs} />}
       {pursuitModal && <PursuitModal onClose={() => setPursuitModal(false)} onSaved={refreshPursuits} />}
       {editPursuit && <PursuitModal pursuit={editPursuit} onClose={() => setEditPursuit(null)} onSaved={refreshPursuits} onDeleted={() => { refreshPursuits(); refreshJobs(); }} onClosed={refreshPursuits} />}
       {closedPursuitsOpen && <PursuitsClosedModal onClose={() => setClosedPursuitsOpen(false)} onChanged={refreshPursuits} />}
@@ -4491,6 +4491,7 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, commits, relations
           onClose={() => setEditingJob(null)}
           onSaved={() => { refreshJobs(); onRefresh(); }}
           onDeleted={() => { refreshJobs(); onRefresh(); }}
+          onDuplicated={() => { refreshJobs(); onRefresh(); }}
         />
       )}
     </div>
@@ -5047,7 +5048,7 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
 }
 
 // ── Job edit modal ────────────────────────────────────────────────────────────
-function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job; pursuits: Pursuit[]; onClose: () => void; onSaved: (pursuitId: number | null) => void; onDeleted: () => void }) {
+function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted, onDuplicated }: { job: Job; pursuits: Pursuit[]; onClose: () => void; onSaved: (pursuitId: number | null) => void; onDeleted: () => void; onDuplicated: () => void }) {
   const [name, setName] = useState(job.name);
   const [pursuitId, setPursuitId] = useState<number | null>(job.pursuitId);
   const [stage, setStage] = useState(job.stage);
@@ -5070,13 +5071,47 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
   const [completing, setCompleting] = useState(false);
   const [completeErr, setCompleteErr] = useState("");
 
+  // #175 — Business, Side Hustle, and Job only (the two named use cases:
+  // job-costing a business job, tracking hours at an employee job).
+  // Single running-total number, same shape as #172's expensesAmount.
+  const hoursApplicable = (() => {
+    const cat = pursuits.find(p => p.id === pursuitId)?.category;
+    return cat === "business" || cat === "side_hustle" || cat === "job";
+  })();
+  const [hoursLogged, setHoursLogged] = useState(job.hoursLogged != null ? String(job.hoursLogged) : "");
+
+  // #176 — "Duplicate this job" (a template-by-example, not a scheduler):
+  // copies the "what is this job" fields (name/pursuit/materials/budget/
+  // risk/notes) into a new job; progress, due date/reminder, and any
+  // job-scoped child data (sub-tasks, money, team) all start fresh on the
+  // copy, since those describe this specific instance, not the pattern.
+  const [duplicating, setDuplicating] = useState(false);
+  const [duplicateErr, setDuplicateErr] = useState("");
+  async function duplicate() {
+    setDuplicating(true);
+    setDuplicateErr("");
+    try {
+      const r = await apiFetch(`${API}/jobs`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(), pursuitId, stage: "New", pct: 0,
+          materials: materials.trim(), budget: budget.trim(), risk: risk.trim(), notes: notes.trim(),
+          productOrService: job.productOrService,
+        }),
+      });
+      if (r.ok) { onDuplicated(); onClose(); return; }
+      setDuplicateErr("Couldn't duplicate — try again");
+    } catch { setDuplicateErr("Couldn't reach the server."); }
+    finally { setDuplicating(false); }
+  }
+
   async function save() {
     if (!name.trim()) { setValidationErr("Name is required."); return; }
     setValidationErr("");
     await saveStatus.save(async () => {
       const r = await apiFetch(`${API}/jobs/${job.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), pursuitId, stage: stage.trim(), due: due.trim(), pct, materials: materials.trim(), budget: budget.trim(), risk: risk.trim(), notes: notes.trim(), dueDate: dueDate || null }),
+        body: JSON.stringify({ name: name.trim(), pursuitId, stage: stage.trim(), due: due.trim(), pct, materials: materials.trim(), budget: budget.trim(), risk: risk.trim(), notes: notes.trim(), dueDate: dueDate || null, hoursLogged: hoursLogged.trim() ? Number(hoursLogged) : null }),
       });
       if (r.ok) { onSaved(pursuitId); onClose(); return true; }
       return false;
@@ -5144,6 +5179,12 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
           <div style={E.label}>Progress — {pct}%</div>
           <input type="range" min={0} max={100} value={pct} onChange={e => setPct(Number(e.target.value))} style={E.slider} />
         </div>
+        {hoursApplicable && (
+          <div style={E.fieldGroup}>
+            <div style={E.label}>Hours logged</div>
+            <input type="number" style={M.input} value={hoursLogged} onChange={e => setHoursLogged(e.target.value)} placeholder="Optional" />
+          </div>
+        )}
         <div style={E.fieldGroup}>
           <div style={E.label}>Materials needed</div>
           <input style={M.input} value={materials} onChange={e => setMaterials(e.target.value)} placeholder="e.g. 4×8 aluminum, vinyl" />
@@ -5174,6 +5215,8 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
         ) : (
           <button style={{ ...M.cancel, color: C.brass }} onClick={() => setConfirmComplete(true)}>Mark Complete</button>
         )}
+        <TapError message={duplicateErr || null} />
+        <button style={M.cancel} disabled={duplicating} onClick={duplicate}>{duplicating ? "Duplicating…" : "Duplicate This Job"}</button>
         <TapError message={delErr || null} />
         <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete Job"}</button>
         <button style={M.cancel} onClick={onClose}>Cancel</button>
