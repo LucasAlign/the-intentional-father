@@ -5430,8 +5430,8 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted, onDuplicated
           </div>
         )}
         <div style={E.fieldGroup}>
-          <div style={E.label}>Materials needed</div>
-          <input style={M.input} value={materials} onChange={e => setMaterials(e.target.value)} placeholder="e.g. 4×8 aluminum, vinyl" />
+          <div style={E.label}>Materials / Actions needed</div>
+          <input style={M.input} value={materials} onChange={e => setMaterials(e.target.value)} placeholder="e.g. 4×8 aluminum, vinyl — or schedule the inspection" />
         </div>
         <div style={E.fieldGroup}>
           <div style={E.label}>Budget or quote</div>
