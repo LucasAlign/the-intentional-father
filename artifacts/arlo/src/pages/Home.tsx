@@ -27,7 +27,7 @@ interface Commit {
   // 1+ Tribe people, or an ad-hoc one-time target — never both (#72).
   relationshipIds: number[]; adHocName: string | null; adHocCategory: RelationshipCategory | null;
 }
-interface Job { id: number; biz: string; name: string; stage: string; due: string; pct: number; pursuitId: number | null; materials: string; budget: string; risk: string; notes: string; productOrService: string; }
+interface Job { id: number; biz: string; name: string; stage: string; due: string; dueDate: string | null; pct: number; pursuitId: number | null; materials: string; budget: string; risk: string; notes: string; productOrService: string; }
 type PursuitCategory = "job" | "business" | "volunteer" | "hobby" | "side_hustle" | "other";
 interface Pursuit { id: number; name: string; category: PursuitCategory; notes: string; }
 const PURSUIT_CATEGORIES: PursuitCategory[] = ["job", "business", "volunteer", "hobby", "side_hustle", "other"];
@@ -778,49 +778,6 @@ function cadenceLabel(t: Task): string {
   return n <= 1 ? `Once a ${unit}` : `${n}x/${unit}`;
 }
 
-function parseJobDueDate(due: string): string | null {
-  const value = due.trim();
-  if (!value) return null;
-
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
-
-  const currentYear = new Date().getFullYear();
-  const numeric = value.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2}|\d{4}))?$/);
-  if (numeric) {
-    const month = Number(numeric[1]);
-    const day = Number(numeric[2]);
-    const year = numeric[3] ? Number(numeric[3].length === 2 ? "20" + numeric[3] : numeric[3]) : currentYear;
-    const date = new Date(year, month - 1, day);
-    if (date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day) return ymd(date);
-  }
-
-  const monthName = value.match(/^(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+(\d{1,2})(?:,\s*(\d{4}))?$/i);
-  if (monthName) {
-    const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
-    const month = months.findIndex(m => monthName[1].toLowerCase().startsWith(m));
-    const day = Number(monthName[2]);
-    const year = monthName[3] ? Number(monthName[3]) : currentYear;
-    const date = new Date(year, month, day);
-    if (date.getFullYear() === year && date.getMonth() === month && date.getDate() === day) return ymd(date);
-  }
-
-  return null;
-}
-
-function jobCalendarEvent(job: Job, pursuitName: string): Event | null {
-  const date = parseJobDueDate(job.due);
-  if (!date) return null;
-  return {
-    id: -100000 - job.id,
-    date,
-    time: "Due",
-    title: job.name,
-    sub: job.stage,
-    tag: pursuitName,
-    kind: "work",
-  };
-}
-
 // ── Root ──────────────────────────────────────────────────────────────────────
 export default function Home() {
   const { isLoading, isAuthenticated, pendingApproval, user, login, logout, startEmailLogin, verifyEmailLogin } = useAuth();
@@ -1126,7 +1083,7 @@ export default function Home() {
         {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} onOpenClosed={() => setClosedPursuitsOpen(true)} onOpenDeletedJobs={() => setDeletedJobsOpen(true)} />}
         {tab === "sphere" && <Sphere />}
         {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} />}
-        {tab === "week" && <WeekView events={week} jobs={jobs} pursuits={pursuits} calendarAccounts={calendarAccounts} commits={commits} relationships={relationships} refreshCommits={refreshCommits} refreshRelationships={refreshRelationships} onRefresh={refreshWeek} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await apiFetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
+        {tab === "week" && <WeekView events={week} jobs={jobs} pursuits={pursuits} calendarAccounts={calendarAccounts} commits={commits} relationships={relationships} refreshCommits={refreshCommits} refreshRelationships={refreshRelationships} refreshJobs={refreshJobs} onRefresh={refreshWeek} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await apiFetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
       </main>
 
       <div style={R.navWrap}>
@@ -4143,6 +4100,13 @@ function commitIdFromEventId(eventId: number): number {
   return -eventId - 1_000_000;
 }
 
+// #168 — same reversal for a job row (tag: "Job", -(2_000_000 + the real
+// job id), from GET /coming-up's own merge), so the expand/edit affordance
+// below can look up the full Job object.
+function jobIdFromEventId(eventId: number): number {
+  return -eventId - 2_000_000;
+}
+
 // #167 — a faint brass compass-rose watermark for the Calendar header,
 // reusing the exact ring/tick/ray/hub construction from the compass badge
 // (docs/brand/steward-logo.source.html) at a small size and low opacity
@@ -4193,9 +4157,9 @@ function CalendarGhostCompass() {
   );
 }
 
-function WeekView({ events, jobs, pursuits, calendarAccounts, commits, relationships, refreshCommits, refreshRelationships, onRefresh, onConnectCalendar, onDisconnectCalendar }: {
+function WeekView({ events, jobs, pursuits, calendarAccounts, commits, relationships, refreshCommits, refreshRelationships, refreshJobs, onRefresh, onConnectCalendar, onDisconnectCalendar }: {
   events: Event[]; jobs: Job[]; pursuits: Pursuit[]; calendarAccounts: string[];
-  commits: Commit[]; relationships: Relationship[]; refreshCommits: () => void; refreshRelationships: () => void;
+  commits: Commit[]; relationships: Relationship[]; refreshCommits: () => void; refreshRelationships: () => void; refreshJobs: () => void;
   onRefresh: () => Promise<void>; onConnectCalendar: () => void; onDisconnectCalendar: (email: string) => void;
 }) {
   // #115 — a fixed, generous window (see calendarRange) computed once per
@@ -4203,27 +4167,28 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, commits, relations
   // this already-loaded list, no fetch-on-scroll.
   const days = useMemo(() => calendarDays(), []);
   const todayKey = ymd(new Date());
-  const pursuitNameById = new Map(pursuits.map(p => [p.id, p.name]));
-  const datedWork = jobs
-    .map(j => jobCalendarEvent(j, (j.pursuitId !== null && pursuitNameById.get(j.pursuitId)) || ""))
-    .filter((event): event is Event => Boolean(event));
-  // Commitments and Google Calendar events are tagged at the source
-  // (routes/steward.ts's GET /coming-up) specifically so these two toggles
-  // can filter them independently — no due-date field on Priorities yet
-  // (see #97), so there's no third toggle for those.
+  // Commitments, Google Calendar events, and (#168) Jobs are all tagged at
+  // the source (routes/steward.ts's GET /coming-up) specifically so these
+  // three toggles can filter them independently — no due-date field on
+  // Priorities yet (see #180), so there's no fourth toggle for those.
   const [hideCommitments, toggleCommitments] = useWeekVisibilityToggle("commitments");
   const [hideExternal, toggleExternal] = useWeekVisibilityToggle("external");
+  const [hideJobs, toggleJobs] = useWeekVisibilityToggle("jobs");
   // #128 — expandable commitment rows, in place (no tab switch): Home
   // already loads `commits`/`relationships` for the Tribe tab, so the same
   // CommitEditModal can just be reused here too, rather than building a
   // second edit surface or a cross-tab "open this on landing" mechanism.
+  // #168 extends the same idea to job rows, reusing JobEditModal (Home
+  // already loads `jobs`/`pursuits` for the Work tab).
   const relById = useMemo(() => new Map(relationships.map(r => [r.id, r])), [relationships]);
   const commitById = useMemo(() => new Map(commits.map(c => [c.id, c])), [commits]);
+  const jobById = useMemo(() => new Map(jobs.map(j => [j.id, j])), [jobs]);
   const [expandedEventIds, setExpandedEventIds] = useState<Set<number>>(new Set());
   const [editingCommit, setEditingCommit] = useState<Commit | null>(null);
+  const [editingJob, setEditingJob] = useState<Job | null>(null);
   const visibleEvents = events.filter(e =>
-    !(hideCommitments && e.tag === "Commitment") && !(hideExternal && e.tag === "Google Calendar"));
-  const calendarEvents = [...visibleEvents, ...datedWork].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+    !(hideCommitments && e.tag === "Commitment") && !(hideExternal && e.tag === "Google Calendar") && !(hideJobs && e.tag === "Job"));
+  const calendarEvents = [...visibleEvents].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
   const scrollFade = useBottomScrollFade<HTMLDivElement>();
 
   // One entry per distinct month in `days`, in order — drives both the
@@ -4412,6 +4377,14 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, commits, relations
             >
               Calendar
             </button>
+            <button
+              style={{ ...E.chip, ...(hideJobs ? { opacity: 0.5 } : { borderColor: C.brass, color: C.brass }) }}
+              onClick={toggleJobs}
+              aria-pressed={!hideJobs}
+              aria-label={`Jobs ${hideJobs ? "hidden" : "shown"} — tap to toggle`}
+            >
+              Jobs
+            </button>
           </div>
           <CalendarGhostCompass />
         </div>
@@ -4434,7 +4407,12 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, commits, relations
             <div style={{ flex: 1 }}>
               {items.length === 0 ? <div style={S.prioSub}>—</div> : items.map(it => {
                 const commit = it.tag === "Commitment" ? commitById.get(commitIdFromEventId(it.id)) : undefined;
-                if (!commit) {
+                // #168 — same expandable-in-place treatment for job rows,
+                // reusing JobEditModal directly from Week (Home already
+                // loads jobs/pursuits for the Work tab), mirroring #128's
+                // commit-row pattern rather than inventing a second look.
+                const job = it.tag === "Job" ? jobById.get(jobIdFromEventId(it.id)) : undefined;
+                if (!commit && !job) {
                   return (
                     <div key={it.id} style={S.weekItem}>
                       <div style={S.weekItemTop}><span style={S.prioTitle}>{it.title}</span>{it.time && <span style={S.weekTime}>{it.time}</span>}</div>
@@ -4450,7 +4428,7 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, commits, relations
                 return (
                   <div key={it.id} style={S.weekItem}>
                     <div style={S.weekItemTop}>
-                      <span style={S.prioTitle}>{commit.text}</span>
+                      <span style={S.prioTitle}>{commit ? commit.text : job!.name}</span>
                       <button
                         style={S.commitExpandBtn}
                         onClick={() => setExpandedEventIds(prev => {
@@ -4464,11 +4442,17 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, commits, relations
                       </button>
                     </div>
                     <div style={S.prioSub}>{[it.sub, it.tag].filter(Boolean).join("  •  ")}</div>
-                    {expanded && (
+                    {expanded && commit && (
                       <div style={{ ...S.commitExpandPanel, marginLeft: 0 }}>
                         <div style={S.prioSub}>For {commitTargetLabel(commit, relById)}{commitTargetSub(commit, relById) ? ` (${commitTargetSub(commit, relById)})` : ""}</div>
                         {commit.notes && <div style={S.prioSub}>Note: {commit.notes}</div>}
                         <button style={S.prioEditBtn} onClick={() => setEditingCommit(commit)}>Edit</button>
+                      </div>
+                    )}
+                    {expanded && job && (
+                      <div style={{ ...S.commitExpandPanel, marginLeft: 0 }}>
+                        {job.notes && <div style={S.prioSub}>Note: {job.notes}</div>}
+                        <button style={S.prioEditBtn} onClick={() => setEditingJob(job)}>Edit</button>
                       </div>
                     )}
                   </div>
@@ -4496,6 +4480,14 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, commits, relations
           onSaved={() => { refreshCommits(); onRefresh(); }}
           onDeleted={() => { refreshCommits(); onRefresh(); }}
           onRelationshipAdded={refreshRelationships}
+        />
+      )}
+      {editingJob && (
+        <JobEditModal
+          job={editingJob} pursuits={pursuits}
+          onClose={() => setEditingJob(null)}
+          onSaved={() => { refreshJobs(); onRefresh(); }}
+          onDeleted={() => { refreshJobs(); onRefresh(); }}
         />
       )}
     </div>
@@ -4566,6 +4558,47 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
   const [category, setCategory] = useState<PursuitCategory | null>(null);
   const [pursuitId, setPursuitId] = useState<number | null>(null);
   const [selectedPursuitName, setSelectedPursuitName] = useState<string | null>(null);
+
+  // #168 — "want a reminder for this?" applies to every category, additive
+  // to whatever casual free-text due question a category already asks
+  // (business/side-hustle's "when does it need to be done?" wizard step,
+  // the simple form's "Due date (optional)"). Surfaced once, right before
+  // the final save, on every path — the summary screen for the stepped
+  // wizard, inline on the simple form and the quick-add screen. The name
+  // is always the job's own name (no separate field); "what to be
+  // reminded about" reuses the job's own Notes field, appended rather
+  // than overwritten so it can't clobber a Business "service" job's own
+  // notes answer (#167).
+  const [reminderWanted, setReminderWanted] = useState(false);
+  const [reminderDate, setReminderDate] = useState("");
+  const [reminderNote, setReminderNote] = useState("");
+  function combineNotesWithReminder(baseNotes: string): string {
+    const parts = [baseNotes.trim()];
+    if (reminderWanted && reminderNote.trim()) parts.push(reminderNote.trim());
+    return parts.filter(Boolean).join(" — ");
+  }
+  function reminderDueDateValue(): string {
+    return reminderWanted && reminderDate ? reminderDate : "";
+  }
+  // Shared across every submit path (simple form, wizard summary, quick
+  // add) so the toggle/date/note UI can't drift between them.
+  function renderReminderFields() {
+    return (
+      <div style={E.fieldGroup}>
+        <div style={E.label}>Set a reminder for this?</div>
+        <div style={E.chipRow}>
+          <button style={{ ...E.chip, ...(reminderWanted ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setReminderWanted(true)}>Yes</button>
+          <button style={{ ...E.chip, ...(!reminderWanted ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setReminderWanted(false)}>No</button>
+        </div>
+        {reminderWanted && (
+          <>
+            <input type="date" style={{ ...M.input, marginTop: 8 }} value={reminderDate} onChange={e => setReminderDate(e.target.value)} />
+            <input style={{ ...M.input, marginTop: 8 }} value={reminderNote} onChange={e => setReminderNote(e.target.value)} placeholder="What should the reminder say? (optional)" />
+          </>
+        )}
+      </div>
+    );
+  }
 
   function pursuitsInCategory(cat: PursuitCategory): Pursuit[] {
     return pursuits.filter(p => p.category === cat);
@@ -4673,7 +4706,8 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: simpleName.trim(), due: simpleDue.trim(), stage: "New", pct: 0, pursuitId,
-          materials: "", budget: "", risk: "", notes: simpleNotes.trim(), productOrService: "",
+          materials: "", budget: "", risk: "", notes: combineNotesWithReminder(simpleNotes), productOrService: "",
+          dueDate: reminderDueDateValue(),
         }),
       });
       if (r.ok) { onCreated(); onClose(); return true; }
@@ -4730,7 +4764,8 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
         body: JSON.stringify({
           name: final.name, due: final.due || "", stage: "New", pct: 0, pursuitId,
           materials: final.materials || "", budget: final.budget || "", risk: final.risk || "",
-          notes: final.notes || "", productOrService: productOrServiceValue(),
+          notes: combineNotesWithReminder(final.notes || ""), productOrService: productOrServiceValue(),
+          dueDate: reminderDueDateValue(),
         }),
       });
       if (r.ok) { onCreated(); onClose(); return true; }
@@ -4914,6 +4949,7 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
             <div style={E.label}>Notes</div>
             <input style={M.input} value={simpleNotes} onChange={e => setSimpleNotes(e.target.value)} placeholder="Optional" />
           </div>
+          {renderReminderFields()}
           <TapError message={simpleNameErr || null} />
           <button style={M.next} disabled={simpleSaveStatus.status === "saving" || !simpleName.trim()} onClick={submitSimpleJob}>{simpleSaveStatus.status === "saving" ? "Saving…" : "Add Job ✓"}</button>
           <SaveStatus status={simpleSaveStatus.status} onRetry={submitSimpleJob} />
@@ -4944,6 +4980,7 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
               />
             </div>
           ))}
+          {renderReminderFields()}
           <TapError message={wizardNameErr || null} />
           <button style={M.next} disabled={wizardSaveStatus.status === "saving"} onClick={submitQuickAdd}>{wizardSaveStatus.status === "saving" ? "Saving…" : "Add Job ✓"}</button>
           <SaveStatus status={wizardSaveStatus.status} onRetry={submitQuickAdd} />
@@ -4970,6 +5007,7 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
               </div>
             ))}
           </div>
+          {renderReminderFields()}
           <TapError message={wizardNameErr || null} />
           <button style={M.next} disabled={wizardSaveStatus.status === "saving" || !(answers.name ?? "").trim()} onClick={() => submitWizardJob(answers)}>{wizardSaveStatus.status === "saving" ? "Saving…" : "Add Job ✓"}</button>
           <SaveStatus status={wizardSaveStatus.status} onRetry={() => submitWizardJob(answers)} />
@@ -5013,6 +5051,11 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
   const [budget, setBudget] = useState(job.budget);
   const [risk, setRisk] = useState(job.risk);
   const [notes, setNotes] = useState(job.notes);
+  // #168 — real, structured due date, distinct from the free-text `due`
+  // above: this is what actually drives Calendar surfacing/reminders, so
+  // it's editable after the fact — a job created before this shipped, or
+  // one where the reminder was declined at creation, needs a way in.
+  const [dueDate, setDueDate] = useState(job.dueDate ?? "");
   const saveStatus = useSaveStatus();
   const [validationErr, setValidationErr] = useState("");
   const [deleting, setDeleting] = useState(false);
@@ -5024,7 +5067,7 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
     await saveStatus.save(async () => {
       const r = await apiFetch(`${API}/jobs/${job.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), pursuitId, stage: stage.trim(), due: due.trim(), pct, materials: materials.trim(), budget: budget.trim(), risk: risk.trim(), notes: notes.trim() }),
+        body: JSON.stringify({ name: name.trim(), pursuitId, stage: stage.trim(), due: due.trim(), pct, materials: materials.trim(), budget: budget.trim(), risk: risk.trim(), notes: notes.trim(), dueDate: dueDate || null }),
       });
       if (r.ok) { onSaved(pursuitId); onClose(); return true; }
       return false;
@@ -5070,6 +5113,10 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
             <div style={E.label}>Due</div>
             <input style={M.input} value={due} onChange={e => setDue(e.target.value)} placeholder="e.g. June 30" />
           </div>
+        </div>
+        <div style={E.fieldGroup}>
+          <div style={E.label}>Reminder date (optional)</div>
+          <input type="date" style={M.input} value={dueDate} onChange={e => setDueDate(e.target.value)} />
         </div>
         <div style={E.fieldGroup}>
           <div style={E.label}>Progress — {pct}%</div>

@@ -204,6 +204,15 @@ export const jobs = pgTable("jobs", {
   // shape. Empty string for every other category, same absent-value
   // convention as materials/budget/risk/notes above.
   productOrService: text("product_or_service").notNull().default(""),
+  // #168 — a real, structured due date (YYYY-MM-DD, same convention as
+  // commits.dueDate/comingUp.date), nullable, distinct from the free-text
+  // `due` above: `due` stays a casual note ("end of month") nothing acts
+  // on, while `dueDate` is the "set a reminder for this" field that
+  // actually drives Calendar surfacing (GET /coming-up) and, eventually,
+  // the reminder digest and Steward's chat context. A job can have either,
+  // both, or neither. Supersedes the client-only `parseJobDueDate` heuristic
+  // that used to guess a date out of `due`'s free text for Calendar display.
+  dueDate: text("due_date"),
   // Soft-delete (#89), matching pursuits — "Delete Job" now closes rather
   // than permanently removing, with a Deleted-jobs list to Reopen from.
   deleted: boolean("deleted").notNull().default(false),

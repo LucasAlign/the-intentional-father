@@ -1567,7 +1567,7 @@ router.get('/jobs/deleted', async (req: Request, res: Response) => {
 // POST /api/jobs
 router.post('/jobs', async (req: Request, res: Response) => {
   try {
-    const { name, stage, due, pct, pursuitId, materials, budget, risk, notes, productOrService } = req.body;
+    const { name, stage, due, pct, pursuitId, materials, budget, risk, notes, productOrService, dueDate } = req.body;
     if (typeof name !== 'string' || !name.trim()) { res.status(400).json({ error: 'name is required' }); return; }
     const resolved = await resolvePursuitId(req.user!.id, pursuitId, res);
     if (!resolved.ok) return; // resolvePursuitId already responded
@@ -1578,6 +1578,7 @@ router.post('/jobs', async (req: Request, res: Response) => {
       risk: typeof risk === 'string' ? risk : '',
       notes: typeof notes === 'string' ? notes : '',
       productOrService: typeof productOrService === 'string' ? productOrService : '',
+      dueDate: typeof dueDate === 'string' && dueDate ? dueDate : null,
     }).returning();
     res.json(row);
   } catch (err) {
@@ -1591,7 +1592,7 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    const { name, stage, due, pct, pursuitId, materials, budget, risk, notes, deleted } = req.body;
+    const { name, stage, due, pct, pursuitId, materials, budget, risk, notes, deleted, dueDate } = req.body;
     const updates: Partial<typeof jobs.$inferInsert> = {};
     if (name !== undefined) updates.name = name;
     if (stage !== undefined) updates.stage = stage;
@@ -1601,6 +1602,10 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
     if (typeof budget === 'string') updates.budget = budget;
     if (typeof risk === 'string') updates.risk = risk;
     if (typeof notes === 'string') updates.notes = notes;
+    // dueDate: string sets it, null/"" explicitly clears it — undefined
+    // (the key omitted entirely) leaves it untouched, same convention as
+    // every other optional field here.
+    if (dueDate !== undefined) updates.dueDate = typeof dueDate === 'string' && dueDate ? dueDate : null;
     if (typeof deleted === 'boolean') {
       updates.deleted = deleted;
       updates.deletedAt = deleted ? new Date() : null;
@@ -1680,7 +1685,33 @@ router.get('/coming-up', async (req: Request, res: Response) => {
       kind: 'commitment',
     }));
 
-    res.json([...rows, ...calendarRows, ...commitRows].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time)));
+    // #168 — same pattern as dueCommits above, for jobs' new structured
+    // dueDate (distinct from the free-text `due` field, which nothing
+    // reads). tag: "Job" gives the Calendar tab's third visibility toggle
+    // something fixed to filter on, and the id offset (2_000_000, not
+    // 1_000_000) keeps these clear of both comingUp's positive serial ids
+    // and dueCommits' own negative range above.
+    const dueJobs = await db.select().from(jobs).where(and(
+      eq(jobs.userId, req.user!.id), eq(jobs.deleted, false),
+      isNotNull(jobs.dueDate), gte(jobs.dueDate, rangeStart), lte(jobs.dueDate, rangeEnd),
+    ));
+    const pursuitIds = [...new Set(dueJobs.map(j => j.pursuitId).filter((id): id is number => id !== null))];
+    const pursuitNameById = new Map<number, string>();
+    if (pursuitIds.length > 0) {
+      const pursuitRows = await db.select({ id: pursuits.id, name: pursuits.name }).from(pursuits).where(inArray(pursuits.id, pursuitIds));
+      for (const p of pursuitRows) pursuitNameById.set(p.id, p.name);
+    }
+    const jobRows: CalendarEvent[] = dueJobs.map((j) => ({
+      id: -(2_000_000 + j.id),
+      date: j.dueDate!,
+      time: 'All day',
+      title: j.name,
+      sub: (j.pursuitId !== null && pursuitNameById.get(j.pursuitId)) || '',
+      tag: 'Job',
+      kind: 'work',
+    }));
+
+    res.json([...rows, ...calendarRows, ...commitRows, ...jobRows].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time)));
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch coming up' });
   }
