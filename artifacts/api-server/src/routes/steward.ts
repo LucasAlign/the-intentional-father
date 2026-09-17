@@ -1605,7 +1605,7 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    const { name, stage, due, pct, pursuitId, materials, budget, risk, notes, deleted, dueDate, completed } = req.body;
+    const { name, stage, due, pct, pursuitId, materials, budget, risk, notes, deleted, dueDate, completed, quotedAmount, quotedDate, depositAmount, depositDate, expensesAmount, invoicedAmount, invoicedDate, paymentReceived, paymentReceivedDate } = req.body;
     const updates: Partial<typeof jobs.$inferInsert> = {};
     if (name !== undefined) updates.name = name;
     if (stage !== undefined) updates.stage = stage;
@@ -1619,6 +1619,18 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
     // (the key omitted entirely) leaves it untouched, same convention as
     // every other optional field here.
     if (dueDate !== undefined) updates.dueDate = typeof dueDate === 'string' && dueDate ? dueDate : null;
+    // #172 — money fields, edit-only (JobEditModal, not the creation flow).
+    // Same undefined-leaves-untouched / null-or-empty-clears convention as
+    // dueDate above, for every amount+date pair.
+    if (quotedAmount !== undefined) updates.quotedAmount = typeof quotedAmount === 'number' ? quotedAmount : null;
+    if (quotedDate !== undefined) updates.quotedDate = typeof quotedDate === 'string' && quotedDate ? quotedDate : null;
+    if (depositAmount !== undefined) updates.depositAmount = typeof depositAmount === 'number' ? depositAmount : null;
+    if (depositDate !== undefined) updates.depositDate = typeof depositDate === 'string' && depositDate ? depositDate : null;
+    if (expensesAmount !== undefined) updates.expensesAmount = typeof expensesAmount === 'number' ? expensesAmount : null;
+    if (invoicedAmount !== undefined) updates.invoicedAmount = typeof invoicedAmount === 'number' ? invoicedAmount : null;
+    if (invoicedDate !== undefined) updates.invoicedDate = typeof invoicedDate === 'string' && invoicedDate ? invoicedDate : null;
+    if (typeof paymentReceived === 'boolean') updates.paymentReceived = paymentReceived;
+    if (paymentReceivedDate !== undefined) updates.paymentReceivedDate = typeof paymentReceivedDate === 'string' && paymentReceivedDate ? paymentReceivedDate : null;
     if (typeof deleted === 'boolean') {
       updates.deleted = deleted;
       updates.deletedAt = deleted ? new Date() : null;

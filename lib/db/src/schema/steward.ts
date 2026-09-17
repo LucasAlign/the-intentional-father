@@ -1,4 +1,4 @@
-import { pgTable, text, serial, boolean, timestamp, integer, unique, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, boolean, timestamp, integer, unique, jsonb, numeric } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -227,6 +227,25 @@ export const jobs = pgTable("jobs", {
   completed: boolean("completed").notNull().default(false),
   completedAt: timestamp("completed_at"),
   pctBeforeCompletion: integer("pct_before_completion"),
+  // #172 — structured money tracking, Business/Side Hustle only (gated in
+  // the UI, not the schema — same treatment productOrService/dueDate got).
+  // Sits alongside the free-text `budget` above rather than replacing it,
+  // same pattern as due/dueDate (#168): `budget` stays the casual "$2,400
+  // or not sure" note from the creation wizard; these are the real numbers,
+  // filled in later as the job actually progresses, editable only from
+  // JobEditModal. Four independently-nullable amount+date pairs for the
+  // point-in-time events (quoted, deposit, invoiced, payment) — expenses
+  // is a running total that accrues over the job's life, not one event,
+  // so it deliberately has no matching date.
+  quotedAmount: numeric("quoted_amount", { mode: "number" }),
+  quotedDate: text("quoted_date"),
+  depositAmount: numeric("deposit_amount", { mode: "number" }),
+  depositDate: text("deposit_date"),
+  expensesAmount: numeric("expenses_amount", { mode: "number" }),
+  invoicedAmount: numeric("invoiced_amount", { mode: "number" }),
+  invoicedDate: text("invoiced_date"),
+  paymentReceived: boolean("payment_received").notNull().default(false),
+  paymentReceivedDate: text("payment_received_date"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
