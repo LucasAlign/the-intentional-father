@@ -27,7 +27,15 @@ interface Commit {
   // 1+ Tribe people, or an ad-hoc one-time target — never both (#72).
   relationshipIds: number[]; adHocName: string | null; adHocCategory: RelationshipCategory | null;
 }
-interface Job { id: number; biz: string; name: string; stage: string; due: string; dueDate: string | null; pct: number; pursuitId: number | null; materials: string; budget: string; risk: string; notes: string; productOrService: string; completed: boolean; }
+interface Job {
+  id: number; biz: string; name: string; stage: string; due: string; dueDate: string | null; pct: number; pursuitId: number | null;
+  materials: string; budget: string; risk: string; notes: string; productOrService: string; completed: boolean;
+  quotedAmount: number | null; quotedDate: string | null;
+  depositAmount: number | null; depositDate: string | null;
+  expensesAmount: number | null;
+  invoicedAmount: number | null; invoicedDate: string | null;
+  paymentReceived: boolean; paymentReceivedDate: string | null;
+}
 type PursuitCategory = "job" | "business" | "volunteer" | "hobby" | "side_hustle" | "other";
 interface Pursuit { id: number; name: string; category: PursuitCategory; notes: string; }
 const PURSUIT_CATEGORIES: PursuitCategory[] = ["job", "business", "volunteer", "hobby", "side_hustle", "other"];
@@ -5070,13 +5078,48 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
   const [completing, setCompleting] = useState(false);
   const [completeErr, setCompleteErr] = useState("");
 
+  // #172 — structured money tracking, Business/Side Hustle only (same
+  // category gate #171 uses), reacting to the *current* pursuit selection
+  // so reassigning a job to a Business pursuit surfaces this section
+  // immediately. Sits alongside the free-text `budget` above — that stays
+  // a casual note from creation; these are the real numbers, filled in
+  // later. Payment Received is gated in the UI behind having an Invoiced
+  // Amount (can't receive payment on an invoice that doesn't exist yet).
+  const moneyApplicable = (() => {
+    const cat = pursuits.find(p => p.id === pursuitId)?.category;
+    return cat === "business" || cat === "side_hustle";
+  })();
+  const [quotedAmount, setQuotedAmount] = useState(job.quotedAmount != null ? String(job.quotedAmount) : "");
+  const [quotedDate, setQuotedDate] = useState(job.quotedDate ?? "");
+  const [depositAmount, setDepositAmount] = useState(job.depositAmount != null ? String(job.depositAmount) : "");
+  const [depositDate, setDepositDate] = useState(job.depositDate ?? "");
+  const [expensesAmount, setExpensesAmount] = useState(job.expensesAmount != null ? String(job.expensesAmount) : "");
+  const [invoicedAmount, setInvoicedAmount] = useState(job.invoicedAmount != null ? String(job.invoicedAmount) : "");
+  const [invoicedDate, setInvoicedDate] = useState(job.invoicedDate ?? "");
+  const [paymentReceived, setPaymentReceived] = useState(job.paymentReceived);
+  const [paymentReceivedDate, setPaymentReceivedDate] = useState(job.paymentReceivedDate ?? "");
+  const profit = invoicedAmount.trim() || expensesAmount.trim()
+    ? (Number(invoicedAmount || quotedAmount) || 0) - (Number(expensesAmount) || 0)
+    : null;
+
+  function parseMoney(s: string): number | null {
+    return s.trim() ? Number(s) : null;
+  }
+
   async function save() {
     if (!name.trim()) { setValidationErr("Name is required."); return; }
     setValidationErr("");
     await saveStatus.save(async () => {
       const r = await apiFetch(`${API}/jobs/${job.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), pursuitId, stage: stage.trim(), due: due.trim(), pct, materials: materials.trim(), budget: budget.trim(), risk: risk.trim(), notes: notes.trim(), dueDate: dueDate || null }),
+        body: JSON.stringify({
+          name: name.trim(), pursuitId, stage: stage.trim(), due: due.trim(), pct, materials: materials.trim(), budget: budget.trim(), risk: risk.trim(), notes: notes.trim(), dueDate: dueDate || null,
+          quotedAmount: parseMoney(quotedAmount), quotedDate: quotedDate || null,
+          depositAmount: parseMoney(depositAmount), depositDate: depositDate || null,
+          expensesAmount: parseMoney(expensesAmount),
+          invoicedAmount: parseMoney(invoicedAmount), invoicedDate: invoicedDate || null,
+          paymentReceived, paymentReceivedDate: paymentReceived ? (paymentReceivedDate || null) : null,
+        }),
       });
       if (r.ok) { onSaved(pursuitId); onClose(); return true; }
       return false;
@@ -5152,6 +5195,40 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
           <div style={E.label}>Budget or quote</div>
           <input style={M.input} value={budget} onChange={e => setBudget(e.target.value)} placeholder="e.g. $2,400 or not sure" />
         </div>
+        {moneyApplicable && (
+          <div style={E.fieldGroup}>
+            <div style={E.label}>Money</div>
+            <div style={{ display: "flex", gap: 10, marginBottom: 8 }}>
+              <input type="number" style={{ ...M.input, flex: 1 }} value={quotedAmount} onChange={e => setQuotedAmount(e.target.value)} placeholder="Quoted amount ($)" />
+              <input type="date" style={{ ...M.input, flex: 1 }} value={quotedDate} onChange={e => setQuotedDate(e.target.value)} />
+            </div>
+            <div style={{ display: "flex", gap: 10, marginBottom: 8 }}>
+              <input type="number" style={{ ...M.input, flex: 1 }} value={depositAmount} onChange={e => setDepositAmount(e.target.value)} placeholder="Deposit received ($)" />
+              <input type="date" style={{ ...M.input, flex: 1 }} value={depositDate} onChange={e => setDepositDate(e.target.value)} />
+            </div>
+            <div style={{ marginBottom: 8 }}>
+              <input type="number" style={M.input} value={expensesAmount} onChange={e => setExpensesAmount(e.target.value)} placeholder="Expenses ($)" />
+            </div>
+            <div style={{ display: "flex", gap: 10, marginBottom: 8 }}>
+              <input type="number" style={{ ...M.input, flex: 1 }} value={invoicedAmount} onChange={e => setInvoicedAmount(e.target.value)} placeholder="Invoiced amount ($)" />
+              <input type="date" style={{ ...M.input, flex: 1 }} value={invoicedDate} onChange={e => setInvoicedDate(e.target.value)} />
+            </div>
+            {invoicedAmount.trim() && (
+              <div style={{ marginBottom: 8 }}>
+                <div style={E.chipRow}>
+                  <button style={{ ...E.chip, ...(paymentReceived ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setPaymentReceived(true)}>Payment received</button>
+                  <button style={{ ...E.chip, ...(!paymentReceived ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setPaymentReceived(false)}>Not yet</button>
+                </div>
+                {paymentReceived && (
+                  <input type="date" style={{ ...M.input, marginTop: 8 }} value={paymentReceivedDate} onChange={e => setPaymentReceivedDate(e.target.value)} />
+                )}
+              </div>
+            )}
+            {profit !== null && (
+              <div style={S.prioSub}>Profit: ${profit.toLocaleString()}</div>
+            )}
+          </div>
+        )}
         <div style={E.fieldGroup}>
           <div style={E.label}>Could slow this down</div>
           <input style={M.input} value={risk} onChange={e => setRisk(e.target.value)} placeholder="e.g. approval, weather" />
