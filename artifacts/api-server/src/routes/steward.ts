@@ -1544,7 +1544,7 @@ async function resolvePursuitId(userId: string, pursuitId: unknown, res: Respons
 // GET /api/jobs
 router.get('/jobs', async (req: Request, res: Response) => {
   try {
-    const rows = await db.select().from(jobs).where(and(eq(jobs.userId, req.user!.id), eq(jobs.deleted, false))).orderBy(asc(jobs.createdAt));
+    const rows = await db.select().from(jobs).where(and(eq(jobs.userId, req.user!.id), eq(jobs.deleted, false), eq(jobs.completed, false))).orderBy(asc(jobs.createdAt));
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch jobs' });
@@ -1561,6 +1561,19 @@ router.get('/jobs/deleted', async (req: Request, res: Response) => {
   } catch (err) {
     req.log?.error({ err }, 'Error fetching deleted jobs');
     res.status(500).json({ error: 'Failed to fetch deleted jobs' });
+  }
+});
+
+// GET /api/jobs/completed — #170, mirrors /jobs/deleted exactly
+router.get('/jobs/completed', async (req: Request, res: Response) => {
+  try {
+    const items = await db.select().from(jobs)
+      .where(and(eq(jobs.userId, req.user!.id), eq(jobs.completed, true), eq(jobs.deleted, false)))
+      .orderBy(desc(jobs.completedAt)).limit(200);
+    res.json({ items });
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching completed jobs');
+    res.status(500).json({ error: 'Failed to fetch completed jobs' });
   }
 });
 
@@ -1592,7 +1605,7 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    const { name, stage, due, pct, pursuitId, materials, budget, risk, notes, deleted, dueDate } = req.body;
+    const { name, stage, due, pct, pursuitId, materials, budget, risk, notes, deleted, dueDate, completed } = req.body;
     const updates: Partial<typeof jobs.$inferInsert> = {};
     if (name !== undefined) updates.name = name;
     if (stage !== undefined) updates.stage = stage;
@@ -1609,6 +1622,24 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
     if (typeof deleted === 'boolean') {
       updates.deleted = deleted;
       updates.deletedAt = deleted ? new Date() : null;
+    }
+    // #170 — Mark Complete/Reopen. `pct` is a server-side effect, not
+    // client-supplied: completing forces it to 100 after remembering
+    // whatever it was; reopening restores that remembered value instead
+    // of dropping progress back to some arbitrary number.
+    if (typeof completed === 'boolean') {
+      const [existing] = await db.select({ pct: jobs.pct, pctBeforeCompletion: jobs.pctBeforeCompletion }).from(jobs)
+        .where(and(eq(jobs.id, id), eq(jobs.userId, req.user!.id)));
+      updates.completed = completed;
+      if (completed) {
+        updates.completedAt = new Date();
+        updates.pctBeforeCompletion = existing?.pct ?? 0;
+        updates.pct = 100;
+      } else {
+        updates.completedAt = null;
+        updates.pct = existing?.pctBeforeCompletion ?? 0;
+        updates.pctBeforeCompletion = null;
+      }
     }
     if (pursuitId !== undefined) {
       const resolved = await resolvePursuitId(req.user!.id, pursuitId, res);
@@ -1692,7 +1723,7 @@ router.get('/coming-up', async (req: Request, res: Response) => {
     // 1_000_000) keeps these clear of both comingUp's positive serial ids
     // and dueCommits' own negative range above.
     const dueJobs = await db.select().from(jobs).where(and(
-      eq(jobs.userId, req.user!.id), eq(jobs.deleted, false),
+      eq(jobs.userId, req.user!.id), eq(jobs.deleted, false), eq(jobs.completed, false),
       isNotNull(jobs.dueDate), gte(jobs.dueDate, rangeStart), lte(jobs.dueDate, rangeEnd),
     ));
     const pursuitIds = [...new Set(dueJobs.map(j => j.pursuitId).filter((id): id is number => id !== null))];

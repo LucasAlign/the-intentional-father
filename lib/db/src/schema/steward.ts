@@ -217,6 +217,16 @@ export const jobs = pgTable("jobs", {
   // than permanently removing, with a Deleted-jobs list to Reopen from.
   deleted: boolean("deleted").notNull().default(false),
   deletedAt: timestamp("deleted_at"),
+  // #170 — Mark Complete/Reopen, mirroring the deleted/deletedAt shape
+  // above exactly. `pctBeforeCompletion` remembers whatever `pct` was
+  // right before Mark Complete forced it to 100, so Reopen can restore it
+  // instead of dropping progress back to some arbitrary number. `completed`
+  // is orthogonal to `deleted` — a completed job that's later soft-deleted
+  // and then reopened from the Deleted list lands back in the Completed
+  // list, not active, since only `deleted` gets touched there.
+  completed: boolean("completed").notNull().default(false),
+  completedAt: timestamp("completed_at"),
+  pctBeforeCompletion: integer("pct_before_completion"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

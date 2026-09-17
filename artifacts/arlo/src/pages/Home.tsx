@@ -27,7 +27,7 @@ interface Commit {
   // 1+ Tribe people, or an ad-hoc one-time target — never both (#72).
   relationshipIds: number[]; adHocName: string | null; adHocCategory: RelationshipCategory | null;
 }
-interface Job { id: number; biz: string; name: string; stage: string; due: string; dueDate: string | null; pct: number; pursuitId: number | null; materials: string; budget: string; risk: string; notes: string; productOrService: string; }
+interface Job { id: number; biz: string; name: string; stage: string; due: string; dueDate: string | null; pct: number; pursuitId: number | null; materials: string; budget: string; risk: string; notes: string; productOrService: string; completed: boolean; }
 type PursuitCategory = "job" | "business" | "volunteer" | "hobby" | "side_hustle" | "other";
 interface Pursuit { id: number; name: string; category: PursuitCategory; notes: string; }
 const PURSUIT_CATEGORIES: PursuitCategory[] = ["job", "business", "volunteer", "hobby", "side_hustle", "other"];
@@ -806,6 +806,7 @@ export default function Home() {
   const [editPursuit, setEditPursuit] = useState<Pursuit | null>(null);
   const [closedPursuitsOpen, setClosedPursuitsOpen] = useState(false);
   const [deletedJobsOpen, setDeletedJobsOpen] = useState(false);
+  const [completedJobsOpen, setCompletedJobsOpen] = useState(false);
   const [closePursuitPrompt, setClosePursuitPrompt] = useState<Pursuit | null>(null);
   const [calendarAccounts, setCalendarAccounts] = useState<string[]>([]);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -1080,7 +1081,7 @@ export default function Home() {
       <main style={R.screen}>
         {tab === "today" && <Today verse={verse} tasks={tasks} journal={journal} events={today} name={user?.firstName} profile={profile} relationships={relationships} primaryRel={primaryRel} onSend={send} ci={ci} setCi={setCi} sending={sending} onSaveJournal={saveJournal} refreshTasks={refreshTasks} onOpenPriority={setPriorityDetail} onViewCompleted={() => setCompletedLogOpen(true)} pulseChecks={pulseChecks} onSavePulseCheck={savePulseCheck} onOpenJournalHistory={() => setJournalHistoryOpen(true)} onOpenIntentionHistory={() => setIntentionHistoryOpen(true)} onToggleVerseFavorite={toggleVerseFavorite} onOpenVerseHistory={() => setVerseHistoryOpen(true)} onOpenVerseFavorites={() => setVerseFavoritesOpen(true)} hasChatMessages={chat.length > 0} />}
         {tab === "her" && <Relationships relationships={relationships} refreshRelationships={refreshRelationships} commits={commits} refreshCommits={refreshCommits} onOpenReminders={() => setRemindersOpen(true)} />}
-        {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} onOpenClosed={() => setClosedPursuitsOpen(true)} onOpenDeletedJobs={() => setDeletedJobsOpen(true)} />}
+        {tab === "work" && <Work jobs={jobs} pursuits={pursuits} onJob={() => setJobModal(true)} onEdit={setEditJob} onAddPursuit={() => setPursuitModal(true)} onEditPursuit={setEditPursuit} onOpenClosed={() => setClosedPursuitsOpen(true)} onOpenDeletedJobs={() => setDeletedJobsOpen(true)} onOpenCompletedJobs={() => setCompletedJobsOpen(true)} />}
         {tab === "sphere" && <Sphere />}
         {tab === "steward" && <StewardChat messages={chat} input={ci} setInput={setCi} send={() => send()} sending={sending} tasks={tasks} onOpenPriority={setPriorityDetail} tone={profile?.voice ?? "straight_talk"} onSetTone={setTone} suggestedTone={suggestedTone} />}
         {tab === "week" && <WeekView events={week} jobs={jobs} pursuits={pursuits} calendarAccounts={calendarAccounts} commits={commits} relationships={relationships} refreshCommits={refreshCommits} refreshRelationships={refreshRelationships} refreshJobs={refreshJobs} onRefresh={refreshWeek} onConnectCalendar={() => { window.location.href = `${API}/google-calendar/connect`; }} onDisconnectCalendar={async (email) => { try { await apiFetch(`${API}/google-calendar/disconnect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); refreshCalendarStatus(); } catch { /* ignore */ } }} />}
@@ -1119,6 +1120,7 @@ export default function Home() {
       {editPursuit && <PursuitModal pursuit={editPursuit} onClose={() => setEditPursuit(null)} onSaved={refreshPursuits} onDeleted={() => { refreshPursuits(); refreshJobs(); }} onClosed={refreshPursuits} />}
       {closedPursuitsOpen && <PursuitsClosedModal onClose={() => setClosedPursuitsOpen(false)} onChanged={refreshPursuits} />}
       {deletedJobsOpen && <JobsDeletedModal onClose={() => setDeletedJobsOpen(false)} onChanged={refreshJobs} />}
+      {completedJobsOpen && <JobsCompletedModal onClose={() => setCompletedJobsOpen(false)} onChanged={refreshJobs} />}
       {closePursuitPrompt && (
         <PursuitCloseFinishedPrompt
           pursuit={closePursuitPrompt}
@@ -3282,9 +3284,9 @@ function PeopleDeletedModal({ onClose, onChanged }: { onClose: () => void; onCha
 }
 
 // ── Work ───────────────────────────────────────────────────────────────────
-function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit, onOpenClosed, onOpenDeletedJobs }: {
+function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit, onOpenClosed, onOpenDeletedJobs, onOpenCompletedJobs }: {
   jobs: Job[]; pursuits: Pursuit[]; onJob: () => void; onEdit: (j: Job) => void;
-  onAddPursuit: () => void; onEditPursuit: (p: Pursuit) => void; onOpenClosed: () => void; onOpenDeletedJobs: () => void;
+  onAddPursuit: () => void; onEditPursuit: (p: Pursuit) => void; onOpenClosed: () => void; onOpenDeletedJobs: () => void; onOpenCompletedJobs: () => void;
 }) {
   const pursuitIds = pursuits.map(p => p.id);
   const jobsByPursuit = new Map<number | null, Job[]>();
@@ -3329,6 +3331,7 @@ function Work({ jobs, pursuits, onJob, onEdit, onAddPursuit, onEditPursuit, onOp
         <OverflowMenu
           label="Work list options"
           items={[
+            { label: "Completed Jobs ›", onSelect: onOpenCompletedJobs },
             { label: "Deleted Jobs ›", onSelect: onOpenDeletedJobs },
             { label: "Closed ›", onSelect: onOpenClosed },
           ]}
@@ -5060,6 +5063,9 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
   const [validationErr, setValidationErr] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [delErr, setDelErr] = useState("");
+  const [confirmComplete, setConfirmComplete] = useState(false);
+  const [completing, setCompleting] = useState(false);
+  const [completeErr, setCompleteErr] = useState("");
 
   async function save() {
     if (!name.trim()) { setValidationErr("Name is required."); return; }
@@ -5088,6 +5094,19 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
       if (r.ok) { onDeleted(); onClose(); }
       else { setDelErr("Couldn't delete. Try again."); setDeleting(false); }
     } catch { setDelErr("Couldn't reach the server."); setDeleting(false); }
+  }
+
+  // #170 — moves the job to the Completed Jobs list (JobsCompletedModal),
+  // out of the main Work tab; the server remembers the current `pct` and
+  // forces it to 100, so Reopen from that list can restore it rather than
+  // dropping progress to some arbitrary number.
+  async function complete() {
+    setCompleting(true);
+    try {
+      const r = await apiFetch(`${API}/jobs/${job.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ completed: true }) });
+      if (r.ok) { onDeleted(); onClose(); }
+      else { setCompleteErr("Couldn't mark complete. Try again."); setCompleting(false); setConfirmComplete(false); }
+    } catch { setCompleteErr("Couldn't reach the server."); setCompleting(false); setConfirmComplete(false); }
   }
 
   return (
@@ -5142,6 +5161,16 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
         <TapError message={validationErr || null} />
         <SaveStatus status={saveStatus.status} onRetry={save} />
         <button style={M.next} disabled={saveStatus.status === "saving"} onClick={save}>{saveStatus.status === "saving" ? "Saving…" : "Save Changes"}</button>
+        <TapError message={completeErr || null} />
+        {confirmComplete ? (
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ ...S.prioSub, color: C.brass, marginBottom: 8, textAlign: "center" }}>Mark "{job.name}" complete? It moves to Completed Jobs — you can reopen it from there anytime.</div>
+            <button style={M.next} disabled={completing} onClick={complete}>{completing ? "Completing…" : "Yes, mark complete"}</button>
+            <button style={M.cancel} onClick={() => setConfirmComplete(false)}>Cancel</button>
+          </div>
+        ) : (
+          <button style={{ ...M.cancel, color: C.brass }} onClick={() => setConfirmComplete(true)}>Mark Complete</button>
+        )}
         <TapError message={delErr || null} />
         <button style={{ ...M.cancel, color: "#C87060" }} disabled={deleting} onClick={del}>{deleting ? "Deleting…" : "Delete Job"}</button>
         <button style={M.cancel} onClick={onClose}>Cancel</button>
@@ -5230,6 +5259,63 @@ function JobsDeletedModal({ onClose, onChanged }: { onClose: () => void; onChang
             </div>
           ))}
           {deleted && deleted.length === 0 && <div style={S.empty}>Nothing deleted yet.</div>}
+        </div>
+        <button style={M.cancel} onClick={onClose}>Close</button>
+      </ModalSheet>
+    </div>
+  );
+}
+
+// #170 — Completed Jobs, mirroring JobsDeletedModal's shape exactly (same
+// GET-list/Reopen pattern) but deliberately without a "delete permanently"
+// action of its own: getting rid of a completed job forever means
+// reopening it first, then using the normal Delete Job action — one
+// permanent-delete path in the app, not two.
+function JobsCompletedModal({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
+  const [completedJobs, setCompletedJobs] = useState<Job[] | null>(null);
+  const [busyIds, setBusyIds] = useState<number[]>([]);
+  const rowError = useKeyedTapError<number>();
+  const scrollFade = useBottomScrollFade<HTMLDivElement>();
+
+  const load = useCallback(() => {
+    apiFetch(`${API}/jobs/completed`).then(r => r.ok ? r.json() : null).then(d => setCompletedJobs(d?.items ?? []));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function reopen(id: number) {
+    setBusyIds(prev => [...prev, id]);
+    try {
+      const r = await apiFetch(`${API}/jobs/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ completed: false }) });
+      if (r.ok) {
+        setCompletedJobs(prev => prev ? prev.filter(j => j.id !== id) : prev);
+        onChanged();
+        return;
+      }
+    } catch { /* fall through */ }
+    setBusyIds(prev => prev.filter(item => item !== id));
+    rowError.flash(id, "Couldn't reopen — try again");
+  }
+
+  return (
+    <div style={M.overlay}>
+      <ModalSheet title="Completed Jobs" onClose={onClose}>
+        <div ref={scrollFade.ref} style={S.scrollCap5}>
+          {scrollFade.showFade && <div style={S.scrollFadeCue} />}
+          {(completedJobs ?? []).map(j => (
+            <div key={j.id} style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={S.prioTitle}>{j.name}</div>
+                  <div style={S.prioSub}>{j.stage || "Completed"}</div>
+                </div>
+                <button style={S.prioLogLink} disabled={busyIds.includes(j.id)} onClick={() => reopen(j.id)}>
+                  {busyIds.includes(j.id) ? "Reopening…" : "Reopen"}
+                </button>
+              </div>
+              <TapError message={rowError.get(j.id)} />
+            </div>
+          ))}
+          {completedJobs && completedJobs.length === 0 && <div style={S.empty}>Nothing completed yet.</div>}
         </div>
         <button style={M.cancel} onClick={onClose}>Close</button>
       </ModalSheet>

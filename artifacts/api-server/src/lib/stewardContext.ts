@@ -76,11 +76,11 @@ export async function buildTodayContext(userId: string, today: string): Promise<
       gte(sphereChecks.weekStart, earliestTrendWeekStart),
       lt(sphereChecks.weekStart, currentWeekStart),
     )),
-    // #169 — pct 100 stands in for "done" until #170's real completion
-    // state ships; sorted/capped in JS below (due-date-first, nulls last)
-    // rather than in the query, same as resolveCommitWhoLabels' approach
-    // to shaping elsewhere in this file.
-    db.select().from(jobs).where(and(eq(jobs.userId, userId), eq(jobs.deleted, false), ne(jobs.pct, 100))),
+    // #169/#170 — excludes completed jobs (real completed flag, #170) the
+    // same way GET /jobs does; sorted/capped in JS below (due-date-first,
+    // nulls last) rather than in the query, same as resolveCommitWhoLabels'
+    // approach to shaping elsewhere in this file.
+    db.select().from(jobs).where(and(eq(jobs.userId, userId), eq(jobs.deleted, false), eq(jobs.completed, false))),
   ]);
 
   let context = '';
