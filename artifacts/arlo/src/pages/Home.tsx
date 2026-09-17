@@ -6606,13 +6606,13 @@ const M: Record<string, CSSProperties> = {
   // almost no brightness back there for a black wash to preserve. A warm,
   // low-alpha walnut tint (matching the app's own palette) instead of flat
   // black is what actually reads as "dimmed," not "blacked out."
-  // #165 follow-up — diagnostic experiment: docks the sheet 8mm above the
-  // true bottom edge instead of flush against it, to see whether that
-  // alone brings the sticky footer into view on the setups where it's
-  // been landing below the visible area. `mm` is a real physical-length
-  // CSS unit (96px/25.4mm), unaffected by the vh/dvh viewport-tracking
-  // questions the rest of this investigation has been chasing.
-  overlay: { position: "fixed", inset: 0, background: "rgba(90,58,32,0.28)", display: "flex", alignItems: "flex-end", paddingBottom: "8mm", zIndex: 200, backdropFilter: "blur(3px)" },
+  // #165 — docks the sheet above the true bottom edge instead of flush
+  // against it; confirmed live to fix the sticky footer (Back/Next/Close)
+  // landing below the visible area. `mm` is a real physical-length CSS
+  // unit (96px/25.4mm), unaffected by the vh/dvh viewport-tracking
+  // problems the rest of this investigation was chasing. Started at 8mm
+  // (confirmed working), raised to 10mm on request for a bit more margin.
+  overlay: { position: "fixed", inset: 0, background: "rgba(90,58,32,0.28)", display: "flex", alignItems: "flex-end", paddingBottom: "10mm", zIndex: 200, backdropFilter: "blur(3px)" },
   // maxHeight + overflowY (not a blanket `overflow: hidden`) so content
   // taller than the viewport scrolls instead of clipping inaccessibly —
   // every modal in the app shares this one sheet style (#66). 88dvh, not
