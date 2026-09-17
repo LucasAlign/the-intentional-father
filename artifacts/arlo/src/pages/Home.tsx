@@ -4744,14 +4744,16 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
     if (category === "side_hustle") {
       return [
         name, due,
-        { q: "What's involved?", ph: "e.g. making and packaging soap", key: "materials" },
+        { q: "Materials / actions needed?", ph: "e.g. making and packaging soap", key: "materials" },
         { q: "Expected pay or rate?", ph: "e.g. $20/item, $150 flat", key: "budget" },
         risk,
       ];
     }
-    // Business
+    // Business — materials/actions is asked unconditionally (not just for
+    // Product jobs) since the field also covers a pure-service job's
+    // to-dos; Service jobs additionally get the delivery-scope question.
     const qs = [name, due];
-    if (psProduct) qs.push({ q: "Materials needed?", ph: "e.g. 4×8 aluminum, vinyl", key: "materials" });
+    qs.push({ q: "Materials / actions needed?", ph: "e.g. 4×8 aluminum, vinyl — or schedule the inspection", key: "materials" });
     if (psService) qs.push({ q: "What's involved in delivering this?", ph: "e.g. installation, consulting hours", key: "notes" });
     qs.push({ q: "Rough budget or quote?", ph: "e.g. $2,400 or not sure", key: "budget" });
     qs.push(risk);
@@ -5455,25 +5457,23 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted, onDuplicated
               <input type="number" style={{ ...M.input, flex: 1 }} value={invoicedAmount} onChange={e => setInvoicedAmount(e.target.value)} placeholder="Invoiced amount ($)" />
               <input type="date" style={{ ...M.input, flex: 1 }} value={invoicedDate} onChange={e => setInvoicedDate(e.target.value)} />
             </div>
-            {invoicedAmount.trim() && (
-              <div style={{ marginBottom: 8 }}>
-                <div style={E.chipRow}>
-                  <button style={{ ...E.chip, ...(invoiceSent ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setInvoiceSent(!invoiceSent)}>Invoice sent</button>
-                </div>
-                <div style={{ ...E.label, marginTop: 10, marginBottom: 4 }}>Payment status</div>
-                <div style={E.chipRow}>
-                  <button style={{ ...E.chip, ...(paymentStatus === "unpaid" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setPaymentStatus("unpaid")}>Unpaid</button>
-                  <button style={{ ...E.chip, ...(paymentStatus === "partial" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setPaymentStatus("partial")}>Partially paid</button>
-                  <button style={{ ...E.chip, ...(paymentStatus === "paid" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setPaymentStatus("paid")}>Paid in full</button>
-                </div>
-                {paymentStatus !== "unpaid" && (
-                  <input type="date" style={{ ...M.input, marginTop: 8 }} value={paymentReceivedDate} onChange={e => setPaymentReceivedDate(e.target.value)} placeholder="Date of payment" />
-                )}
-                <div style={{ ...E.chipRow, marginTop: 10 }}>
-                  <button style={{ ...E.chip, ...(creditOwed ? { borderColor: "#C87060", color: "#C87060" } : {}) }} onClick={() => setCreditOwed(!creditOwed)}>Refund / credit memo owed</button>
-                </div>
+            <div style={{ marginBottom: 8 }}>
+              <div style={E.chipRow}>
+                <button style={{ ...E.chip, ...(invoiceSent ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setInvoiceSent(!invoiceSent)}>Invoice sent</button>
               </div>
-            )}
+              <div style={{ ...E.label, marginTop: 10, marginBottom: 4 }}>Payment status</div>
+              <div style={E.chipRow}>
+                <button style={{ ...E.chip, ...(paymentStatus === "unpaid" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setPaymentStatus("unpaid")}>Unpaid</button>
+                <button style={{ ...E.chip, ...(paymentStatus === "partial" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setPaymentStatus("partial")}>Partially paid</button>
+                <button style={{ ...E.chip, ...(paymentStatus === "paid" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setPaymentStatus("paid")}>Paid in full</button>
+              </div>
+              {paymentStatus !== "unpaid" && (
+                <input type="date" style={{ ...M.input, marginTop: 8 }} value={paymentReceivedDate} onChange={e => setPaymentReceivedDate(e.target.value)} placeholder="Date of payment" />
+              )}
+              <div style={{ ...E.chipRow, marginTop: 10 }}>
+                <button style={{ ...E.chip, ...(creditOwed ? { borderColor: "#C87060", color: "#C87060" } : {}) }} onClick={() => setCreditOwed(!creditOwed)}>Refund / credit memo owed</button>
+              </div>
+            </div>
             {profit !== null && (
               <div style={S.prioSub}>Profit: ${profit.toLocaleString()}</div>
             )}
