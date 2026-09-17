@@ -30,6 +30,7 @@ interface Commit {
 interface Job { id: number; biz: string; name: string; stage: string; due: string; dueDate: string | null; pct: number; pursuitId: number | null; materials: string; budget: string; risk: string; notes: string; productOrService: string; completed: boolean; }
 type PursuitCategory = "job" | "business" | "volunteer" | "hobby" | "side_hustle" | "other";
 interface Pursuit { id: number; name: string; category: PursuitCategory; notes: string; }
+interface JobPerson { id: number; jobId: number; name: string; role: string; }
 const PURSUIT_CATEGORIES: PursuitCategory[] = ["job", "business", "volunteer", "hobby", "side_hustle", "other"];
 const PURSUIT_CATEGORY_LABEL: Record<PursuitCategory, string> = { job: "Job", business: "Business", volunteer: "Volunteer", hobby: "Hobby", side_hustle: "Side Hustle", other: "Other" };
 interface Event { id: number; date: string; time: string; title: string; sub: string; tag: string; kind: string; }
@@ -5070,6 +5071,53 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
   const [completing, setCompleting] = useState(false);
   const [completeErr, setCompleteErr] = useState("");
 
+  // #173 — real tracking behind #167's "Does anyone else work with you on
+  // this?" branch, reacting to the *current* pursuit selection. Business,
+  // Side Hustle, Job, and Volunteer only — matching that branch's own
+  // original scope (no team concept for a solo Hobby or catch-all Other
+  // pursuit). Job-scoped: fetched unconditionally (cheap, small) so
+  // switching the pursuit dropdown never needs a second fetch.
+  const currentPursuitCategoryForTeam = pursuits.find(p => p.id === pursuitId)?.category ?? null;
+  const teamApplicable = currentPursuitCategoryForTeam === "business" || currentPursuitCategoryForTeam === "side_hustle"
+    || currentPursuitCategoryForTeam === "job" || currentPursuitCategoryForTeam === "volunteer";
+  const [teamPeople, setTeamPeople] = useState<JobPerson[] | null>(null);
+  const [newPersonName, setNewPersonName] = useState("");
+  const [newPersonRole, setNewPersonRole] = useState("");
+  const [addingPerson, setAddingPerson] = useState(false);
+  const [personBusyIds, setPersonBusyIds] = useState<number[]>([]);
+  const [teamErr, setTeamErr] = useState("");
+
+  useEffect(() => {
+    apiFetch(`${API}/jobs/${job.id}/people`).then(r => r.ok ? r.json() : null).then(d => setTeamPeople(d?.items ?? []));
+  }, [job.id]);
+
+  async function addPerson() {
+    if (!newPersonName.trim()) return;
+    setAddingPerson(true);
+    setTeamErr("");
+    try {
+      const r = await apiFetch(`${API}/jobs/${job.id}/people`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: newPersonName.trim(), role: newPersonRole.trim() }) });
+      if (r.ok) {
+        const data = await r.json() as { person: JobPerson };
+        setTeamPeople(prev => [...(prev ?? []), data.person]);
+        setNewPersonName("");
+        setNewPersonRole("");
+      } else setTeamErr("Couldn't add — try again");
+    } catch { setTeamErr("Couldn't reach the server."); }
+    finally { setAddingPerson(false); }
+  }
+
+  async function removePerson(id: number) {
+    setPersonBusyIds(prev => [...prev, id]);
+    setTeamErr("");
+    try {
+      const r = await apiFetch(`${API}/jobs/people/${id}`, { method: "DELETE" });
+      if (r.ok) setTeamPeople(prev => prev ? prev.filter(x => x.id !== id) : prev);
+      else setTeamErr("Couldn't remove — try again");
+    } catch { setTeamErr("Couldn't reach the server."); }
+    finally { setPersonBusyIds(prev => prev.filter(item => item !== id)); }
+  }
+
   async function save() {
     if (!name.trim()) { setValidationErr("Name is required."); return; }
     setValidationErr("");
@@ -5160,6 +5208,26 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
           <div style={E.label}>Notes</div>
           <input style={M.input} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional" />
         </div>
+        {teamApplicable && (
+          <div style={E.fieldGroup}>
+            <div style={E.label}>Team</div>
+            {(teamPeople ?? []).map(p => (
+              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <div style={{ flex: 1 }}>
+                  <div>{p.name}</div>
+                  {p.role && <div style={S.prioSub}>{p.role}</div>}
+                </div>
+                <button style={{ ...S.prioLogLink, color: "#C87060" }} disabled={personBusyIds.includes(p.id)} onClick={() => removePerson(p.id)}>Remove</button>
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <input style={{ ...M.input, flex: 1 }} value={newPersonName} onChange={e => setNewPersonName(e.target.value)} placeholder="Name" />
+              <input style={{ ...M.input, flex: 1 }} value={newPersonRole} onChange={e => setNewPersonRole(e.target.value)} placeholder="What they're responsible for (optional)" onKeyDown={e => e.key === "Enter" && addPerson()} />
+              <button style={{ ...S.prioLogLink }} disabled={addingPerson || !newPersonName.trim()} onClick={addPerson}>{addingPerson ? "Adding…" : "Add"}</button>
+            </div>
+            <TapError message={teamErr || null} />
+          </div>
+        )}
 
         <TapError message={validationErr || null} />
         <SaveStatus status={saveStatus.status} onRetry={save} />
