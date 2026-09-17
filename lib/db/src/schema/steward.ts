@@ -276,6 +276,32 @@ export const insertJobTaskSchema = createInsertSchema(jobTasks).omit({ id: true,
 export type InsertJobTask = z.infer<typeof insertJobTaskSchema>;
 export type JobTask = typeof jobTasks.$inferSelect;
 
+// #173 — real tracking behind #167's "Does anyone else work with you on
+// this?" branch (Business/Side Hustle/Job/Volunteer only — no team concept
+// for a solo Hobby or catch-all Other pursuit). Job-scoped, not
+// pursuit-scoped: each job defines its own working team from scratch,
+// rather than a shared roster reused across every job under a pursuit —
+// simpler, and matches job_tasks' (#171) precedent of job-scoped child
+// data. Deliberately minimal — name + one free-text role/responsibility
+// field only, no contact info, no pay/hours (payroll/CRM territory,
+// outside what a personal accountability app should try to be), no
+// status/done tracking, and no linking a person to a specific job_tasks
+// row — People and Steps stay two independent lists. Hard delete, no
+// soft-delete tier, same treatment job_tasks got. `userId` denormalized
+// from the owning job, matching job_tasks/commitRelationshipTargets.
+export const jobPeople = pgTable("job_people", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  jobId: integer("job_id").notNull().references(() => jobs.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  role: text("role").notNull().default(""),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertJobPersonSchema = createInsertSchema(jobPeople).omit({ id: true, createdAt: true });
+export type InsertJobPerson = z.infer<typeof insertJobPersonSchema>;
+export type JobPerson = typeof jobPeople.$inferSelect;
+
 export const comingUp = pgTable("coming_up", {
   id: serial("id").primaryKey(),
   userId: text("user_id").notNull(),

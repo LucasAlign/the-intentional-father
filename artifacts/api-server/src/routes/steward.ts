@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { db, withUserSession } from "@workspace/db";
-import { journalEntries, chatMessages, tasks, taskCompletions, commits, commitRelationshipTargets, type Commit, jobs, jobTasks, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit, verseFavorites, customVerses, sphereChecks, reminderEmails } from "@workspace/db";
+import { journalEntries, chatMessages, tasks, taskCompletions, commits, commitRelationshipTargets, type Commit, jobs, jobTasks, jobPeople, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit, verseFavorites, customVerses, sphereChecks, reminderEmails } from "@workspace/db";
 import { eq, desc, asc, gte, lte, and, ne, isNull, isNotNull, inArray, notInArray, sql } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
 import { normalizeProfileData, isToneVoice, DEFAULT_TONE_VOICE, type ProfileData, type ToneVoice } from "../lib/profile";
@@ -1754,6 +1754,68 @@ router.delete('/jobs/tasks/:taskId', async (req: Request, res: Response) => {
   } catch (err) {
     req.log?.error({ err }, 'Error deleting job task');
     res.status(500).json({ error: 'Failed to delete job task' });
+  }
+});
+
+// #173 — job_people CRUD, mirroring #171's job_tasks routes.
+
+// GET /api/jobs/:id/people
+router.get('/jobs/:id/people', async (req: Request, res: Response) => {
+  try {
+    const jobId = parseInt(req.params.id as string, 10);
+    if (isNaN(jobId)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    const items = await db.select().from(jobPeople).where(and(eq(jobPeople.jobId, jobId), eq(jobPeople.userId, req.user!.id))).orderBy(asc(jobPeople.createdAt));
+    res.json({ items });
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching job people');
+    res.status(500).json({ error: 'Failed to fetch job people' });
+  }
+});
+
+// POST /api/jobs/:id/people
+router.post('/jobs/:id/people', async (req: Request, res: Response) => {
+  try {
+    const jobId = parseInt(req.params.id as string, 10);
+    if (isNaN(jobId)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    const { name, role } = req.body;
+    if (typeof name !== 'string' || !name.trim()) { res.status(400).json({ error: 'name is required' }); return; }
+    const [owned] = await db.select({ id: jobs.id }).from(jobs).where(and(eq(jobs.id, jobId), eq(jobs.userId, req.user!.id))).limit(1);
+    if (!owned) { res.status(400).json({ error: 'job not found' }); return; }
+    const [row] = await db.insert(jobPeople).values({ userId: req.user!.id, jobId, name: name.trim(), role: typeof role === 'string' ? role.trim() : '' }).returning();
+    res.json({ person: row });
+  } catch (err) {
+    req.log?.error({ err }, 'Error creating job person');
+    res.status(500).json({ error: 'Failed to create job person' });
+  }
+});
+
+// PATCH /api/jobs/people/:personId
+router.patch('/jobs/people/:personId', async (req: Request, res: Response) => {
+  try {
+    const personId = parseInt(req.params.personId as string, 10);
+    if (isNaN(personId)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    const { name, role } = req.body;
+    const updates: Partial<typeof jobPeople.$inferInsert> = {};
+    if (typeof name === 'string' && name.trim()) updates.name = name.trim();
+    if (typeof role === 'string') updates.role = role.trim();
+    if (Object.keys(updates).length > 0) await db.update(jobPeople).set(updates).where(and(eq(jobPeople.id, personId), eq(jobPeople.userId, req.user!.id)));
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error updating job person');
+    res.status(500).json({ error: 'Failed to update job person' });
+  }
+});
+
+// DELETE /api/jobs/people/:personId — hard delete, no soft-delete tier (#173)
+router.delete('/jobs/people/:personId', async (req: Request, res: Response) => {
+  try {
+    const personId = parseInt(req.params.personId as string, 10);
+    if (isNaN(personId)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    await db.delete(jobPeople).where(and(eq(jobPeople.id, personId), eq(jobPeople.userId, req.user!.id)));
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error deleting job person');
+    res.status(500).json({ error: 'Failed to delete job person' });
   }
 });
 
