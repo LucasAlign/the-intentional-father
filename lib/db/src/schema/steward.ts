@@ -258,6 +258,13 @@ export const jobs = pgTable("jobs", {
   // searchable or sortable.
   clientName: text("client_name").notNull().default(""),
   clientContact: text("client_contact").notNull().default(""),
+  // #175 — Business, Side Hustle, and Job only (the two named use cases in
+  // the issue: job-costing a business job, tracking hours at an employee
+  // job — Volunteer/Hobby/Other have no time-tracking use case). A single
+  // running-total number, same shape as #172's expensesAmount, not
+  // itemized time entries — that would be real time-tracking software, a
+  // much bigger build than anything else on this roadmap.
+  hoursLogged: numeric("hours_logged", { mode: "number" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

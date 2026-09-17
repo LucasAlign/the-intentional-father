@@ -1605,7 +1605,7 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    const { name, stage, due, pct, pursuitId, materials, budget, risk, notes, deleted, dueDate, completed, quotedAmount, quotedDate, depositAmount, depositDate, expensesAmount, invoicedAmount, invoicedDate, paymentReceived, paymentReceivedDate, clientName, clientContact } = req.body;
+    const { name, stage, due, pct, pursuitId, materials, budget, risk, notes, deleted, dueDate, completed, quotedAmount, quotedDate, depositAmount, depositDate, expensesAmount, invoicedAmount, invoicedDate, paymentReceived, paymentReceivedDate, clientName, clientContact, hoursLogged } = req.body;
     const updates: Partial<typeof jobs.$inferInsert> = {};
     if (name !== undefined) updates.name = name;
     if (stage !== undefined) updates.stage = stage;
@@ -1618,6 +1618,8 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
     // #174 — client info, edit-only (JobEditModal, not the creation flow).
     if (typeof clientName === 'string') updates.clientName = clientName;
     if (typeof clientContact === 'string') updates.clientContact = clientContact;
+    // #175 — edit-only, same treatment #172's money fields got.
+    if (hoursLogged !== undefined) updates.hoursLogged = typeof hoursLogged === 'number' ? hoursLogged : null;
     // dueDate: string sets it, null/"" explicitly clears it — undefined
     // (the key omitted entirely) leaves it untouched, same convention as
     // every other optional field here.
