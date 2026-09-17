@@ -30,6 +30,7 @@ interface Commit {
 interface Job { id: number; biz: string; name: string; stage: string; due: string; dueDate: string | null; pct: number; pursuitId: number | null; materials: string; budget: string; risk: string; notes: string; productOrService: string; completed: boolean; }
 type PursuitCategory = "job" | "business" | "volunteer" | "hobby" | "side_hustle" | "other";
 interface Pursuit { id: number; name: string; category: PursuitCategory; notes: string; }
+interface JobTask { id: number; jobId: number; text: string; done: boolean; }
 const PURSUIT_CATEGORIES: PursuitCategory[] = ["job", "business", "volunteer", "hobby", "side_hustle", "other"];
 const PURSUIT_CATEGORY_LABEL: Record<PursuitCategory, string> = { job: "Job", business: "Business", volunteer: "Volunteer", hobby: "Hobby", side_hustle: "Side Hustle", other: "Other" };
 interface Event { id: number; date: string; time: string; title: string; sub: string; tag: string; kind: string; }
@@ -5067,6 +5068,70 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
   const [completing, setCompleting] = useState(false);
   const [completeErr, setCompleteErr] = useState("");
 
+  // #171 — sub-tasks, Business/Side Hustle only, reacting to the *current*
+  // pursuit selection (not just the job's original one) so reassigning a
+  // job to a Business pursuit surfaces this section immediately. Fetched
+  // unconditionally (cheap, small) so switching the dropdown never needs a
+  // second fetch. Once 1+ sub-tasks exist, pct is derived and the manual
+  // slider below goes read-only — the two mechanisms would otherwise
+  // fight each other.
+  const currentPursuitCategory = pursuits.find(p => p.id === pursuitId)?.category ?? null;
+  const subtasksApplicable = currentPursuitCategory === "business" || currentPursuitCategory === "side_hustle";
+  const [subtasks, setSubtasks] = useState<JobTask[] | null>(null);
+  const [newSubtaskText, setNewSubtaskText] = useState("");
+  const [addingSubtask, setAddingSubtask] = useState(false);
+  const [subtaskBusyIds, setSubtaskBusyIds] = useState<number[]>([]);
+  const [subtaskErr, setSubtaskErr] = useState("");
+  const pctIsDerived = (subtasks?.length ?? 0) > 0;
+
+  useEffect(() => {
+    apiFetch(`${API}/jobs/${job.id}/tasks`).then(r => r.ok ? r.json() : null).then(d => setSubtasks(d?.items ?? []));
+  }, [job.id]);
+
+  async function addSubtask() {
+    if (!newSubtaskText.trim()) return;
+    setAddingSubtask(true);
+    setSubtaskErr("");
+    try {
+      const r = await apiFetch(`${API}/jobs/${job.id}/tasks`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: newSubtaskText.trim() }) });
+      if (r.ok) {
+        const data = await r.json() as { task: JobTask; pct: number | null };
+        setSubtasks(prev => [...(prev ?? []), data.task]);
+        setNewSubtaskText("");
+        if (typeof data.pct === "number") setPct(data.pct);
+      } else setSubtaskErr("Couldn't add — try again");
+    } catch { setSubtaskErr("Couldn't reach the server."); }
+    finally { setAddingSubtask(false); }
+  }
+
+  async function toggleSubtask(t: JobTask) {
+    setSubtaskBusyIds(prev => [...prev, t.id]);
+    setSubtaskErr("");
+    try {
+      const r = await apiFetch(`${API}/jobs/tasks/${t.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: !t.done }) });
+      if (r.ok) {
+        const data = await r.json() as { pct: number | null };
+        setSubtasks(prev => prev ? prev.map(x => x.id === t.id ? { ...x, done: !t.done } : x) : prev);
+        if (typeof data.pct === "number") setPct(data.pct);
+      } else setSubtaskErr("Couldn't update — try again");
+    } catch { setSubtaskErr("Couldn't reach the server."); }
+    finally { setSubtaskBusyIds(prev => prev.filter(id => id !== t.id)); }
+  }
+
+  async function deleteSubtask(id: number) {
+    setSubtaskBusyIds(prev => [...prev, id]);
+    setSubtaskErr("");
+    try {
+      const r = await apiFetch(`${API}/jobs/tasks/${id}`, { method: "DELETE" });
+      if (r.ok) {
+        const data = await r.json() as { pct: number | null };
+        setSubtasks(prev => prev ? prev.filter(x => x.id !== id) : prev);
+        if (typeof data.pct === "number") setPct(data.pct);
+      } else setSubtaskErr("Couldn't delete — try again");
+    } catch { setSubtaskErr("Couldn't reach the server."); }
+    finally { setSubtaskBusyIds(prev => prev.filter(item => item !== id)); }
+  }
+
   async function save() {
     if (!name.trim()) { setValidationErr("Name is required."); return; }
     setValidationErr("");
@@ -5138,9 +5203,30 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted }: { job: Job
           <input type="date" style={M.input} value={dueDate} onChange={e => setDueDate(e.target.value)} />
         </div>
         <div style={E.fieldGroup}>
-          <div style={E.label}>Progress — {pct}%</div>
-          <input type="range" min={0} max={100} value={pct} onChange={e => setPct(Number(e.target.value))} style={E.slider} />
+          <div style={E.label}>Progress — {pct}%{pctIsDerived ? ` (${subtasks!.filter(t => t.done).length} of ${subtasks!.length} steps)` : ""}</div>
+          {pctIsDerived ? (
+            <div style={M.track}><div style={{ ...M.fill, width: pct + "%" }} /></div>
+          ) : (
+            <input type="range" min={0} max={100} value={pct} onChange={e => setPct(Number(e.target.value))} style={E.slider} />
+          )}
         </div>
+        {subtasksApplicable && (
+          <div style={E.fieldGroup}>
+            <div style={E.label}>Steps</div>
+            {(subtasks ?? []).map(t => (
+              <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <input type="checkbox" checked={t.done} disabled={subtaskBusyIds.includes(t.id)} onChange={() => toggleSubtask(t)} />
+                <div style={{ flex: 1, ...(t.done ? { color: C.parchmentLow, textDecoration: "line-through" } : {}) }}>{t.text}</div>
+                <button style={{ ...S.prioLogLink, color: "#C87060" }} disabled={subtaskBusyIds.includes(t.id)} onClick={() => deleteSubtask(t.id)}>Remove</button>
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <input style={{ ...M.input, flex: 1 }} value={newSubtaskText} onChange={e => setNewSubtaskText(e.target.value)} placeholder="Add a step" onKeyDown={e => e.key === "Enter" && addSubtask()} />
+              <button style={{ ...S.prioLogLink }} disabled={addingSubtask || !newSubtaskText.trim()} onClick={addSubtask}>{addingSubtask ? "Adding…" : "Add"}</button>
+            </div>
+            <TapError message={subtaskErr || null} />
+          </div>
+        )}
         <div style={E.fieldGroup}>
           <div style={E.label}>Materials needed</div>
           <input style={M.input} value={materials} onChange={e => setMaterials(e.target.value)} placeholder="e.g. 4×8 aluminum, vinyl" />

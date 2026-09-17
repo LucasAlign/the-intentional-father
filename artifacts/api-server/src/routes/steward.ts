@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { db, withUserSession } from "@workspace/db";
-import { journalEntries, chatMessages, tasks, taskCompletions, commits, commitRelationshipTargets, type Commit, jobs, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit, verseFavorites, customVerses, sphereChecks, reminderEmails } from "@workspace/db";
+import { journalEntries, chatMessages, tasks, taskCompletions, commits, commitRelationshipTargets, type Commit, jobs, jobTasks, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit, verseFavorites, customVerses, sphereChecks, reminderEmails } from "@workspace/db";
 import { eq, desc, asc, gte, lte, and, ne, isNull, isNotNull, inArray, notInArray, sql } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
 import { normalizeProfileData, isToneVoice, DEFAULT_TONE_VOICE, type ProfileData, type ToneVoice } from "../lib/profile";
@@ -1662,6 +1662,86 @@ router.delete('/jobs/:id', async (req: Request, res: Response) => {
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete job' });
+  }
+});
+
+// #171 — recomputes a job's pct from its sub-tasks (checked/total, rounded)
+// whenever one changes. Does nothing if the job has no sub-tasks (pct stays
+// manual, matching JobEditModal's slider) or is completed (pct is fixed at
+// 100 while completed, per #170). Returns the resulting pct so callers can
+// hand it straight back to the client without a second read.
+async function recomputeJobPctFromTasks(userId: string, jobId: number): Promise<number | null> {
+  const rows = await db.select({ done: jobTasks.done }).from(jobTasks).where(eq(jobTasks.jobId, jobId));
+  if (rows.length === 0) return null;
+  const pct = Math.round((rows.filter(r => r.done).length / rows.length) * 100);
+  await db.update(jobs).set({ pct }).where(and(eq(jobs.id, jobId), eq(jobs.userId, userId), eq(jobs.completed, false)));
+  return pct;
+}
+
+// GET /api/jobs/:id/tasks
+router.get('/jobs/:id/tasks', async (req: Request, res: Response) => {
+  try {
+    const jobId = parseInt(req.params.id as string, 10);
+    if (isNaN(jobId)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    const items = await db.select().from(jobTasks).where(and(eq(jobTasks.jobId, jobId), eq(jobTasks.userId, req.user!.id))).orderBy(asc(jobTasks.createdAt));
+    res.json({ items });
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching job tasks');
+    res.status(500).json({ error: 'Failed to fetch job tasks' });
+  }
+});
+
+// POST /api/jobs/:id/tasks
+router.post('/jobs/:id/tasks', async (req: Request, res: Response) => {
+  try {
+    const jobId = parseInt(req.params.id as string, 10);
+    if (isNaN(jobId)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    const { text } = req.body;
+    if (typeof text !== 'string' || !text.trim()) { res.status(400).json({ error: 'text is required' }); return; }
+    const [owned] = await db.select({ id: jobs.id }).from(jobs).where(and(eq(jobs.id, jobId), eq(jobs.userId, req.user!.id))).limit(1);
+    if (!owned) { res.status(400).json({ error: 'job not found' }); return; }
+    const [row] = await db.insert(jobTasks).values({ userId: req.user!.id, jobId, text: text.trim() }).returning();
+    const pct = await recomputeJobPctFromTasks(req.user!.id, jobId);
+    res.json({ task: row, pct });
+  } catch (err) {
+    req.log?.error({ err }, 'Error creating job task');
+    res.status(500).json({ error: 'Failed to create job task' });
+  }
+});
+
+// PATCH /api/jobs/tasks/:taskId
+router.patch('/jobs/tasks/:taskId', async (req: Request, res: Response) => {
+  try {
+    const taskId = parseInt(req.params.taskId as string, 10);
+    if (isNaN(taskId)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    const { done, text } = req.body;
+    const updates: Partial<typeof jobTasks.$inferInsert> = {};
+    if (typeof done === 'boolean') updates.done = done;
+    if (typeof text === 'string' && text.trim()) updates.text = text.trim();
+    const [existing] = await db.select({ jobId: jobTasks.jobId }).from(jobTasks).where(and(eq(jobTasks.id, taskId), eq(jobTasks.userId, req.user!.id))).limit(1);
+    if (!existing) { res.status(404).json({ error: 'Task not found' }); return; }
+    if (Object.keys(updates).length > 0) await db.update(jobTasks).set(updates).where(and(eq(jobTasks.id, taskId), eq(jobTasks.userId, req.user!.id)));
+    const pct = await recomputeJobPctFromTasks(req.user!.id, existing.jobId);
+    res.json({ success: true, pct });
+  } catch (err) {
+    req.log?.error({ err }, 'Error updating job task');
+    res.status(500).json({ error: 'Failed to update job task' });
+  }
+});
+
+// DELETE /api/jobs/tasks/:taskId — hard delete, no soft-delete tier (#171)
+router.delete('/jobs/tasks/:taskId', async (req: Request, res: Response) => {
+  try {
+    const taskId = parseInt(req.params.taskId as string, 10);
+    if (isNaN(taskId)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    const [existing] = await db.select({ jobId: jobTasks.jobId }).from(jobTasks).where(and(eq(jobTasks.id, taskId), eq(jobTasks.userId, req.user!.id))).limit(1);
+    if (!existing) { res.status(404).json({ error: 'Task not found' }); return; }
+    await db.delete(jobTasks).where(and(eq(jobTasks.id, taskId), eq(jobTasks.userId, req.user!.id)));
+    const pct = await recomputeJobPctFromTasks(req.user!.id, existing.jobId);
+    res.json({ success: true, pct });
+  } catch (err) {
+    req.log?.error({ err }, 'Error deleting job task');
+    res.status(500).json({ error: 'Failed to delete job task' });
   }
 });
 
