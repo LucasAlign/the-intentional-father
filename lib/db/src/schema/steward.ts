@@ -244,8 +244,26 @@ export const jobs = pgTable("jobs", {
   expensesAmount: numeric("expenses_amount", { mode: "number" }),
   invoicedAmount: numeric("invoiced_amount", { mode: "number" }),
   invoicedDate: text("invoiced_date"),
+  // Superseded by paymentStatus below (a plain "received or not" boolean
+  // couldn't express "partially paid") — left in place, no longer read or
+  // written, same non-destructive treatment every other retired column on
+  // this table gets.
   paymentReceived: boolean("payment_received").notNull().default(false),
   paymentReceivedDate: text("payment_received_date"),
+  // #172 follow-up — invoice/payment status, gated in the UI the same way
+  // the fields above it are (visible once there's an invoiced amount).
+  // invoiceSent is independent of invoicedAmount/invoicedDate — you can
+  // record what you plan to invoice before actually sending it.
+  // paymentStatus is the "unpaid" | "partial" | "paid" replacement for the
+  // retired paymentReceived boolean; paymentReceivedDate above is reused as
+  // the date of (last) payment for this model too, gated on paymentStatus
+  // instead of the retired boolean. creditOwed is a plain flag for "a
+  // refund or credit memo is owed back to the client" — no amount field,
+  // matching this table's already-established "basic, not real invoicing
+  // software" scope.
+  invoiceSent: boolean("invoice_sent").notNull().default(false),
+  paymentStatus: text("payment_status").notNull().default("unpaid"),
+  creditOwed: boolean("credit_owed").notNull().default(false),
   // #174 — Business/Side Hustle only (UI-gated, not schema-gated, same
   // treatment every other per-category field on this table got). Job-scoped
   // fields directly on jobs, not a separate reusable clients table — same

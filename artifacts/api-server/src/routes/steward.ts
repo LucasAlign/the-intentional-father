@@ -1605,7 +1605,7 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
-    const { name, stage, due, pct, pursuitId, materials, budget, risk, notes, deleted, dueDate, completed, quotedAmount, quotedDate, depositAmount, depositDate, expensesAmount, invoicedAmount, invoicedDate, paymentReceived, paymentReceivedDate, clientName, clientContact, hoursLogged } = req.body;
+    const { name, stage, due, pct, pursuitId, materials, budget, risk, notes, deleted, dueDate, completed, quotedAmount, quotedDate, depositAmount, depositDate, expensesAmount, invoicedAmount, invoicedDate, invoiceSent, paymentStatus, paymentReceivedDate, creditOwed, clientName, clientContact, hoursLogged } = req.body;
     const updates: Partial<typeof jobs.$inferInsert> = {};
     if (name !== undefined) updates.name = name;
     if (stage !== undefined) updates.stage = stage;
@@ -1634,8 +1634,11 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
     if (expensesAmount !== undefined) updates.expensesAmount = typeof expensesAmount === 'number' ? expensesAmount : null;
     if (invoicedAmount !== undefined) updates.invoicedAmount = typeof invoicedAmount === 'number' ? invoicedAmount : null;
     if (invoicedDate !== undefined) updates.invoicedDate = typeof invoicedDate === 'string' && invoicedDate ? invoicedDate : null;
-    if (typeof paymentReceived === 'boolean') updates.paymentReceived = paymentReceived;
+    // #172 follow-up — invoice/payment status, same edit-only treatment.
+    if (typeof invoiceSent === 'boolean') updates.invoiceSent = invoiceSent;
+    if (paymentStatus === 'unpaid' || paymentStatus === 'partial' || paymentStatus === 'paid') updates.paymentStatus = paymentStatus;
     if (paymentReceivedDate !== undefined) updates.paymentReceivedDate = typeof paymentReceivedDate === 'string' && paymentReceivedDate ? paymentReceivedDate : null;
+    if (typeof creditOwed === 'boolean') updates.creditOwed = creditOwed;
     if (typeof deleted === 'boolean') {
       updates.deleted = deleted;
       updates.deletedAt = deleted ? new Date() : null;

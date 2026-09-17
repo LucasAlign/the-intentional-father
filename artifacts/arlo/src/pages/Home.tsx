@@ -34,7 +34,7 @@ interface Job {
   depositAmount: number | null; depositDate: string | null;
   expensesAmount: number | null;
   invoicedAmount: number | null; invoicedDate: string | null;
-  paymentReceived: boolean; paymentReceivedDate: string | null;
+  invoiceSent: boolean; paymentStatus: "unpaid" | "partial" | "paid"; paymentReceivedDate: string | null; creditOwed: boolean;
   clientName: string; clientContact: string;
   hoursLogged: number | null;
 }
@@ -5097,6 +5097,8 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted, onDuplicated
   const [addingSubtask, setAddingSubtask] = useState(false);
   const [subtaskBusyIds, setSubtaskBusyIds] = useState<number[]>([]);
   const [subtaskErr, setSubtaskErr] = useState("");
+  const [editingSubtaskId, setEditingSubtaskId] = useState<number | null>(null);
+  const [editingSubtaskText, setEditingSubtaskText] = useState("");
   const pctIsDerived = (subtasks?.length ?? 0) > 0;
 
   useEffect(() => {
@@ -5133,6 +5135,26 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted, onDuplicated
     finally { setSubtaskBusyIds(prev => prev.filter(id => id !== t.id)); }
   }
 
+  function startEditSubtask(t: JobTask) {
+    setEditingSubtaskId(t.id);
+    setEditingSubtaskText(t.text);
+  }
+
+  async function saveSubtaskEdit(id: number) {
+    const text = editingSubtaskText.trim();
+    if (!text) return;
+    setSubtaskBusyIds(prev => [...prev, id]);
+    setSubtaskErr("");
+    try {
+      const r = await apiFetch(`${API}/jobs/tasks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+      if (r.ok) {
+        setSubtasks(prev => prev ? prev.map(x => x.id === id ? { ...x, text } : x) : prev);
+        setEditingSubtaskId(null);
+      } else setSubtaskErr("Couldn't update — try again");
+    } catch { setSubtaskErr("Couldn't reach the server."); }
+    finally { setSubtaskBusyIds(prev => prev.filter(item => item !== id)); }
+  }
+
   async function deleteSubtask(id: number) {
     setSubtaskBusyIds(prev => [...prev, id]);
     setSubtaskErr("");
@@ -5152,8 +5174,8 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted, onDuplicated
   // so reassigning a job to a Business pursuit surfaces this section
   // immediately. Sits alongside the free-text `budget` above — that stays
   // a casual note from creation; these are the real numbers, filled in
-  // later. Payment Received is gated in the UI behind having an Invoiced
-  // Amount (can't receive payment on an invoice that doesn't exist yet).
+  // later. Invoice status is gated in the UI behind having an Invoiced
+  // Amount (can't send/be paid on an invoice that doesn't exist yet).
   const moneyApplicable = subtasksApplicable;
   const [quotedAmount, setQuotedAmount] = useState(job.quotedAmount != null ? String(job.quotedAmount) : "");
   const [quotedDate, setQuotedDate] = useState(job.quotedDate ?? "");
@@ -5162,8 +5184,18 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted, onDuplicated
   const [expensesAmount, setExpensesAmount] = useState(job.expensesAmount != null ? String(job.expensesAmount) : "");
   const [invoicedAmount, setInvoicedAmount] = useState(job.invoicedAmount != null ? String(job.invoicedAmount) : "");
   const [invoicedDate, setInvoicedDate] = useState(job.invoicedDate ?? "");
-  const [paymentReceived, setPaymentReceived] = useState(job.paymentReceived);
+  // #172 follow-up — invoice/payment status. invoiceSent and creditOwed are
+  // plain flags; paymentStatus replaces the old paymentReceived boolean
+  // with a three-way unpaid/partial/paid so a partial payment isn't forced
+  // into either bucket. paymentReceivedDate is reused as "date of payment"
+  // for whichever status is set, gated on paymentStatus instead of the old
+  // boolean. Kept basic on purpose — no amounts on the credit/refund flag,
+  // no per-payment history — real invoicing belongs in real invoicing
+  // software; a future "email/export this" link is the bridge to one.
+  const [invoiceSent, setInvoiceSent] = useState(job.invoiceSent);
+  const [paymentStatus, setPaymentStatus] = useState<"unpaid" | "partial" | "paid">(job.paymentStatus);
   const [paymentReceivedDate, setPaymentReceivedDate] = useState(job.paymentReceivedDate ?? "");
+  const [creditOwed, setCreditOwed] = useState(job.creditOwed);
   const profit = invoicedAmount.trim() || expensesAmount.trim()
     ? (Number(invoicedAmount || quotedAmount) || 0) - (Number(expensesAmount) || 0)
     : null;
@@ -5276,7 +5308,7 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted, onDuplicated
           depositAmount: parseMoney(depositAmount), depositDate: depositDate || null,
           expensesAmount: parseMoney(expensesAmount),
           invoicedAmount: parseMoney(invoicedAmount), invoicedDate: invoicedDate || null,
-          paymentReceived, paymentReceivedDate: paymentReceived ? (paymentReceivedDate || null) : null,
+          invoiceSent, paymentStatus, paymentReceivedDate: paymentStatus !== "unpaid" ? (paymentReceivedDate || null) : null, creditOwed,
           clientName: clientName.trim(), clientContact: clientContact.trim(),
           hoursLogged: hoursLogged.trim() ? Number(hoursLogged) : null,
         }),
@@ -5368,9 +5400,20 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted, onDuplicated
             <div style={E.label}>Steps</div>
             {(subtasks ?? []).map(t => (
               <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                <input type="checkbox" checked={t.done} disabled={subtaskBusyIds.includes(t.id)} onChange={() => toggleSubtask(t)} />
-                <div style={{ flex: 1, ...(t.done ? { color: C.parchmentLow, textDecoration: "line-through" } : {}) }}>{t.text}</div>
-                <button style={{ ...S.prioLogLink, color: "#C87060" }} disabled={subtaskBusyIds.includes(t.id)} onClick={() => deleteSubtask(t.id)}>Remove</button>
+                {editingSubtaskId === t.id ? (
+                  <>
+                    <input style={{ ...M.input, flex: 1 }} value={editingSubtaskText} onChange={e => setEditingSubtaskText(e.target.value)} onKeyDown={e => e.key === "Enter" && saveSubtaskEdit(t.id)} autoFocus />
+                    <button style={{ ...S.prioLogLink }} disabled={subtaskBusyIds.includes(t.id) || !editingSubtaskText.trim()} onClick={() => saveSubtaskEdit(t.id)}>Save</button>
+                    <button style={{ ...S.prioLogLink }} disabled={subtaskBusyIds.includes(t.id)} onClick={() => setEditingSubtaskId(null)}>Cancel</button>
+                  </>
+                ) : (
+                  <>
+                    <input type="checkbox" checked={t.done} disabled={subtaskBusyIds.includes(t.id)} onChange={() => toggleSubtask(t)} />
+                    <div style={{ flex: 1, ...(t.done ? { color: C.parchmentLow, textDecoration: "line-through" } : {}) }}>{t.text}</div>
+                    <button style={{ ...S.prioLogLink }} disabled={subtaskBusyIds.includes(t.id)} onClick={() => startEditSubtask(t)}>Edit</button>
+                    <button style={{ ...S.prioLogLink, color: "#C87060" }} disabled={subtaskBusyIds.includes(t.id)} onClick={() => deleteSubtask(t.id)}>Remove</button>
+                  </>
+                )}
               </div>
             ))}
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
@@ -5415,12 +5458,20 @@ function JobEditModal({ job, pursuits, onClose, onSaved, onDeleted, onDuplicated
             {invoicedAmount.trim() && (
               <div style={{ marginBottom: 8 }}>
                 <div style={E.chipRow}>
-                  <button style={{ ...E.chip, ...(paymentReceived ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setPaymentReceived(true)}>Payment received</button>
-                  <button style={{ ...E.chip, ...(!paymentReceived ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setPaymentReceived(false)}>Not yet</button>
+                  <button style={{ ...E.chip, ...(invoiceSent ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setInvoiceSent(!invoiceSent)}>Invoice sent</button>
                 </div>
-                {paymentReceived && (
-                  <input type="date" style={{ ...M.input, marginTop: 8 }} value={paymentReceivedDate} onChange={e => setPaymentReceivedDate(e.target.value)} />
+                <div style={{ ...E.label, marginTop: 10, marginBottom: 4 }}>Payment status</div>
+                <div style={E.chipRow}>
+                  <button style={{ ...E.chip, ...(paymentStatus === "unpaid" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setPaymentStatus("unpaid")}>Unpaid</button>
+                  <button style={{ ...E.chip, ...(paymentStatus === "partial" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setPaymentStatus("partial")}>Partially paid</button>
+                  <button style={{ ...E.chip, ...(paymentStatus === "paid" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setPaymentStatus("paid")}>Paid in full</button>
+                </div>
+                {paymentStatus !== "unpaid" && (
+                  <input type="date" style={{ ...M.input, marginTop: 8 }} value={paymentReceivedDate} onChange={e => setPaymentReceivedDate(e.target.value)} placeholder="Date of payment" />
                 )}
+                <div style={{ ...E.chipRow, marginTop: 10 }}>
+                  <button style={{ ...E.chip, ...(creditOwed ? { borderColor: "#C87060", color: "#C87060" } : {}) }} onClick={() => setCreditOwed(!creditOwed)}>Refund / credit memo owed</button>
+                </div>
               </div>
             )}
             {profit !== null && (
