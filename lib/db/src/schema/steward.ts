@@ -196,6 +196,14 @@ export const jobs = pgTable("jobs", {
   // optional note since materials/budget/risk are business-task-shaped),
   // but exposed as a general optional field on every job for consistency.
   notes: text("notes").notNull().default(""),
+  // #167 — Business/Side Hustle jobs can be a product, a service, or both
+  // (a sign company sells a sign AND installs it; a consultant is
+  // service-only; a side-hustle maker whose goods are sold through
+  // someone else's store is product-only) — asked once per job in the
+  // creation wizard, since the same pursuit can have jobs of either
+  // shape. Empty string for every other category, same absent-value
+  // convention as materials/budget/risk/notes above.
+  productOrService: text("product_or_service").notNull().default(""),
   // Soft-delete (#89), matching pursuits — "Delete Job" now closes rather
   // than permanently removing, with a Deleted-jobs list to Reopen from.
   deleted: boolean("deleted").notNull().default(false),

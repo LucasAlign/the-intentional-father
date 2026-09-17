@@ -1567,7 +1567,7 @@ router.get('/jobs/deleted', async (req: Request, res: Response) => {
 // POST /api/jobs
 router.post('/jobs', async (req: Request, res: Response) => {
   try {
-    const { name, stage, due, pct, pursuitId, materials, budget, risk, notes } = req.body;
+    const { name, stage, due, pct, pursuitId, materials, budget, risk, notes, productOrService } = req.body;
     if (typeof name !== 'string' || !name.trim()) { res.status(400).json({ error: 'name is required' }); return; }
     const resolved = await resolvePursuitId(req.user!.id, pursuitId, res);
     if (!resolved.ok) return; // resolvePursuitId already responded
@@ -1577,6 +1577,7 @@ router.post('/jobs', async (req: Request, res: Response) => {
       budget: typeof budget === 'string' ? budget : '',
       risk: typeof risk === 'string' ? risk : '',
       notes: typeof notes === 'string' ? notes : '',
+      productOrService: typeof productOrService === 'string' ? productOrService : '',
     }).returning();
     res.json(row);
   } catch (err) {

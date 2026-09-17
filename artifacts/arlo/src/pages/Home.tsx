@@ -27,16 +27,11 @@ interface Commit {
   // 1+ Tribe people, or an ad-hoc one-time target — never both (#72).
   relationshipIds: number[]; adHocName: string | null; adHocCategory: RelationshipCategory | null;
 }
-interface Job { id: number; biz: string; name: string; stage: string; due: string; pct: number; pursuitId: number | null; materials: string; budget: string; risk: string; notes: string; }
+interface Job { id: number; biz: string; name: string; stage: string; due: string; pct: number; pursuitId: number | null; materials: string; budget: string; risk: string; notes: string; productOrService: string; }
 type PursuitCategory = "job" | "business" | "volunteer" | "hobby" | "side_hustle" | "other";
 interface Pursuit { id: number; name: string; category: PursuitCategory; notes: string; }
 const PURSUIT_CATEGORIES: PursuitCategory[] = ["job", "business", "volunteer", "hobby", "side_hustle", "other"];
 const PURSUIT_CATEGORY_LABEL: Record<PursuitCategory, string> = { job: "Job", business: "Business", volunteer: "Volunteer", hobby: "Hobby", side_hustle: "Side Hustle", other: "Other" };
-// #91 follow-up (job/pursuit redesign) — categories a job-creation fork's
-// inline "+ New pursuit" step is allowed to offer, keyed by fork. "My job"
-// isn't listed: it never shows a category picker at all (always "job").
-const OWNABLE_PURSUIT_CATEGORIES: PursuitCategory[] = ["business", "side_hustle"];
-const OTHER_PURSUIT_CATEGORIES: PursuitCategory[] = ["volunteer", "hobby", "other"];
 interface Event { id: number; date: string; time: string; title: string; sub: string; tag: string; kind: string; }
 interface Message { role: "user" | "assistant"; content: string; }
 // commitTextDate (#94) is the date the Marriage Intention (commit_text) was
@@ -4525,71 +4520,124 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, commits, relations
 //             sub-fork) are lightweight: name + due date + notes.
 //   "else"  — Volunteer/Hobby/Other: today's original plain picker,
 //             unfiltered, no special follow-up fields.
-type JobFlowStep = "fork" | "a_pick" | "a_new" | "a_wizard" | "b_create" | "b_pick" | "b_form" | "c_pick" | "c_new" | "c_wizard";
+// #167 — job-creation flow, redesigned: a direct 6-way category picker
+// (reusing PursuitModal's own categories/labels) replaces the old abstract
+// "Something I own / My job / Something else" fork, which forced every
+// Volunteer/Hobby/Other/Side Hustle job through the same contracting-shaped
+// materials/budget/risk wizard that was actually written for Business jobs.
+type JobFlowStep = "category" | "pick" | "new_pursuit" | "product_service" | "simple_form" | "wizard";
+
+// Order shown on the category-picker screen — the two "ownable" categories
+// first (they get the deepest wizard), then Job, then the three lightest.
+const JOB_CATEGORY_ORDER: PursuitCategory[] = ["business", "side_hustle", "job", "volunteer", "hobby", "other"];
+const JOB_CATEGORY_SUB: Record<PursuitCategory, string> = {
+  business: "A business you run",
+  side_hustle: "A monetized hobby or side gig",
+  job: "Work for an employer",
+  volunteer: "Volunteer work",
+  hobby: "For enjoyment, not paid",
+  other: "Anything else",
+};
+// The "does anyone else work with you on this" branch only makes sense
+// where there's a working relationship to have in the first place — not a
+// solo hobby or a catch-all "other" pursuit.
+function managesPeopleApplicable(cat: PursuitCategory | null): boolean {
+  return cat === "business" || cat === "side_hustle" || cat === "job" || cat === "volunteer";
+}
+// Business/Side Hustle only — a sign company can sell a sign (product) AND
+// install it (service); a consultant is service-only; a side-hustle maker
+// whose goods are sold through someone else's store is product-only.
+function productServiceApplicable(cat: PursuitCategory | null): boolean {
+  return cat === "business" || cat === "side_hustle";
+}
+function simpleFormCopy(cat: PursuitCategory | null): { namePh: string; duePh: string } {
+  switch (cat) {
+    case "job": return { namePh: "e.g. Finish Q3 report, or: Finish AWS certification", duePh: "e.g. Nov 15" };
+    case "volunteer": return { namePh: "e.g. Set up chairs for Sunday service", duePh: "e.g. This Sunday" };
+    case "hobby": return { namePh: "e.g. Learn a new song, finish a painting", duePh: "Optional" };
+    default: return { namePh: "e.g. Organize the garage", duePh: "Optional" };
+  }
+}
 
 function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
   pursuits: Pursuit[]; onClose: () => void; onCreated: () => void; onPursuitCreated: () => void;
 }) {
-  const Qs = [
-    { q: "What's the job?", ph: "e.g. First Baptist — monument sign", key: "name" },
-    { q: "When does it need to be done?", ph: "e.g. June 20, end of month", key: "due" },
-    { q: "Materials needed?", ph: "e.g. 4×8 aluminum, vinyl", key: "materials" },
-    { q: "Rough budget or quote?", ph: "e.g. $2,400 or not sure", key: "budget" },
-    { q: "Anything that could slow you down?", ph: "e.g. approval, weather", key: "risk" },
-  ];
-
-  const ownablePursuits = pursuits.filter(p => p.category === "business" || p.category === "side_hustle");
-  const jobPursuits = pursuits.filter(p => p.category === "job");
-
-  const [flowStep, setFlowStep] = useState<JobFlowStep>("fork");
+  const [flowStep, setFlowStep] = useState<JobFlowStep>("category");
+  const [category, setCategory] = useState<PursuitCategory | null>(null);
   const [pursuitId, setPursuitId] = useState<number | null>(null);
   const [selectedPursuitName, setSelectedPursuitName] = useState<string | null>(null);
 
-  function selectFork(fork: "own" | "myjob" | "else") {
-    if (fork === "own") { setFlowStep("a_pick"); return; }
-    if (fork === "else") { setFlowStep("c_pick"); return; }
-    if (jobPursuits.length === 0) { setFlowStep("b_create"); return; }
-    if (jobPursuits.length === 1) {
-      setPursuitId(jobPursuits[0].id);
-      setSelectedPursuitName(jobPursuits[0].name);
-      setFlowStep("b_form");
-      return;
-    }
-    setFlowStep("b_pick");
+  function pursuitsInCategory(cat: PursuitCategory): Pursuit[] {
+    return pursuits.filter(p => p.category === cat);
   }
 
-  // ── "Something I own" — new-pursuit fields (Business/Side Hustle only) ──
+  // After a pursuit is resolved (picked, auto-selected, skipped, or just
+  // created), Business/Side Hustle still need the Product/Service branch;
+  // every other category goes straight to the lightweight flat form.
+  function proceedPastPursuit(cat: PursuitCategory) {
+    setFlowStep(productServiceApplicable(cat) ? "product_service" : "simple_form");
+  }
+
+  // Mirrors "My job"'s pre-#167 0/1/2+ auto-behavior (create straight away
+  // with none yet, auto-select the only one, otherwise show a picker) —
+  // generalized here across all six categories instead of just employee jobs.
+  function selectCategory(cat: PursuitCategory) {
+    setCategory(cat);
+    const existing = pursuitsInCategory(cat);
+    if (existing.length === 0) { setFlowStep("new_pursuit"); return; }
+    if (existing.length === 1) {
+      setPursuitId(existing[0]!.id); setSelectedPursuitName(existing[0]!.name);
+      proceedPastPursuit(cat);
+      return;
+    }
+    setFlowStep("pick");
+  }
+
+  // ── New-pursuit fields, shared across all six categories now that
+  // category is fixed before this screen (no more in-place category chips) ──
   const [newPursuitName, setNewPursuitName] = useState("");
-  const [newPursuitCategory, setNewPursuitCategory] = useState<PursuitCategory>("business");
   const [newPursuitNotes, setNewPursuitNotes] = useState("");
   const [bizTeamOrGoal, setBizTeamOrGoal] = useState("");
   const [bizDuration, setBizDuration] = useState("");
+  const [jobReportsTo, setJobReportsTo] = useState("");
+  const [jobCareerGoal, setJobCareerGoal] = useState("");
+  const [managePeople, setManagePeople] = useState<boolean | null>(null);
+  const [managePeopleDetail, setManagePeopleDetail] = useState("");
   const [creatingErr, setCreatingErr] = useState("");
   const [creating, setCreating] = useState(false);
 
-  function combinedOwnedNotes(): string {
+  function buildPursuitNotes(cat: PursuitCategory): string {
     const parts = [newPursuitNotes.trim()];
-    if (newPursuitCategory === "business") {
+    if (cat === "business") {
       if (bizTeamOrGoal.trim()) parts.push(`Team size / revenue goal: ${bizTeamOrGoal.trim()}`);
       if (bizDuration.trim()) parts.push(`Running for: ${bizDuration.trim()}`);
+    }
+    if (cat === "job") {
+      if (jobReportsTo.trim()) parts.push(`Reports to: ${jobReportsTo.trim()}`);
+      if (jobCareerGoal.trim()) parts.push(`Career goal: ${jobCareerGoal.trim()}`);
+    }
+    if (managesPeopleApplicable(cat) && managePeople) {
+      parts.push(`Works with: ${managePeopleDetail.trim() || "yes, unspecified"}`);
     }
     return parts.filter(Boolean).join(" — ");
   }
 
-  async function createOwnedPursuitAndContinue() {
+  async function createPursuitAndContinue() {
+    if (!category) return;
     if (!newPursuitName.trim()) { setCreatingErr("Name is required."); return; }
     setCreatingErr("");
     setCreating(true);
     try {
       const r = await apiFetch(`${API}/pursuits`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newPursuitName.trim(), category: newPursuitCategory, notes: combinedOwnedNotes() }),
+        body: JSON.stringify({ name: newPursuitName.trim(), category, notes: buildPursuitNotes(category) }),
       });
       if (r.ok) {
         const created = await r.json() as Pursuit;
         onPursuitCreated();
         setPursuitId(created.id);
-        setFlowStep("a_wizard");
+        setSelectedPursuitName(created.name);
+        proceedPastPursuit(category);
       } else {
         setCreatingErr("Couldn't create the pursuit. Try again.");
       }
@@ -4600,94 +4648,32 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
     }
   }
 
-  // ── "Something else" — new-pursuit fields (Volunteer/Hobby/Other, plain) ──
-  const [elsePursuitName, setElsePursuitName] = useState("");
-  const [elsePursuitCategory, setElsePursuitCategory] = useState<PursuitCategory>("volunteer");
-  const [elsePursuitNotes, setElsePursuitNotes] = useState("");
-  const [elseCreatingErr, setElseCreatingErr] = useState("");
-  const [elseCreating, setElseCreating] = useState(false);
-
-  async function createElsePursuitAndContinue() {
-    if (!elsePursuitName.trim()) { setElseCreatingErr("Name is required."); return; }
-    setElseCreatingErr("");
-    setElseCreating(true);
-    try {
-      const r = await apiFetch(`${API}/pursuits`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: elsePursuitName.trim(), category: elsePursuitCategory, notes: elsePursuitNotes.trim() }),
-      });
-      if (r.ok) {
-        const created = await r.json() as Pursuit;
-        onPursuitCreated();
-        setPursuitId(created.id);
-        setFlowStep("c_wizard");
-      } else {
-        setElseCreatingErr("Couldn't create the pursuit. Try again.");
-      }
-    } catch {
-      setElseCreatingErr("Couldn't reach the server.");
-    } finally {
-      setElseCreating(false);
-    }
+  // ── Product/Service branch (Business/Side Hustle only) ──
+  const [psProduct, setPsProduct] = useState(false);
+  const [psService, setPsService] = useState(false);
+  function productOrServiceValue(): string {
+    if (psProduct && psService) return "both";
+    if (psProduct) return "product";
+    if (psService) return "service";
+    return "";
   }
 
-  // ── "My job" — pursuit-level fields, asked once ──
-  const [myJobPursuitName, setMyJobPursuitName] = useState("");
-  const [myJobReportsTo, setMyJobReportsTo] = useState("");
-  const [myJobGoal, setMyJobGoal] = useState("");
-  const [myJobErr, setMyJobErr] = useState("");
-  const [myJobCreating, setMyJobCreating] = useState(false);
+  // ── The lightweight flat form — Job, Volunteer, Hobby, Other ──
+  const [simpleName, setSimpleName] = useState("");
+  const [simpleDue, setSimpleDue] = useState("");
+  const [simpleNotes, setSimpleNotes] = useState("");
+  const [simpleNameErr, setSimpleNameErr] = useState("");
+  const simpleSaveStatus = useSaveStatus();
 
-  async function createMyJobPursuitAndContinue() {
-    if (!myJobPursuitName.trim()) { setMyJobErr("Name is required."); return; }
-    setMyJobErr("");
-    setMyJobCreating(true);
-    try {
-      const parts = [];
-      if (myJobReportsTo.trim()) parts.push(`Reports to: ${myJobReportsTo.trim()}`);
-      if (myJobGoal.trim()) parts.push(`Career goal: ${myJobGoal.trim()}`);
-      const r = await apiFetch(`${API}/pursuits`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: myJobPursuitName.trim(), category: "job", notes: parts.join(" — ") }),
-      });
-      if (r.ok) {
-        const created = await r.json() as Pursuit;
-        onPursuitCreated();
-        setPursuitId(created.id);
-        setSelectedPursuitName(created.name);
-        setFlowStep("b_form");
-      } else {
-        setMyJobErr("Couldn't create the pursuit. Try again.");
-      }
-    } catch {
-      setMyJobErr("Couldn't reach the server.");
-    } finally {
-      setMyJobCreating(false);
-    }
-  }
-
-  function pickJobPursuit(p: Pursuit) {
-    setPursuitId(p.id);
-    setSelectedPursuitName(p.name);
-    setFlowStep("b_form");
-  }
-
-  // ── "My job" — the lightweight job form itself ──
-  const [empJobName, setEmpJobName] = useState("");
-  const [empJobDue, setEmpJobDue] = useState("");
-  const [empJobNotes, setEmpJobNotes] = useState("");
-  const [empNameErr, setEmpNameErr] = useState("");
-  const empSaveStatus = useSaveStatus();
-
-  async function submitEmployeeJob() {
-    if (!empJobName.trim()) { setEmpNameErr("Give this job a name to continue."); return; }
-    setEmpNameErr("");
-    await empSaveStatus.save(async () => {
+  async function submitSimpleJob() {
+    if (!simpleName.trim()) { setSimpleNameErr("Give this job a name to continue."); return; }
+    setSimpleNameErr("");
+    await simpleSaveStatus.save(async () => {
       const r = await apiFetch(`${API}/jobs`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: empJobName.trim(), due: empJobDue.trim(), stage: "New", pct: 0, pursuitId,
-          materials: "", budget: "", risk: "", notes: empJobNotes.trim(),
+          name: simpleName.trim(), due: simpleDue.trim(), stage: "New", pct: 0, pursuitId,
+          materials: "", budget: "", risk: "", notes: simpleNotes.trim(), productOrService: "",
         }),
       });
       if (r.ok) { onCreated(); onClose(); return true; }
@@ -4695,7 +4681,35 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
     });
   }
 
-  // ── "Something I own" / "Something else" — the shared 5-question job wizard ──
+  // ── Business/Side Hustle's shared stepped wizard ──
+  // Business keeps materials/budget/risk (unchanged shape); Side Hustle
+  // swaps in softer, non-contracting wording throughout. Business's
+  // question set additionally reacts to the Product/Service branch —
+  // Product asks about materials, Service asks about the scope of
+  // delivering it, Both asks both — rather than assuming every job is a
+  // materials-and-labor trade job the way the old shared wizard did.
+  function getQs(): { q: string; ph: string; key: string }[] {
+    const name = { q: "What's the job?", ph: "e.g. First Baptist — monument sign", key: "name" };
+    const due = { q: "When does it need to be done?", ph: "e.g. June 20, end of month", key: "due" };
+    const risk = { q: "Anything that could slow you down?", ph: "e.g. approval, weather", key: "risk" };
+    if (category === "side_hustle") {
+      return [
+        name, due,
+        { q: "What's involved?", ph: "e.g. making and packaging soap", key: "materials" },
+        { q: "Expected pay or rate?", ph: "e.g. $20/item, $150 flat", key: "budget" },
+        risk,
+      ];
+    }
+    // Business
+    const qs = [name, due];
+    if (psProduct) qs.push({ q: "Materials needed?", ph: "e.g. 4×8 aluminum, vinyl", key: "materials" });
+    if (psService) qs.push({ q: "What's involved in delivering this?", ph: "e.g. installation, consulting hours", key: "notes" });
+    qs.push({ q: "Rough budget or quote?", ph: "e.g. $2,400 or not sure", key: "budget" });
+    qs.push(risk);
+    return qs;
+  }
+  const Qs = getQs();
+
   // wizardStep runs 0..Qs.length-1 for the stepped questions, and
   // Qs.length for the final editable review/summary screen (SIM-05) —
   // mirrors SphereWalkthroughModal's `atSummary` pattern (step >= questions.length).
@@ -4716,6 +4730,7 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
         body: JSON.stringify({
           name: final.name, due: final.due || "", stage: "New", pct: 0, pursuitId,
           materials: final.materials || "", budget: final.budget || "", risk: final.risk || "",
+          notes: final.notes || "", productOrService: productOrServiceValue(),
         }),
       });
       if (r.ok) { onCreated(); onClose(); return true; }
@@ -4729,10 +4744,10 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
   function goToWizardStep(step: number) {
     setWizardNameErr("");
     setWizardStep(step);
-    setVal(answers[Qs[step].key] ?? "");
+    setVal(answers[Qs[step]!.key] ?? "");
   }
   function advanceWizard(answer: string) {
-    const step = Qs[wizardStep];
+    const step = Qs[wizardStep]!;
     const trimmed = answer.trim();
     if (step.key === "name" && !trimmed) { setWizardNameErr("Give this job a name to continue."); return; }
     setWizardNameErr("");
@@ -4741,7 +4756,7 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
     if (wizardStep < Qs.length - 1) {
       const nextStep = wizardStep + 1;
       setWizardStep(nextStep);
-      setVal(next[Qs[nextStep].key] ?? "");
+      setVal(next[Qs[nextStep]!.key] ?? "");
     } else {
       // Last question answered — land on the review/summary screen instead
       // of submitting immediately, so every answer (name included) stays
@@ -4750,7 +4765,7 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
       setVal("");
     }
   }
-  // Quick-add (SIM-05, optional stretch goal): all 5 fields on one flat
+  // Quick-add (SIM-05, optional stretch goal): all fields on one flat
   // screen for experienced users, reachable from the wizard's first
   // screen. Shares the same `answers`/submitWizardJob plumbing as the
   // stepped path, so it can't create a second way to save a blank name.
@@ -4768,49 +4783,57 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
       materials: (answers.materials ?? "").trim(),
       budget: (answers.budget ?? "").trim(),
       risk: (answers.risk ?? "").trim(),
+      notes: (answers.notes ?? "").trim(),
     });
   }
 
-  if (flowStep === "fork") {
+  if (flowStep === "category") {
     return (
       <div style={M.overlay}>
         <ModalSheet title="New Job" onClose={onClose}>
           <div style={M.q}>What's this job for?</div>
-          <button style={{ ...M.choice, display: "block", width: "100%", textAlign: "left", marginBottom: 10 }} onClick={() => selectFork("own")}>
-            <strong>Something I own</strong>
-            <div style={S.prioSub}>A business or side hustle you run</div>
-          </button>
-          <button style={{ ...M.choice, display: "block", width: "100%", textAlign: "left", marginBottom: 10 }} onClick={() => selectFork("myjob")}>
-            <strong>My job</strong>
-            <div style={S.prioSub}>Work for an employer</div>
-          </button>
-          <button style={{ ...M.choice, display: "block", width: "100%", textAlign: "left", marginBottom: 10 }} onClick={() => selectFork("else")}>
-            <strong>Something else</strong>
-            <div style={S.prioSub}>Volunteer work, a hobby, anything else</div>
-          </button>
+          {JOB_CATEGORY_ORDER.map(c => (
+            <button key={c} style={{ ...M.choice, display: "block", width: "100%", textAlign: "left", marginBottom: 10 }} onClick={() => selectCategory(c)}>
+              <strong>{PURSUIT_CATEGORY_LABEL[c]}</strong>
+              <div style={S.prioSub}>{JOB_CATEGORY_SUB[c]}</div>
+            </button>
+          ))}
           <button style={M.cancel} onClick={onClose}>Cancel</button>
         </ModalSheet>
       </div>
     );
   }
 
-  if (flowStep === "a_new") {
+  if (flowStep === "pick" && category) {
+    const existing = pursuitsInCategory(category);
     return (
       <div style={M.overlay}>
-        <ModalSheet title="New Pursuit" onClose={onClose}>
+        <ModalSheet title="New Job" onClose={onClose}>
+          <div style={M.q}>Which {PURSUIT_CATEGORY_LABEL[category].toLowerCase()} is this for?</div>
+          <div style={E.chipRow}>
+            {existing.map(p => (
+              <button key={p.id} style={E.chip} onClick={() => { setPursuitId(p.id); setSelectedPursuitName(p.name); proceedPastPursuit(category); }}>{p.name}</button>
+            ))}
+          </div>
+          <button style={M.cancel} onClick={() => setFlowStep("new_pursuit")}>＋ New {PURSUIT_CATEGORY_LABEL[category].toLowerCase()}</button>
+          {category !== "job" && (
+            <button style={M.cancel} onClick={() => { setPursuitId(null); setSelectedPursuitName(null); proceedPastPursuit(category); }}>Skip — not tied to a pursuit</button>
+          )}
+          <button style={M.cancel} onClick={() => setFlowStep("category")}>Back</button>
+        </ModalSheet>
+      </div>
+    );
+  }
+
+  if (flowStep === "new_pursuit" && category) {
+    return (
+      <div style={M.overlay}>
+        <ModalSheet title={`New ${PURSUIT_CATEGORY_LABEL[category]}`} onClose={onClose}>
           <div style={E.fieldGroup}>
             <div style={E.label}>Name</div>
-            <input style={M.input} value={newPursuitName} onChange={e => setNewPursuitName(e.target.value)} placeholder="e.g. Signs, Etsy shop" autoFocus />
+            <input style={M.input} value={newPursuitName} onChange={e => setNewPursuitName(e.target.value)} placeholder="e.g. Signs, Acme Corp, Church volunteering" autoFocus />
           </div>
-          <div style={E.fieldGroup}>
-            <div style={E.label}>Category</div>
-            <div style={E.chipRow}>
-              {OWNABLE_PURSUIT_CATEGORIES.map(c => (
-                <button key={c} style={{ ...E.chip, ...(newPursuitCategory === c ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setNewPursuitCategory(c)}>{PURSUIT_CATEGORY_LABEL[c]}</button>
-              ))}
-            </div>
-          </div>
-          {newPursuitCategory === "business" && (
+          {category === "business" && (
             <>
               <div style={E.fieldGroup}>
                 <div style={E.label}>Team size / revenue goal (optional)</div>
@@ -4822,150 +4845,85 @@ function JobModal({ pursuits, onClose, onCreated, onPursuitCreated }: {
               </div>
             </>
           )}
+          {category === "job" && (
+            <>
+              <div style={E.fieldGroup}>
+                <div style={E.label}>Who you report to (optional)</div>
+                <input style={M.input} value={jobReportsTo} onChange={e => setJobReportsTo(e.target.value)} placeholder="e.g. store manager, regional director" />
+              </div>
+              <div style={E.fieldGroup}>
+                <div style={E.label}>Career goal (optional)</div>
+                <input style={M.input} value={jobCareerGoal} onChange={e => setJobCareerGoal(e.target.value)} placeholder="e.g. promotion to team lead" />
+              </div>
+            </>
+          )}
+          {managesPeopleApplicable(category) && (
+            <div style={E.fieldGroup}>
+              <div style={E.label}>Does anyone else work with you on this?</div>
+              <div style={E.chipRow}>
+                <button style={{ ...E.chip, ...(managePeople === true ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setManagePeople(true)}>Yes</button>
+                <button style={{ ...E.chip, ...(managePeople === false ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setManagePeople(false)}>No</button>
+              </div>
+              {managePeople && (
+                <input style={{ ...M.input, marginTop: 8 }} value={managePeopleDetail} onChange={e => setManagePeopleDetail(e.target.value)} placeholder="Who, and what are they responsible for (optional)" />
+              )}
+            </div>
+          )}
           <div style={E.fieldGroup}>
             <div style={E.label}>Notes</div>
             <input style={M.input} value={newPursuitNotes} onChange={e => setNewPursuitNotes(e.target.value)} placeholder="Optional" />
           </div>
           <TapError message={creatingErr || null} />
-          <button style={M.next} disabled={creating} onClick={createOwnedPursuitAndContinue}>{creating ? "Creating…" : "Continue →"}</button>
-          <button style={M.cancel} onClick={() => setFlowStep("a_pick")}>Back</button>
+          <button style={M.next} disabled={creating} onClick={createPursuitAndContinue}>{creating ? "Creating…" : "Continue →"}</button>
+          <button style={M.cancel} onClick={() => setFlowStep(pursuitsInCategory(category).length > 0 ? "pick" : "category")}>Back</button>
         </ModalSheet>
       </div>
     );
   }
 
-  if (flowStep === "a_pick") {
+  if (flowStep === "product_service" && category) {
     return (
       <div style={M.overlay}>
-        <ModalSheet title="New Job" onClose={onClose}>
-          <div style={M.q}>Which pursuit is this for?</div>
+        <ModalSheet title="New Job" headExtra={selectedPursuitName ? <div style={S.prioSub}>{selectedPursuitName}</div> : undefined} onClose={onClose}>
+          <div style={M.q}>What does this involve?</div>
           <div style={E.chipRow}>
-            {ownablePursuits.map(p => (
-              <button key={p.id} style={E.chip} onClick={() => { setPursuitId(p.id); setSelectedPursuitName(p.name); setFlowStep("a_wizard"); }}>{p.name}</button>
-            ))}
+            <button style={{ ...E.chip, ...(psProduct ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setPsProduct(v => !v)}>Product</button>
+            <button style={{ ...E.chip, ...(psService ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setPsService(v => !v)}>Service</button>
           </div>
-          <button style={M.cancel} onClick={() => setFlowStep("a_new")}>＋ New pursuit</button>
-          <button style={M.cancel} onClick={() => { setPursuitId(null); setSelectedPursuitName(null); setFlowStep("a_wizard"); }}>Skip — not tied to a pursuit</button>
-          <button style={M.cancel} onClick={onClose}>Cancel</button>
+          <button style={M.next} disabled={!psProduct && !psService} onClick={() => setFlowStep("wizard")}>Continue →</button>
+          <button style={M.cancel} onClick={() => setFlowStep("category")}>Back</button>
         </ModalSheet>
       </div>
     );
   }
 
-  if (flowStep === "b_create") {
-    return (
-      <div style={M.overlay}>
-        <ModalSheet title="My Job" onClose={onClose}>
-          <div style={M.q}>Let's set up your job.</div>
-          <div style={{ ...S.prioSub, marginTop: -14, marginBottom: 16 }}>Asked once — you won't see this again once it exists.</div>
-          <div style={E.fieldGroup}>
-            <div style={E.label}>Name</div>
-            <input style={M.input} value={myJobPursuitName} onChange={e => setMyJobPursuitName(e.target.value)} placeholder="e.g. Acme Corp" autoFocus />
-          </div>
-          <div style={E.fieldGroup}>
-            <div style={E.label}>Who you report to (optional)</div>
-            <input style={M.input} value={myJobReportsTo} onChange={e => setMyJobReportsTo(e.target.value)} placeholder="e.g. store manager, regional director" />
-          </div>
-          <div style={E.fieldGroup}>
-            <div style={E.label}>Career goal (optional)</div>
-            <input style={M.input} value={myJobGoal} onChange={e => setMyJobGoal(e.target.value)} placeholder="e.g. promotion to team lead" />
-          </div>
-          <TapError message={myJobErr || null} />
-          <button style={M.next} disabled={myJobCreating} onClick={createMyJobPursuitAndContinue}>{myJobCreating ? "Creating…" : "Continue →"}</button>
-          <button style={M.cancel} onClick={() => setFlowStep("fork")}>Back</button>
-        </ModalSheet>
-      </div>
-    );
-  }
-
-  if (flowStep === "b_pick") {
-    return (
-      <div style={M.overlay}>
-        <ModalSheet title="New Job" onClose={onClose}>
-          <div style={M.q}>Which job is this for?</div>
-          <div style={E.chipRow}>
-            {jobPursuits.map(p => (
-              <button key={p.id} style={E.chip} onClick={() => pickJobPursuit(p)}>{p.name}</button>
-            ))}
-          </div>
-          <button style={M.cancel} onClick={() => setFlowStep("fork")}>Back</button>
-        </ModalSheet>
-      </div>
-    );
-  }
-
-  if (flowStep === "b_form") {
+  if (flowStep === "simple_form" && category) {
+    const copy = simpleFormCopy(category);
     return (
       <div style={M.overlay}>
         <ModalSheet title="New Job" headExtra={selectedPursuitName ? <div style={S.prioSub}>{selectedPursuitName}</div> : undefined} onClose={onClose}>
           <div style={E.fieldGroup}>
             <div style={E.label}>Name</div>
-            <input style={M.input} value={empJobName} onChange={e => { setEmpJobName(e.target.value); if (empNameErr) setEmpNameErr(""); }} placeholder="e.g. Finish Q3 report, or: Finish AWS certification" autoFocus />
+            <input style={M.input} value={simpleName} onChange={e => { setSimpleName(e.target.value); if (simpleNameErr) setSimpleNameErr(""); }} placeholder={copy.namePh} autoFocus />
           </div>
           <div style={E.fieldGroup}>
             <div style={E.label}>Due date (optional)</div>
-            <input style={M.input} value={empJobDue} onChange={e => setEmpJobDue(e.target.value)} placeholder="e.g. Nov 15" />
+            <input style={M.input} value={simpleDue} onChange={e => setSimpleDue(e.target.value)} placeholder={copy.duePh} />
           </div>
           <div style={E.fieldGroup}>
             <div style={E.label}>Notes</div>
-            <input style={M.input} value={empJobNotes} onChange={e => setEmpJobNotes(e.target.value)} placeholder="Optional" />
+            <input style={M.input} value={simpleNotes} onChange={e => setSimpleNotes(e.target.value)} placeholder="Optional" />
           </div>
-          <TapError message={empNameErr || null} />
-          <button style={M.next} disabled={empSaveStatus.status === "saving" || !empJobName.trim()} onClick={submitEmployeeJob}>{empSaveStatus.status === "saving" ? "Saving…" : "Add Job ✓"}</button>
-          <SaveStatus status={empSaveStatus.status} onRetry={submitEmployeeJob} />
+          <TapError message={simpleNameErr || null} />
+          <button style={M.next} disabled={simpleSaveStatus.status === "saving" || !simpleName.trim()} onClick={submitSimpleJob}>{simpleSaveStatus.status === "saving" ? "Saving…" : "Add Job ✓"}</button>
+          <SaveStatus status={simpleSaveStatus.status} onRetry={submitSimpleJob} />
           <button style={M.cancel} onClick={onClose}>Cancel</button>
         </ModalSheet>
       </div>
     );
   }
 
-  if (flowStep === "c_new") {
-    return (
-      <div style={M.overlay}>
-        <ModalSheet title="New Pursuit" onClose={onClose}>
-          <div style={E.fieldGroup}>
-            <div style={E.label}>Name</div>
-            <input style={M.input} value={elsePursuitName} onChange={e => setElsePursuitName(e.target.value)} placeholder="e.g. Church volunteering, Guitar" autoFocus />
-          </div>
-          <div style={E.fieldGroup}>
-            <div style={E.label}>Category</div>
-            <div style={E.chipRow}>
-              {OTHER_PURSUIT_CATEGORIES.map(c => (
-                <button key={c} style={{ ...E.chip, ...(elsePursuitCategory === c ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setElsePursuitCategory(c)}>{PURSUIT_CATEGORY_LABEL[c]}</button>
-              ))}
-            </div>
-          </div>
-          <div style={E.fieldGroup}>
-            <div style={E.label}>Notes</div>
-            <input style={M.input} value={elsePursuitNotes} onChange={e => setElsePursuitNotes(e.target.value)} placeholder="Optional" />
-          </div>
-          <TapError message={elseCreatingErr || null} />
-          <button style={M.next} disabled={elseCreating} onClick={createElsePursuitAndContinue}>{elseCreating ? "Creating…" : "Continue →"}</button>
-          <button style={M.cancel} onClick={() => setFlowStep("c_pick")}>Back</button>
-        </ModalSheet>
-      </div>
-    );
-  }
-
-  if (flowStep === "c_pick") {
-    return (
-      <div style={M.overlay}>
-        <ModalSheet title="New Job" onClose={onClose}>
-          <div style={M.q}>Which pursuit is this for?</div>
-          <div style={E.chipRow}>
-            {pursuits.map(p => (
-              <button key={p.id} style={E.chip} onClick={() => { setPursuitId(p.id); setSelectedPursuitName(p.name); setFlowStep("c_wizard"); }}>{p.name}</button>
-            ))}
-          </div>
-          <button style={M.cancel} onClick={() => setFlowStep("c_new")}>＋ New pursuit</button>
-          <button style={M.cancel} onClick={() => { setPursuitId(null); setSelectedPursuitName(null); setFlowStep("c_wizard"); }}>Skip — not tied to a pursuit</button>
-          <button style={M.cancel} onClick={onClose}>Cancel</button>
-        </ModalSheet>
-      </div>
-    );
-  }
-
-  // flowStep === "a_wizard" || "c_wizard" — the shared 5-question wizard
+  // flowStep === "wizard" — Business/Side Hustle's shared stepped wizard
   // (SIM-05: Back + a final editable review screen, plus an optional
   // quick-add flat form — adapted from SphereWalkthroughModal's
   // step/atSummary/nav idiom, using JobModal's own M.* styles).
