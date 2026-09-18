@@ -6876,8 +6876,20 @@ const S: Record<string, CSSProperties> = {
   sphereFieldLabel: { fontSize: 11, color: C.parchmentLow, margin: "12px 0 4px" },
   sphereFollowup: { marginTop: 14, paddingTop: 12, borderTop: "1px dashed rgba(210,190,130,0.18)" },
   sphereFollowupQ: { fontSize: 13.5, color: C.brassSoft, fontWeight: 600, marginBottom: 6, lineHeight: 1.4 },
-  sphereWizNav: { display: "flex", justifyContent: "space-between", marginTop: 18 },
-  sphereWizBtn: { background: "none", border: "1px solid rgba(210,190,130,0.28)", color: C.brassSoft, fontFamily: F, fontSize: 13, padding: "8px 16px", borderRadius: 20, cursor: "pointer" },
+  // #182 — Family's Q3 is its last stepped question, where the primary
+  // button's label switches from "Next ›" to the longer "See summary ›".
+  // Neither button declared whiteSpace/flexShrink, so on a narrow viewport
+  // the longer label could wrap onto a second line — growing the sticky
+  // footer's own height only on that one question and letting it encroach
+  // upward over the answer-button row above it (read as "a border
+  // overlapping the Next button"). Since the footer's DOM buttons persist
+  // across step changes (same JSX position, not remounted), navigating
+  // Back to Q2 right after visiting Q3 could carry over a stale sticky
+  // height briefly, before the next layout pass corrects it — matching the
+  // "persists, but slightly changed" report on Q2. Fixed by keeping every
+  // nav button single-line regardless of label length.
+  sphereWizNav: { display: "flex", justifyContent: "space-between", gap: 10, marginTop: 18 },
+  sphereWizBtn: { background: "none", border: "1px solid rgba(210,190,130,0.28)", color: C.brassSoft, fontFamily: F, fontSize: 13, padding: "8px 16px", borderRadius: 20, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 },
   sphereWizBtnPrimary: { borderColor: C.brass, color: C.brass, fontWeight: 700 },
   sphereWizBtnDanger: { display: "block", margin: "8px auto 0", borderColor: "rgba(200,112,96,0.4)", color: "#C87060", fontSize: 11.5, padding: "5px 12px" },
   sphereSummaryBox: { fontSize: 12.5, color: C.parchmentMid, lineHeight: 1.7, background: "rgba(0,0,0,0.25)", borderRadius: 10, padding: 12, marginBottom: 16, maxHeight: 260, overflowY: "auto" },
