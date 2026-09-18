@@ -526,7 +526,7 @@ function ModalSheet({ title, headExtra, footer, onClose, sheetOnClick, children 
   }, []);
 
   return (
-    <div ref={sheetRef} style={M.sheet} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} onClick={sheetOnClick}>
+    <div ref={sheetRef} className="modalSheet" style={M.sheet} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} onClick={sheetOnClick}>
       <div style={M.strip} />
       {/* h2: a modal is a sub-view opened from whatever page/screen (itself
           an h1) is behind it, so its own accessible title sits one level
@@ -1068,7 +1068,16 @@ export default function Home() {
   return (
     <HintsContext.Provider value={{ enabled: profile?.hintsEnabled === true, dismissed: profile?.dismissedHints ?? [], dismiss: dismissHint }}>
     <div style={R.root}>
-      <style>{`*{box-sizing:border-box}::-webkit-scrollbar{display:none}input::placeholder,textarea::placeholder{color:${C.parchmentLow}}@keyframes micPulse{0%,100%{box-shadow:0 0 14px ${C.brassGlow}}50%{box-shadow:0 0 26px ${C.brassGlow},0 0 40px rgba(216,170,62,0.2)}}@keyframes calendarSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
+      {/* #165 follow-up — .modalSheet's max-height is set here rather than
+          inline (M.sheet) specifically so it can use the classic two-
+          declaration fallback: a browser/WebKit build without `dvh`
+          support ignores the second line and keeps the first instead of
+          silently dropping max-height entirely (which is what an inline
+          style object would do, since a later key just overwrites the
+          earlier one — there's no way to express "ignore me if unsupported"
+          in a plain JS style object). Reported still cut off on iPad Air
+          (3rd gen) after the 88dvh→94dvh bump fixed it on iPhone SE 2. */}
+      <style>{`*{box-sizing:border-box}::-webkit-scrollbar{display:none}input::placeholder,textarea::placeholder{color:${C.parchmentLow}}@keyframes micPulse{0%,100%{box-shadow:0 0 14px ${C.brassGlow}}50%{box-shadow:0 0 26px ${C.brassGlow},0 0 40px rgba(216,170,62,0.2)}}@keyframes calendarSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}.modalSheet{max-height:94vh;max-height:94dvh}`}</style>
       <div style={R.woodLayer} />
       <div style={R.ambient} />
 
@@ -7055,7 +7064,14 @@ const M: Record<string, CSSProperties> = {
   // unit (96px/25.4mm), unaffected by the vh/dvh viewport-tracking
   // problems the rest of this investigation was chasing. Started at 8mm
   // (confirmed working), raised to 10mm on request for a bit more margin.
-  overlay: { position: "fixed", inset: 0, background: "rgba(90,58,32,0.28)", display: "flex", alignItems: "flex-end", paddingBottom: "10mm", zIndex: 200, backdropFilter: "blur(3px)" },
+  // #165 follow-up — was a physical "10mm" unit, which computes to a fixed
+  // ~37.8 CSS px on any device (1mm = 96/25.4px per the CSS spec) rather
+  // than an actual physical measurement, so it wasn't a device-aware "clear
+  // the home indicator" value despite reading like one — just an oddly
+  // spelled ~38px gap that also didn't account for a real bottom safe area
+  // on devices that have one. Replaced with an explicit px gap plus
+  // env(safe-area-inset-bottom), matching R.nav's own established pattern.
+  overlay: { position: "fixed", inset: 0, background: "rgba(90,58,32,0.28)", display: "flex", alignItems: "flex-end", paddingBottom: "calc(16px + env(safe-area-inset-bottom, 0px))", zIndex: 200, backdropFilter: "blur(3px)" },
   // maxHeight + overflowY (not a blanket `overflow: hidden`) so content
   // taller than the viewport scrolls instead of clipping inaccessibly —
   // every modal in the app shares this one sheet style (#66). 88dvh, not
@@ -7089,7 +7105,9 @@ const M: Record<string, CSSProperties> = {
   // position:fixed overlay, while the body itself is also position:fixed,
   // is a known WebKit gap in native momentum/touch scroll handling; this
   // is the standard, harmless mitigation (a no-op on non-WebKit browsers).
-  sheet: { WebkitOverflowScrolling: "touch", width: "100%", maxWidth: 440, margin: "0 auto", maxHeight: "94dvh", position: "relative", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "none", background: "linear-gradient(160deg,rgba(34,30,18,0.98),rgba(16,14,8,0.98))", backdropFilter: "blur(24px)", borderRadius: "22px 22px 0 0", padding: "24px 24px 48px", border: "1px solid rgba(210,190,130,0.18)", borderBottom: "none", boxShadow: "0 -10px 50px rgba(0,0,0,0.7)" },
+  // max-height lives in the .modalSheet CSS class (root <style> tag, near
+  // the top of Home()) instead of here — see the comment there for why.
+  sheet: { WebkitOverflowScrolling: "touch", width: "100%", maxWidth: 440, margin: "0 auto", position: "relative", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "none", background: "linear-gradient(160deg,rgba(34,30,18,0.98),rgba(16,14,8,0.98))", backdropFilter: "blur(24px)", borderRadius: "22px 22px 0 0", padding: "24px 24px 48px", border: "1px solid rgba(210,190,130,0.18)", borderBottom: "none", boxShadow: "0 -10px 50px rgba(0,0,0,0.7)" },
   strip: { position: "absolute", top: 0, left: 0, right: 0, height: 2, zIndex: 3, background: `linear-gradient(90deg,transparent,${C.brass},transparent)`, boxShadow: `0 0 14px ${C.brassGlow}` },
   // #160 — sticky so the title and close (×) button stay reachable without
   // scrolling, even once a modal's content (plus, on a short device, the
