@@ -133,6 +133,7 @@ Guidelines:
 - If today's Pulse Check shows a category clearly down, ask about it directly rather than letting it pass unmentioned — name which one (physical, mental, or spiritual) and what they noted, if anything. A category that's notably strong is worth acknowledging too. Don't force commentary on every check-in — only when it's genuinely notable, the same restraint as the slipping-priority guideline above.
 - If this week's Sphere check-in shows a category (Family, Yourself, Community, Provision, or Leadership) clearly down, or the trend shows it's been down for multiple weeks running, bring it up — but start general ("how's things been going with your health lately" rather than naming a specific struggle they haven't raised themselves) and let them steer how far into it you go. Don't dodge what's actually true, though — if they open the door, walk through it honestly rather than staying vague to be polite. Use their note if they left one, and never open by naming a sensitive specific (e.g. never lead with "what's the addiction you're still struggling with") — that's for them to bring up, not you to assume. A category that's notably strong, or one that just turned a corner after a rough stretch, is worth acknowledging too. Same restraint as Pulse Check: only when genuinely notable, not routine commentary on every check-in.
 - If their Marriage Intention hasn't been updated in a week or more, it's worth a gentle nudge — not guilt, just a direct "what's your intention for your marriage this week?" kind of question. Same restraint as the other check-ins above: only when it's actually been a while, not routine commentary.
+- If they have an active Bible reading plan and are genuinely behind (not just today's reading not yet done), and the context below flags this as the first message of today's conversation, open your reply with that before anything else — direct, not guilt-tripping, and in your own words rather than reciting the stat. If it's not the first message, mention it only when it's genuinely relevant or comes up naturally, same restraint as the other check-ins above.
 - Hold them accountable to commitments they've made to the people who matter most to them, by name where you know it — the same way you'd hold a brother to a promise.
 - If an open commitment is flagged overdue or due soon, or has sat logged a week or more with no due date, ask about it directly by name and who it was made to — the same restraint as the stuck-task guideline above, not routine commentary on every commitment.
 - Encourage real relationships and real action, never foster dependence on the app.${doNotSuggest}${alwaysRemind}${toneDelivery}
@@ -2402,9 +2403,14 @@ router.post('/chat', aiRateLimit, async (req: Request, res: Response) => {
     const userId = req.user!.id;
     const today = new Date().toISOString().split('T')[0];
 
-    const [context, todayChat, profileRow, relationshipRows, pursuitRows, favoriteRows] = await Promise.all([
-      buildTodayContext(userId, today),
-      db.select().from(chatMessages).where(and(eq(chatMessages.userId, userId), eq(chatMessages.date, today))).orderBy(asc(chatMessages.createdAt)),
+    // #191 — chat history is scoped by date (see GET /chat-history), so
+    // "today's conversation" already has a clear boundary: no rows yet for
+    // today means this new message is its first reply.
+    const todayChat = await db.select().from(chatMessages).where(and(eq(chatMessages.userId, userId), eq(chatMessages.date, today))).orderBy(asc(chatMessages.createdAt));
+    const isFirstReplyToday = todayChat.length === 0;
+
+    const [context, profileRow, relationshipRows, pursuitRows, favoriteRows] = await Promise.all([
+      buildTodayContext(userId, today, isFirstReplyToday),
       db.select().from(profileTable).where(eq(profileTable.userId, userId)).limit(1),
       db.select().from(relationships).where(eq(relationships.userId, userId)).orderBy(RELATIONSHIP_RANK_SQL, relationships.createdAt),
       db.select().from(pursuits).where(eq(pursuits.userId, userId)).orderBy(asc(pursuits.name)),

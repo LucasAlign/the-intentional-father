@@ -50,7 +50,7 @@ export async function resolveCommitWhoLabels(
 // thing rather than logic embedded in a handler — /chat is the only caller
 // today (see #12/#22's resolution: interview.ts isn't wired in yet, and
 // relationships context is dropped until #13 ships real data).
-export async function buildTodayContext(userId: string, today: string): Promise<string> {
+export async function buildTodayContext(userId: string, today: string, isFirstReplyToday: boolean = false): Promise<string> {
   const currentWeekStart = getWeekStart(new Date(today));
   // 5 completed weeks strictly before this one, for a short trend line —
   // separate from thisWeekSphere below so "this week" (with notes) never
@@ -267,7 +267,13 @@ export async function buildTodayContext(userId: string, today: string): Promise<
     } else if (view.backlog.length === 1) {
       context += `- ${view.progressPct}% through, today's reading not yet done.\n`;
     } else {
-      context += `- ${view.progressPct}% through, ${view.backlog.length} days behind (streak reset) — encourage catching up, don't nag.\n`;
+      // #191 — being genuinely behind (not just "today's not done yet") is
+      // worth opening with when this is the first reply of today's
+      // conversation, rather than waiting for it to come up naturally —
+      // otherwise it's mentioned only if relevant, same restraint as the
+      // other proactive-notice guidelines.
+      const openWith = isFirstReplyToday ? ' This is the first message of today\'s conversation — open your reply with this before anything else.' : '';
+      context += `- ${view.progressPct}% through, ${view.backlog.length} days behind (streak reset) — encourage catching up, don't nag.${openWith}\n`;
     }
     // #188 grilling, Q9 — today's reading-plan note (if any) is exactly the
     // kind of signal this proactive-notice pattern already exists to pick
