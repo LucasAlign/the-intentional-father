@@ -6707,7 +6707,16 @@ function BiblePlanManageModal({ data, onClose, onSwitched, onStartNew }: {
 
   return (
     <div style={M.overlay}>
-      <ModalSheet title="Reading Plan" onClose={onClose}>
+      <ModalSheet
+        title="Reading Plan"
+        onClose={onClose}
+        footer={(
+          <>
+            <button style={M.next} onClick={onStartNew}>Start a new plan</button>
+            <button style={{ ...M.cancel, marginTop: 8 }} onClick={onClose}>Close</button>
+          </>
+        )}
+      >
         {data.current && (
           <div style={S.card}>
             <div style={S.eyebrow}><h3 style={{ margin: 0, font: "inherit", color: "inherit" }}>CURRENT</h3></div>
@@ -6727,8 +6736,6 @@ function BiblePlanManageModal({ data, onClose, onSwitched, onStartNew }: {
         <div style={{ ...S.prioSub, marginTop: 14 }}>
           Starting a new plan keeps your current one as "previous" — but if a previous plan already exists, it will be replaced and lost.
         </div>
-        <button style={{ ...M.next, marginTop: 10 }} onClick={onStartNew}>Start a new plan</button>
-        <button style={M.cancel} onClick={onClose}>Close</button>
       </ModalSheet>
     </div>
   );
@@ -6742,13 +6749,19 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
 }) {
   const today = ymd(new Date());
   const [step, setStep] = useState(0);
+  // Only one plan type exists in Phase 1 (#189 adds the rest) — still its
+  // own explicit first pick, not silently assumed, so the flow reads as
+  // "choose a plan, then configure it" rather than opening straight into
+  // date pickers with no sense of what's being set up.
+  const [planType, setPlanType] = useState<"whole_bible" | null>(null);
   const [startDate, setStartDate] = useState(today);
   const [finishDate, setFinishDate] = useState("");
   const [testamentFirst, setTestamentFirst] = useState<"old" | "new" | null>(null);
   const [customStart, setCustomStart] = useState(false);
   const [startBook, setStartBook] = useState("");
-  const [startChapter, setStartChapter] = useState(1);
+  const [startChapter, setStartChapter] = useState<number | "">("");
   const [creating, setCreating] = useState(false);
+  const [confirmEvict, setConfirmEvict] = useState(false);
   const { error: createError, flash: flashCreateError } = useTapError();
 
   const totalDays = startDate && finishDate
@@ -6756,11 +6769,11 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
     : null;
   const versesPerDay = totalDays ? Math.round(data.approxTotalVerses / totalDays) : null;
   const effectiveStartBook = testamentFirst ? (customStart && startBook ? startBook : (testamentFirst === "old" ? "Genesis" : "Matthew")) : "";
-  const effectiveStartChapter = customStart ? startChapter : 1;
+  const effectiveStartChapter = customStart ? (startChapter || 1) : 1;
   const startBookInfo = data.books.find(b => b.name === effectiveStartBook);
   const wouldEvictPrevious = Boolean(data.current && data.previous);
 
-  const steps = ["start", "finish", "testament", "startPoint", "confirm"] as const;
+  const steps = ["type", "start", "finish", "testament", "startPoint", "confirm"] as const;
 
   async function create() {
     setCreating(true);
@@ -6776,40 +6789,83 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
       if (r.ok) onCreated();
       else flashCreateError("Couldn't create the plan — try again");
     } catch { flashCreateError("Couldn't reach the server."); }
-    finally { setCreating(false); }
+    finally { setCreating(false); setConfirmEvict(false); }
+  }
+
+  function handlePrimaryClick() {
+    if (step < steps.length - 1) { setStep(s => s + 1); return; }
+    // Last step — gate an eviction behind an explicit Yes/Cancel rather
+    // than trusting a single tap on "Create plan" next to some passive
+    // warning text above it.
+    if (wouldEvictPrevious && !confirmEvict) { setConfirmEvict(true); return; }
+    create();
   }
 
   const canAdvance = [
+    Boolean(planType),
     Boolean(startDate),
+    // #187 follow-up — no minimum plan length beyond "at least 1 day";
+    // a two-week or one-month plan is exactly as valid as a year-long one.
     Boolean(finishDate) && (totalDays ?? 0) >= 1,
     Boolean(testamentFirst),
-    !customStart || (Boolean(startBook) && startChapter >= 1 && (startBookInfo ? startChapter <= startBookInfo.chapters : false)),
+    !customStart || (Boolean(startBook) && typeof startChapter === "number" && startChapter >= 1 && (startBookInfo ? startChapter <= startBookInfo.chapters : false)),
     true,
   ][step];
 
   return (
     <div style={M.overlay}>
-      <ModalSheet title="Bible Reading Plan" headExtra={<div style={S.prioSub}>{step + 1} / {steps.length}</div>} onClose={onClose}>
+      <ModalSheet
+        title="Bible Reading Plan"
+        headExtra={<div style={S.prioSub}>{step + 1} / {steps.length}</div>}
+        onClose={onClose}
+        footer={confirmEvict ? (
+          <div style={S.sphereWizNav}>
+            <button style={S.sphereWizBtn} onClick={() => setConfirmEvict(false)}>Cancel</button>
+            <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnPrimary }} disabled={creating} onClick={create}>{creating ? "Creating…" : "Yes, continue"}</button>
+          </div>
+        ) : (
+          <>
+            <div style={S.sphereWizNav}>
+              <button style={{ ...S.sphereWizBtn, ...(step === 0 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => setStep(s => s - 1)}>‹ Back</button>
+              <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnPrimary, ...(!canAdvance ? { opacity: 0.3 } : {}) }} disabled={!canAdvance} onClick={handlePrimaryClick}>
+                {step < steps.length - 1 ? "Next ›" : (creating ? "Creating…" : "Create plan ✓")}
+              </button>
+            </div>
+            <button style={{ ...S.sphereWizBtn, marginTop: 10, width: "100%" }} onClick={onClose}>Cancel</button>
+          </>
+        )}
+      >
         <div style={M.track}><div style={{ ...M.fill, width: ((step + 1) / steps.length * 100) + "%" }} /></div>
 
         {step === 0 && (
+          <div style={E.fieldGroup}>
+            <div style={M.q}>What kind of plan?</div>
+            <button style={{ ...E.chip, display: "block", width: "100%", textAlign: "left", ...(planType === "whole_bible" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setPlanType("whole_bible")}>
+              📖 Read the whole Bible
+            </button>
+            <div style={{ ...S.prioSub, marginTop: 8 }}>More plan types (one book, a random daily reading, curated themes) are coming later.</div>
+          </div>
+        )}
+
+        {step === 1 && (
           <div style={E.fieldGroup}>
             <div style={M.q}>When do you want to start?</div>
             <input type="date" style={M.input} value={startDate} onChange={e => setStartDate(e.target.value)} />
           </div>
         )}
 
-        {step === 1 && (
+        {step === 2 && (
           <div style={E.fieldGroup}>
             <div style={M.q}>When do you want to finish?</div>
             <input type="date" style={M.input} value={finishDate} min={startDate} onChange={e => setFinishDate(e.target.value)} />
             {totalDays && versesPerDay && (
               <div style={{ ...S.prioSub, marginTop: 8 }}>{totalDays} days — about {versesPerDay} verses a day to finish on time.</div>
             )}
+            <div style={{ ...S.prioSub, marginTop: 8 }}>Any timeframe works — a few weeks, a few months, or longer.</div>
           </div>
         )}
 
-        {step === 2 && (
+        {step === 3 && (
           <div style={E.fieldGroup}>
             <div style={M.q}>Old or New Testament first?</div>
             <div style={E.chipRow}>
@@ -6820,31 +6876,35 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
           </div>
         )}
 
-        {step === 3 && testamentFirst && (
+        {step === 4 && testamentFirst && (
           <div style={E.fieldGroup}>
             <div style={M.q}>Where do you want to start?</div>
             {!customStart ? (
               <>
                 <div style={S.prioSub}>Default: {testamentFirst === "old" ? "Genesis 1" : "Matthew 1"}</div>
-                <button style={{ ...S.prioLogLink, marginTop: 8 }} onClick={() => { setCustomStart(true); setStartBook(testamentFirst === "old" ? "Genesis" : "Matthew"); }}>Pick a different starting point ›</button>
+                <button style={{ ...S.prioLogLink, marginTop: 8 }} onClick={() => setCustomStart(true)}>Pick a different starting point ›</button>
               </>
             ) : (
               <>
-                <select style={M.input} value={startBook} onChange={e => { setStartBook(e.target.value); setStartChapter(1); }}>
+                <div style={S.readingPlanLabel}>Book</div>
+                <select style={{ ...M.input, marginTop: 4 }} value={startBook} onChange={e => { setStartBook(e.target.value); setStartChapter(""); }}>
+                  <option value="">Select a book…</option>
                   {data.books.filter(b => b.testament === testamentFirst).map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
                 </select>
+                <div style={{ ...S.readingPlanLabel, marginTop: 12 }}>Chapter</div>
                 <input
-                  type="number" style={{ ...M.input, marginTop: 8 }} min={1} max={startBookInfo?.chapters ?? 1}
-                  value={startChapter} onChange={e => setStartChapter(Number(e.target.value))}
-                  placeholder={`Chapter (1-${startBookInfo?.chapters ?? "?"})`}
+                  type="number" style={{ ...M.input, marginTop: 4 }} min={1} max={startBookInfo?.chapters ?? 1}
+                  value={startChapter} disabled={!startBook}
+                  onChange={e => setStartChapter(e.target.value ? Number(e.target.value) : "")}
+                  placeholder={startBook ? `1-${startBookInfo?.chapters ?? "?"}` : "Pick a book first"}
                 />
-                <button style={{ ...S.prioLogLink, marginTop: 8 }} onClick={() => setCustomStart(false)}>Use the default instead</button>
+                <button style={{ ...S.prioLogLink, marginTop: 8 }} onClick={() => { setCustomStart(false); setStartBook(""); setStartChapter(""); }}>Use the default instead</button>
               </>
             )}
           </div>
         )}
 
-        {step === 4 && testamentFirst && (
+        {step === 5 && testamentFirst && !confirmEvict && (
           <div style={E.fieldGroup}>
             <div style={M.q}>Ready to start?</div>
             <div style={S.card}>
@@ -6854,22 +6914,20 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
             </div>
             {wouldEvictPrevious && (
               <div style={{ ...S.prioSub, color: C.brassSoft, marginTop: 10 }}>
-                Starting this plan will replace your saved previous plan, which will be lost for good.
+                Starting this plan will replace your saved previous plan — you'll be asked to confirm.
               </div>
             )}
             <TapError message={createError} />
           </div>
         )}
 
-        <div style={S.sphereWizNav}>
-          <button style={{ ...S.sphereWizBtn, ...(step === 0 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => setStep(s => s - 1)}>‹ Back</button>
-          {step < steps.length - 1 ? (
-            <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnPrimary, ...(!canAdvance ? { opacity: 0.3 } : {}) }} disabled={!canAdvance} onClick={() => setStep(s => s + 1)}>Next ›</button>
-          ) : (
-            <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnPrimary }} disabled={creating} onClick={create}>{creating ? "Creating…" : "Create plan ✓"}</button>
-          )}
-        </div>
-        <button style={{ ...S.sphereWizBtn, marginTop: 10, width: "100%" }} onClick={onClose}>Cancel</button>
+        {step === 5 && confirmEvict && (
+          <div style={E.fieldGroup}>
+            <div style={M.q}>Continue?</div>
+            <div style={{ ...S.prioSub, color: C.brassSoft }}>Your saved previous plan will be lost for good if you continue.</div>
+            <TapError message={createError} />
+          </div>
+        )}
       </ModalSheet>
     </div>
   );
