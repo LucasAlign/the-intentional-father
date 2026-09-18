@@ -1913,7 +1913,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
                   const nextDue = plan.backlog[0];
                   return (
                     <>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
                         <div style={S.readingPlanLabel}>
                           {plan.backlog.length > 1 ? "Catch up on your reading" : "Today's reading"}
                           {nextDueLater && plan.nextDueDate && (
@@ -1928,14 +1928,14 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
                       {/* #188 — today's note, if any, is a restrained
                           read-only line on the card; it's written/edited
                           from Read Ahead / Catch Up, not here. */}
-                      {plan.todayNote && <div style={{ ...S.prioSub, marginBottom: 6, fontStyle: "italic" }}>"{plan.todayNote}"</div>}
+                      {plan.todayNote && <div style={{ ...S.prioSub, marginBottom: 10, fontStyle: "italic" }}>"{plan.todayNote}"</div>}
                       {!nextDue ? (
                         <div style={S.prioSub}>
                           {nextDueLater ? "Nothing due today — you're ahead of schedule." : "All caught up — nothing due today."}
                         </div>
                       ) : (
                         <>
-                          <div style={S.readingPlanRow}>
+                          <div style={{ ...S.readingPlanRow, marginBottom: 10 }}>
                             <div style={{ flex: 1 }}>{nextDue.reading}</div>
                             <button
                               style={S.readingPlanCompleteBtn}
@@ -1946,7 +1946,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
                             </button>
                           </div>
                           {plan.backlog.length > 1 && (
-                            <div style={{ ...S.prioSub, marginTop: 4 }}>
+                            <div style={{ ...S.prioSub, marginBottom: 4 }}>
                               +{plan.backlog.length - 1} more day{plan.backlog.length - 1 === 1 ? "" : "s"} to catch up — <button style={S.readingPlanNextDueLink} onClick={() => setCatchUpOpen(true)}>Catch up ›</button>
                             </div>
                           )}
@@ -1955,8 +1955,12 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
                     </>
                   );
                 })()}
-                <div style={S.track}><div style={{ ...S.trackFill, width: biblePlanData.current.progressPct + "%", background: C.brass }} /></div>
-                <div style={{ ...S.prioSub, marginTop: 4 }}>{biblePlanData.current.progressPct}% through the plan</div>
+                {/* #188 follow-up — clearer separation from the content
+                    above (was sitting right up against the last line,
+                    reading as a stray dark bar rather than a labeled
+                    progress indicator). */}
+                <div style={{ ...S.track, marginTop: 12 }}><div style={{ ...S.trackFill, width: biblePlanData.current.progressPct + "%", background: C.brass }} /></div>
+                <div style={{ ...S.prioSub, marginTop: 6 }}>{biblePlanData.current.progressPct}% through the plan</div>
               </>
             )}
             <TapError message={planError} />
@@ -6809,12 +6813,13 @@ function MoreMenuModal({ onClose, onOpenVerseHistory, onOpenVerseFavorites, onOp
   return (
     <div style={M.overlay} onClick={onClose}>
       <ModalSheet title="More" onClose={onClose} sheetOnClick={e => e.stopPropagation()}>
-        <button style={rowStyle} onClick={onOpenVerseHistory}>Verse History</button>
+        {/* #188 follow-up — Verse History and My Verses both open the same
+            modal (My Verses lives inside it, #96, unchanged), so two
+            separate rows just opened an identical screen twice. One
+            combined row is honest about that instead of faking a
+            distinction that isn't there. */}
+        <button style={rowStyle} onClick={onOpenVerseHistory}>Verse History / My Verses</button>
         <button style={rowStyle} onClick={onOpenVerseFavorites}>Favorite Verses</button>
-        {/* My Verses (#96) lives inside the same History modal (unchanged) —
-            a separate row here for discoverability, per #188's own listing
-            of it as a distinct item, without duplicating that screen. */}
-        <button style={rowStyle} onClick={onOpenVerseHistory}>My Verses</button>
         <button style={rowStyle} onClick={onOpenReadingPlan}>Reading Plan</button>
         <button style={rowStyle} onClick={onOpenMensTopics}>Men's Topics</button>
         <button style={M.cancel} onClick={onClose}>Close</button>
