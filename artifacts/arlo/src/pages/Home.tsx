@@ -4346,6 +4346,19 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, commits, relations
             </span>
           </button>
           <button style={S.calendarTodayBtn} onClick={() => { scrollToDay(todayKey, "auto"); setCurrentMonthKey(todayMonthKey); }} aria-label="Jump to today">Today</button>
+          {/* #179 — the old entry point (a button after the full day list)
+              became unreachable once #115 widened that list to a 1.5-year
+              scroll. Calendar-wide settings, not per-day content, so it
+              belongs in the sticky header regardless — reachable from any
+              scroll position now, same overflow-menu pattern Work's header
+              already uses for its own secondary actions. */}
+          <OverflowMenu
+            label="Calendar accounts"
+            items={[
+              ...calendarAccounts.map(email => ({ label: `Remove ${email}`, onSelect: () => onDisconnectCalendar(email) })),
+              { label: "+ Add Google Calendar", onSelect: onConnectCalendar },
+            ]}
+          />
         </div>
         {/* #162 — the descriptive subtitle every other tab has was pure
             filler here (nothing it said wasn't already obvious from the
@@ -4478,15 +4491,6 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, commits, relations
           </div>
         );
       })}
-      <div style={S.calendarBottom}>
-        {calendarAccounts.length > 0 && calendarAccounts.map(email => (
-          <div key={email} style={S.calendarAccount}>
-            <span>{email}</span>
-            <button style={S.calendarRemoveBtn} onClick={() => onDisconnectCalendar(email)}>Remove</button>
-          </div>
-        ))}
-        <button style={S.calendarSmallBtn} onClick={onConnectCalendar}>Add Google Calendar</button>
-      </div>
       <div style={{ height: 32 }} />
       {editingCommit && (
         <CommitEditModal
@@ -6969,7 +6973,6 @@ const S: Record<string, CSSProperties> = {
   calendarCard: { ...glass, padding: "14px 16px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
   calendarTitle: { fontSize: 14, color: C.parchment, fontWeight: 700, marginBottom: 3 },
   calendarBtn: { background: `linear-gradient(135deg,${C.walnutMid},${C.walnut})`, border: "none", borderRadius: 12, color: C.parchment, fontSize: 14, fontWeight: 700, padding: "10px 14px", cursor: "pointer", fontFamily: F, flexShrink: 0, boxShadow: "0 2px 8px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,220,160,0.15)" },
-  calendarRemoveBtn: { background: "none", border: `1px solid rgba(200,112,96,0.4)`, borderRadius: 8, color: "#C87060", fontSize: 14, fontWeight: 600, padding: "4px 10px", cursor: "pointer", fontFamily: F, flexShrink: 0 },
   weekRow: { display: "flex", gap: 14, alignItems: "flex-start", paddingBottom: 14, marginBottom: 14, borderBottom: "1px solid rgba(210,190,130,0.12)" },
   weekToday: { ...glass, padding: "14px", border: `1px solid ${C.brass}50`, boxShadow: `0 0 18px ${C.brassGlow}`, margin: "0 -2px 14px" },
   weekL: { width: 42, flexShrink: 0 },
@@ -6978,9 +6981,6 @@ const S: Record<string, CSSProperties> = {
   weekItem: { marginBottom: 8 },
   weekItemTop: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 },
   weekTime: { fontSize: 14, color: C.brassSoft, flexShrink: 0 },
-  calendarBottom: { borderTop: "1px solid rgba(210,190,130,0.12)", marginTop: 8, paddingTop: 14, display: "flex", flexDirection: "column", gap: 8, alignItems: "stretch" },
-  calendarAccount: { display: "flex", justifyContent: "space-between", alignItems: "center", color: C.parchmentDim, fontSize: 14 },
-  calendarSmallBtn: { alignSelf: "stretch", background: "rgba(30,26,16,0.62)", border: "1px solid rgba(210,190,130,0.18)", borderRadius: 10, color: C.parchmentMid, fontSize: 14, fontWeight: 700, padding: "10px 12px", cursor: "pointer", fontFamily: F },
   // #115 — sticky calendar header: the month bar, title, subtitle, and
   // visibility toggles all stay pinned to the top of the tab's own scroll
   // container (S.scroll) as the day list scrolls beneath them, instead of
