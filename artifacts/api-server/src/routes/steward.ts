@@ -18,7 +18,7 @@ import { reminderEmailAddRateLimit, reminderEmailVerifyRateLimit } from "../midd
 import { generateEmailLoginCode, hashEmailLoginCode, EMAIL_CODE_TTL_MS, EMAIL_CODE_MAX_ATTEMPTS } from "../lib/auth";
 import { sendReminderEmailVerificationCode } from "../lib/email";
 import { getTribeIntentionText } from "../lib/tribeIntention";
-import { BIBLE_BOOKS, TOTAL_CHAPTERS, APPROX_TOTAL_VERSES, orderedChapterList, buildPlanView, defaultStartBook, isValidBook, type Testament } from "../lib/bibleCanon";
+import { BIBLE_BOOKS, TOTAL_CHAPTERS, APPROX_TOTAL_VERSES, orderedChapterList, chaptersForDay, formatReading, dayIndexForDate, buildPlanView, defaultStartBook, isValidBook, type Testament } from "../lib/bibleCanon";
 
 const MAX_PULSE_NOTE_LENGTH = 500;
 const MAX_SPHERE_NOTE_LENGTH = 500;
@@ -2078,38 +2078,48 @@ router.get('/coming-up', async (req: Request, res: Response) => {
       kind: 'work',
     }));
 
-    // #181 Phase 1 — the "current" plan's not-yet-completed days that fall
+    // #181 Phase 1 — every day of the "current" plan's schedule that falls
     // within this range, tag: "Reading Plan" giving the Calendar tab a
     // fourth independent visibility toggle, same pattern as Commitment/Job
     // above. Only "current" (never "previous") surfaces here — a plan
-    // you've switched away from shouldn't clutter the calendar.
+    // you've switched away from shouldn't clutter the calendar, and
+    // switching to a different plan should make the calendar reflect that
+    // plan instead (it always reads whichever plan is "current" right now).
+    //
+    // Deliberately NOT reusing buildPlanView's `backlog` here — that's
+    // capped at "today and any not-yet-caught-up days before it" (correct
+    // for the Verse of the Day card's own "what's due" section), so it
+    // only ever produced a single entry for whatever day happened to be
+    // outstanding, never the full forward schedule a calendar needs to
+    // show across a 1.5-year window. This computes each in-range day's
+    // assignment directly from the plan's own parameters instead.
     const [currentBiblePlan] = await db.select().from(bibleReadingPlans)
       .where(and(eq(bibleReadingPlans.userId, req.user!.id), eq(bibleReadingPlans.slot, 'current'))).limit(1);
     let readingPlanRows: CalendarEvent[] = [];
     if (currentBiblePlan) {
       const completions = await db.select({ dayIndex: bibleReadingPlanCompletions.dayIndex }).from(bibleReadingPlanCompletions)
         .where(and(eq(bibleReadingPlanCompletions.planId, currentBiblePlan.id), eq(bibleReadingPlanCompletions.userId, req.user!.id)));
-      const view = buildPlanView(
-        { ...currentBiblePlan, testamentFirst: currentBiblePlan.testamentFirst as Testament },
-        new Set(completions.map((c) => c.dayIndex)),
-        new Date().toISOString().slice(0, 10),
-      );
-      readingPlanRows = view.backlog
-        .map((entry) => {
-          const date = new Date(currentBiblePlan.startDate);
-          date.setUTCDate(date.getUTCDate() + entry.dayIndex);
-          return { date: date.toISOString().slice(0, 10), entry };
-        })
-        .filter((x) => x.date >= rangeStart && x.date <= rangeEnd)
-        .map(({ date, entry }): CalendarEvent => ({
-          id: -(3_000_000 + entry.dayIndex),
-          date,
+      const completedSet = new Set(completions.map((c) => c.dayIndex));
+      const orderedList = orderedChapterList(currentBiblePlan.testamentFirst as Testament, currentBiblePlan.startBook, currentBiblePlan.startChapter);
+      const firstDayIndex = Math.max(0, dayIndexForDate(currentBiblePlan.startDate, rangeStart));
+      const lastDayIndex = Math.min(currentBiblePlan.totalDays - 1, dayIndexForDate(currentBiblePlan.startDate, rangeEnd));
+      const startDateObj = new Date(currentBiblePlan.startDate);
+      for (let i = firstDayIndex; i <= lastDayIndex; i++) {
+        if (completedSet.has(i)) continue;
+        const reading = formatReading(chaptersForDay(i, currentBiblePlan.totalDays, orderedList));
+        if (!reading) continue;
+        const date = new Date(startDateObj);
+        date.setUTCDate(date.getUTCDate() + i);
+        readingPlanRows.push({
+          id: -(3_000_000 + i),
+          date: date.toISOString().slice(0, 10),
           time: 'All day',
-          title: entry.reading,
+          title: reading,
           sub: 'Bible reading plan',
           tag: 'Reading Plan',
           kind: 'reading-plan',
-        }));
+        });
+      }
     }
 
     res.json([...rows, ...calendarRows, ...commitRows, ...jobRows, ...readingPlanRows].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time)));
