@@ -6696,6 +6696,16 @@ function BiblePlanManageModal({ data, onClose, onSwitched, onStartNew }: {
   const [confirmDeleteSlot, setConfirmDeleteSlot] = useState<"current" | "previous" | null>(null);
   const [deletingSlot, setDeletingSlot] = useState<"current" | "previous" | null>(null);
   const { error: deleteError, flash: flashDeleteError } = useTapError();
+  // #187 follow-up — warn right where the decision is actually made (the
+  // moment "Start a new plan" is tapped), not buried at the end of the
+  // setup wizard several screens later.
+  const [confirmStartNew, setConfirmStartNew] = useState(false);
+  const wouldEvictPrevious = Boolean(data.current && data.previous);
+
+  function handleStartNewClick() {
+    if (wouldEvictPrevious && !confirmStartNew) { setConfirmStartNew(true); return; }
+    onStartNew();
+  }
 
   async function switchPlan() {
     setSwitching(true);
@@ -6759,9 +6769,14 @@ function BiblePlanManageModal({ data, onClose, onSwitched, onStartNew }: {
       <ModalSheet
         title="Reading Plan"
         onClose={onClose}
-        footer={(
+        footer={confirmStartNew ? (
+          <div style={S.sphereWizNav}>
+            <button style={S.sphereWizBtn} onClick={() => setConfirmStartNew(false)}>Cancel</button>
+            <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnPrimary }} onClick={onStartNew}>Yes, continue</button>
+          </div>
+        ) : (
           <>
-            <button style={M.next} onClick={onStartNew}>Start a new plan</button>
+            <button style={M.next} onClick={handleStartNewClick}>Start a new plan</button>
             <button style={{ ...M.cancel, marginTop: 8 }} onClick={onClose}>Close</button>
           </>
         )}
@@ -6770,9 +6785,15 @@ function BiblePlanManageModal({ data, onClose, onSwitched, onStartNew }: {
         {data.previous && renderPlanCard(data.previous, "PREVIOUS")}
         <TapError message={switchError} />
         <TapError message={deleteError} />
-        <div style={{ ...S.prioSub, marginTop: 14 }}>
-          Starting a new plan keeps your current one as "previous" — but if a previous plan already exists, it will be replaced and lost.
-        </div>
+        {confirmStartNew ? (
+          <div style={{ ...S.prioSub, color: C.brassSoft, marginTop: 14 }}>
+            Starting a new plan will permanently replace your saved previous plan. Continue?
+          </div>
+        ) : (
+          <div style={{ ...S.prioSub, marginTop: 14 }}>
+            Starting a new plan keeps your current one as "previous" — but if a previous plan already exists, it will be replaced and lost.
+          </div>
+        )}
       </ModalSheet>
     </div>
   );
@@ -6785,6 +6806,11 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
   data: BiblePlanResponse; onClose: () => void; onCreated: () => void;
 }) {
   const today = ymd(new Date());
+  function addToDate(dateStr: string, months: number): string {
+    const d = new Date(dateStr);
+    d.setMonth(d.getMonth() + months);
+    return ymd(d);
+  }
   const [step, setStep] = useState(0);
   // Only one plan type exists in Phase 1 (#189 adds the rest) — still its
   // own explicit first pick, not silently assumed, so the flow reads as
@@ -6792,14 +6818,30 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
   // date pickers with no sense of what's being set up.
   const [planType, setPlanType] = useState<"whole_bible" | null>(null);
   const [startDate, setStartDate] = useState(today);
-  const [finishDate, setFinishDate] = useState("");
+  // Preselected a year out (#187 follow-up) rather than left empty — most
+  // people picking this plan type mean "in about a year," and the preset
+  // buttons/pace picker below make it just as easy to land somewhere else.
+  const [finishDate, setFinishDate] = useState(() => addToDate(today, 12));
+  const [paceValue, setPaceValue] = useState("");
+  const [paceUnit, setPaceUnit] = useState<"chapters" | "verses">("chapters");
   const [testamentFirst, setTestamentFirst] = useState<"old" | "new" | null>(null);
   const [customStart, setCustomStart] = useState(false);
   const [startBook, setStartBook] = useState("");
   const [startChapter, setStartChapter] = useState<number | "">("");
   const [creating, setCreating] = useState(false);
-  const [confirmEvict, setConfirmEvict] = useState(false);
   const { error: createError, flash: flashCreateError } = useTapError();
+
+  function applyPace(value: string, unit: "chapters" | "verses") {
+    setPaceValue(value);
+    setPaceUnit(unit);
+    const n = Number(value);
+    if (!value || !(n > 0)) return;
+    const totalUnits = unit === "chapters" ? data.totalChapters : data.approxTotalVerses;
+    const days = Math.max(1, Math.ceil(totalUnits / n));
+    const finish = new Date(startDate);
+    finish.setDate(finish.getDate() + days - 1);
+    setFinishDate(ymd(finish));
+  }
 
   const totalDays = startDate && finishDate
     ? Math.max(1, Math.round((new Date(finishDate).getTime() - new Date(startDate).getTime()) / 86400000) + 1)
@@ -6808,7 +6850,10 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
   const effectiveStartBook = testamentFirst ? (customStart && startBook ? startBook : (testamentFirst === "old" ? "Genesis" : "Matthew")) : "";
   const effectiveStartChapter = customStart ? (startChapter || 1) : 1;
   const startBookInfo = data.books.find(b => b.name === effectiveStartBook);
-  const wouldEvictPrevious = Boolean(data.current && data.previous);
+  // #187 follow-up — the eviction warning now gates "Start a new plan" in
+  // BiblePlanManageModal, before this wizard ever opens, rather than being
+  // re-asked here at the end — one confirmation, at the point the decision
+  // is actually made, not two.
 
   const steps = ["type", "start", "finish", "testament", "startPoint", "confirm"] as const;
 
@@ -6826,15 +6871,11 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
       if (r.ok) onCreated();
       else flashCreateError("Couldn't create the plan — try again");
     } catch { flashCreateError("Couldn't reach the server."); }
-    finally { setCreating(false); setConfirmEvict(false); }
+    finally { setCreating(false); }
   }
 
   function handlePrimaryClick() {
     if (step < steps.length - 1) { setStep(s => s + 1); return; }
-    // Last step — gate an eviction behind an explicit Yes/Cancel rather
-    // than trusting a single tap on "Create plan" next to some passive
-    // warning text above it.
-    if (wouldEvictPrevious && !confirmEvict) { setConfirmEvict(true); return; }
     create();
   }
 
@@ -6855,12 +6896,7 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
         title="Bible Reading Plan"
         headExtra={<div style={S.prioSub}>{step + 1} / {steps.length}</div>}
         onClose={onClose}
-        footer={confirmEvict ? (
-          <div style={S.sphereWizNav}>
-            <button style={S.sphereWizBtn} onClick={() => setConfirmEvict(false)}>Cancel</button>
-            <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnPrimary }} disabled={creating} onClick={create}>{creating ? "Creating…" : "Yes, continue"}</button>
-          </div>
-        ) : (
+        footer={(
           <>
             <div style={S.sphereWizNav}>
               <button style={{ ...S.sphereWizBtn, ...(step === 0 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => setStep(s => s - 1)}>‹ Back</button>
@@ -6895,9 +6931,27 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
           <div style={E.fieldGroup}>
             <div style={M.q}>When do you want to finish?</div>
             <input type="date" style={M.input} value={finishDate} min={startDate} onChange={e => setFinishDate(e.target.value)} />
+            <div style={{ ...E.chipRow, marginTop: 8 }}>
+              <button style={E.chip} onClick={() => setFinishDate(addToDate(startDate, 6))}>6 months</button>
+              <button style={E.chip} onClick={() => setFinishDate(addToDate(startDate, 12))}>1 year</button>
+              <button style={E.chip} onClick={() => setFinishDate(addToDate(startDate, 18))}>1.5 years</button>
+              <button style={E.chip} onClick={() => setFinishDate(addToDate(startDate, 24))}>2 years</button>
+            </div>
             {totalDays && versesPerDay && (
               <div style={{ ...S.prioSub, marginTop: 8 }}>{totalDays} days — about {versesPerDay} verses a day to finish on time.</div>
             )}
+            <div style={{ ...S.readingPlanLabel, marginTop: 14 }}>Or set a pace</div>
+            <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+              <input
+                type="number" style={{ ...M.input, flex: 1 }} min={1} value={paceValue}
+                onChange={e => applyPace(e.target.value, paceUnit)}
+                placeholder={paceUnit === "chapters" ? "Chapters a day" : "Verses a day"}
+              />
+              <div style={E.chipRow}>
+                <button style={{ ...E.chip, ...(paceUnit === "chapters" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => applyPace(paceValue, "chapters")}>Chapters</button>
+                <button style={{ ...E.chip, ...(paceUnit === "verses" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => applyPace(paceValue, "verses")}>Verses</button>
+              </div>
+            </div>
             <div style={{ ...S.prioSub, marginTop: 8 }}>Any timeframe works — a few weeks, a few months, or longer.</div>
           </div>
         )}
@@ -6929,19 +6983,22 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
                   {data.books.filter(b => b.testament === testamentFirst).map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
                 </select>
                 <div style={{ ...S.readingPlanLabel, marginTop: 12 }}>Chapter</div>
-                <input
-                  type="number" style={{ ...M.input, marginTop: 4 }} min={1} max={startBookInfo?.chapters ?? 1}
-                  value={startChapter} disabled={!startBook}
-                  onChange={e => setStartChapter(e.target.value ? Number(e.target.value) : "")}
-                  placeholder={startBook ? `1-${startBookInfo?.chapters ?? "?"}` : "Pick a book first"}
-                />
+                <select
+                  style={{ ...M.input, marginTop: 4 }} disabled={!startBook}
+                  value={startChapter} onChange={e => setStartChapter(e.target.value ? Number(e.target.value) : "")}
+                >
+                  <option value="">{startBook ? "Select a chapter…" : "Pick a book first"}</option>
+                  {startBookInfo && Array.from({ length: startBookInfo.chapters }, (_, i) => i + 1).map(n => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </select>
                 <button style={{ ...S.prioLogLink, marginTop: 8 }} onClick={() => { setCustomStart(false); setStartBook(""); setStartChapter(""); }}>Use the default instead</button>
               </>
             )}
           </div>
         )}
 
-        {step === 5 && testamentFirst && !confirmEvict && (
+        {step === 5 && testamentFirst && (
           <div style={E.fieldGroup}>
             <div style={M.q}>Ready to start?</div>
             <div style={S.card}>
@@ -6949,19 +7006,6 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
               <div style={S.prioSub}>{testamentFirst === "old" ? "Old Testament" : "New Testament"} first, starting {effectiveStartBook} {effectiveStartChapter}</div>
               {versesPerDay && <div style={S.prioSub}>About {versesPerDay} verses a day</div>}
             </div>
-            {wouldEvictPrevious && (
-              <div style={{ ...S.prioSub, color: C.brassSoft, marginTop: 10 }}>
-                Starting this plan will replace your saved previous plan — you'll be asked to confirm.
-              </div>
-            )}
-            <TapError message={createError} />
-          </div>
-        )}
-
-        {step === 5 && confirmEvict && (
-          <div style={E.fieldGroup}>
-            <div style={M.q}>Continue?</div>
-            <div style={{ ...S.prioSub, color: C.brassSoft }}>Your saved previous plan will be lost for good if you continue.</div>
             <TapError message={createError} />
           </div>
         )}
@@ -7482,7 +7526,17 @@ const M: Record<string, CSSProperties> = {
   // spelled ~38px gap that also didn't account for a real bottom safe area
   // on devices that have one. Replaced with an explicit px gap plus
   // env(safe-area-inset-bottom), matching R.nav's own established pattern.
-  overlay: { position: "fixed", inset: 0, background: "rgba(90,58,32,0.28)", display: "flex", alignItems: "flex-end", paddingBottom: "calc(16px + env(safe-area-inset-bottom, 0px))", zIndex: 200, backdropFilter: "blur(3px)" },
+  // #165 follow-up — bumped from 16px: still a small residual cutoff
+  // reported after the dvh fixes. A likely further cause (not yet acted
+  // on, needs live confirmation first): R.root has `overflow: hidden`,
+  // and a `position: fixed` descendant can still get clipped to an
+  // ancestor's overflow box in some browsers even without a transform —
+  // if so, the real fix is portaling ModalSheet's dialog out of R.root's
+  // subtree (via createPortal to document.body), not another padding
+  // number. Leaving that undone until confirmed live, since it's a
+  // structural change touching every modal in the app (~30+ call sites)
+  // rather than another safe, local tweak.
+  overlay: { position: "fixed", inset: 0, background: "rgba(90,58,32,0.28)", display: "flex", alignItems: "flex-end", paddingBottom: "calc(28px + env(safe-area-inset-bottom, 0px))", zIndex: 200, backdropFilter: "blur(3px)" },
   // maxHeight + overflowY (not a blanket `overflow: hidden`) so content
   // taller than the viewport scrolls instead of clipping inaccessibly —
   // every modal in the app shares this one sheet style (#66). 88dvh, not
