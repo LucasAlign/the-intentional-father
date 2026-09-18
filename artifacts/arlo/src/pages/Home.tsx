@@ -7308,7 +7308,7 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
   // (chapters/verses per day). Tracking which preset key is active,
   // separately from paceUnit, is what lets picking one visibly clear the
   // other's highlight instead of both looking "selected" at once.
-  const [selectedPreset, setSelectedPreset] = useState<"1w" | "1m" | "3m" | "6m" | null>(null);
+  const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
   const [testamentFirst, setTestamentFirst] = useState<"old" | "new" | null>(null);
   const [customStart, setCustomStart] = useState(false);
   const [startBook, setStartBook] = useState("");
@@ -7343,17 +7343,29 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
     setFinishDate(ymd(finish));
   }
 
-  function applyPreset(key: "1w" | "1m" | "3m" | "6m") {
-    setSelectedPreset(key);
+  // #187 follow-up (whole_bible's original 6mo/1yr/1.5yr/2yr, left intact)
+  // vs. a direct follow-up request scoping the shorter 1wk/1mo/3mo/6mo set
+  // to One Book only — a book is a much smaller undertaking than the whole
+  // Bible, so its own presets skew toward weeks/months instead of years.
+  interface FinishPreset { key: string; label: string; toFinishDate: (start: string) => string; }
+  const WHOLE_BIBLE_PRESETS: FinishPreset[] = [
+    { key: "6mo", label: "6 months", toFinishDate: s => addToDate(s, 6) },
+    { key: "1yr", label: "1 year", toFinishDate: s => addToDate(s, 12) },
+    { key: "1.5yr", label: "1.5 years", toFinishDate: s => addToDate(s, 18) },
+    { key: "2yr", label: "2 years", toFinishDate: s => addToDate(s, 24) },
+  ];
+  const ONE_BOOK_PRESETS: FinishPreset[] = [
+    { key: "1w", label: "1 week", toFinishDate: s => { const d = new Date(s); d.setDate(d.getDate() + 7); return ymd(d); } },
+    { key: "1m", label: "1 month", toFinishDate: s => addToDate(s, 1) },
+    { key: "3m", label: "3 months", toFinishDate: s => addToDate(s, 3) },
+    { key: "6m", label: "6 months", toFinishDate: s => addToDate(s, 6) },
+  ];
+  const finishPresets = planType === "one_book" ? ONE_BOOK_PRESETS : WHOLE_BIBLE_PRESETS;
+
+  function applyPreset(preset: FinishPreset) {
+    setSelectedPreset(preset.key);
     setPaceValue("");
-    if (key === "1w") {
-      const d = new Date(startDate);
-      d.setDate(d.getDate() + 7);
-      setFinishDate(ymd(d));
-      return;
-    }
-    const months = key === "1m" ? 1 : key === "3m" ? 3 : 6;
-    setFinishDate(addToDate(startDate, months));
+    setFinishDate(preset.toFinishDate(startDate));
   }
 
   const totalDays = startDate && finishDate
@@ -7484,10 +7496,15 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
             <div style={M.q}>When do you want to finish?</div>
             <input type="date" style={M.input} value={finishDate} min={startDate} onChange={e => { setSelectedPreset(null); setPaceValue(""); setFinishDate(e.target.value); }} />
             <div style={{ ...E.chipRow, marginTop: 8 }}>
-              <button style={{ ...E.chip, ...(selectedPreset === "1w" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => applyPreset("1w")}>1 week</button>
-              <button style={{ ...E.chip, ...(selectedPreset === "1m" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => applyPreset("1m")}>1 month</button>
-              <button style={{ ...E.chip, ...(selectedPreset === "3m" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => applyPreset("3m")}>3 months</button>
-              <button style={{ ...E.chip, ...(selectedPreset === "6m" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => applyPreset("6m")}>6 months</button>
+              {finishPresets.map(preset => (
+                <button
+                  key={preset.key}
+                  style={{ ...E.chip, ...(selectedPreset === preset.key ? { borderColor: C.brass, color: C.brass } : {}) }}
+                  onClick={() => applyPreset(preset)}
+                >
+                  {preset.label}
+                </button>
+              ))}
             </div>
             {totalDays && versesPerDay && (
               <div style={{ ...S.prioSub, marginTop: 8 }}>{totalDays} days — about {versesPerDay} verses a day to finish on time.</div>
