@@ -129,6 +129,70 @@ export function orderedChapterList(testamentFirst: Testament, startBook: string,
   return list;
 }
 
+// #189 Phase 3 — One Book: every chapter of a single book, in order,
+// always starting at chapter 1 (#189 grilling, Q2 — no custom start-point,
+// unlike whole_bible, since picking a book already fully specifies where
+// to start).
+export function chaptersForBook(book: string): ChapterRef[] {
+  const bookInfo = bookByName.get(book);
+  if (!bookInfo) throw new Error(`Unknown book: ${book}`);
+  const list: ChapterRef[] = [];
+  for (let ch = 1; ch <= bookInfo.chapters; ch++) list.push({ book: bookInfo.name, chapter: ch });
+  return list;
+}
+
+// #189 Phase 3 — Random Chapter: a deterministic shuffle of all 1189
+// chapters, seeded so the exact same order is reproducible from just the
+// seed (#189 grilling, Q7) — never persisted as a materialized sequence.
+// mulberry32 is a small, fast, seedable PRNG; good enough for shuffling a
+// reading order, no cryptographic requirement here.
+function mulberry32(seed: number): () => number {
+  let a = seed;
+  return () => {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+export function shuffledChapterList(seed: number): ChapterRef[] {
+  const list: ChapterRef[] = [];
+  for (const book of BIBLE_BOOKS) {
+    for (let ch = 1; ch <= book.chapters; ch++) list.push({ book: book.name, chapter: ch });
+  }
+  const rand = mulberry32(seed);
+  // Fisher-Yates, using the seeded generator so the same seed always
+  // produces the exact same shuffle.
+  for (let i = list.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [list[i], list[j]] = [list[j] as ChapterRef, list[i] as ChapterRef];
+  }
+  return list;
+}
+
+// #189 Phase 3 — a random_chapter plan always runs the full shuffle, one
+// chapter a day, so totalDays stays a fixed, non-nullable number just like
+// every other plan type (#189 grilling, Q6) rather than needing an
+// open-ended plan concept the schema doesn't otherwise support.
+export const RANDOM_CHAPTER_TOTAL_DAYS = TOTAL_CHAPTERS;
+
+export type PlanType = "whole_bible" | "one_book" | "random_chapter";
+
+export function isValidPlanType(v: unknown): v is PlanType {
+  return v === "whole_bible" || v === "one_book" || v === "random_chapter";
+}
+
+// The one place that decides which ordered list a plan is actually reading
+// through — buildPlanView and everything downstream of it (the Calendar
+// merge, Steward's chat context) stays agnostic to plan type by always
+// going through this first, never calling orderedChapterList directly.
+export function buildOrderedList(plan: { planType: string; testamentFirst: Testament; startBook: string; startChapter: number; randomSeed: number | null }): ChapterRef[] {
+  if (plan.planType === "one_book") return chaptersForBook(plan.startBook);
+  if (plan.planType === "random_chapter") return shuffledChapterList(plan.randomSeed ?? 0);
+  return orderedChapterList(plan.testamentFirst, plan.startBook, plan.startChapter);
+}
+
 // Evenly distributes the ordered chapter list across totalDays using
 // cumulative rounding (the standard "spread N items over M buckets" trick)
 // so every day gets a whole number of chapters summing exactly to the
@@ -239,11 +303,11 @@ export interface PlanView {
 }
 
 export function buildPlanView(
-  plan: { startDate: string; totalDays: number; testamentFirst: Testament; startBook: string; startChapter: number },
+  plan: { planType: string; startDate: string; totalDays: number; testamentFirst: Testament; startBook: string; startChapter: number; randomSeed: number | null },
   completedDayIndexes: Set<number>,
   todayStr: string,
 ): PlanView {
-  const orderedList = orderedChapterList(plan.testamentFirst, plan.startBook, plan.startChapter);
+  const orderedList = buildOrderedList(plan);
   const rawDayIndex = dayIndexForDate(plan.startDate, todayStr);
   const currentDayIndex = Math.max(0, Math.min(rawDayIndex, plan.totalDays - 1));
   const isPlanComplete = rawDayIndex >= plan.totalDays && completedDayIndexes.size >= plan.totalDays;

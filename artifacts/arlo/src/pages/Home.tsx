@@ -6932,8 +6932,11 @@ function BiblePlanManageModal({ data, onClose, onSwitched, onStartNew }: {
   }
 
   function summarize(plan: BiblePlan): string {
+    const progress = `${plan.progressPct}% through, ${plan.streak}-day streak`;
+    if (plan.planType === "one_book") return `Reading through ${plan.startBook} — ${progress}`;
+    if (plan.planType === "random_chapter") return `Random chapter each day — ${progress}`;
     const testament = plan.testamentFirst === "old" ? "Old Testament" : "New Testament";
-    return `${testament} first, starting ${plan.startBook} ${plan.startChapter} — ${plan.progressPct}% through, ${plan.streak}-day streak`;
+    return `${testament} first, starting ${plan.startBook} ${plan.startChapter} — ${progress}`;
   }
 
   function renderPlanCard(plan: BiblePlan, label: string) {
@@ -7266,6 +7269,22 @@ function BiblePlanCatchUpModal({ plan, onClose, onSaved }: {
 // #181 Phase 1 — the guided setup flow, reusing this app's existing
 // stepped-wizard shell (same shape JobModal's creation wizard and
 // SphereWalkthroughModal already use) rather than inventing a new one.
+// #189 Phase 3 — Themes deliberately excluded (deferred, #189 grilling Q9:
+// blocked on real content curation the user wants to own directly).
+type BiblePlanTypeChoice = "whole_bible" | "one_book" | "random_chapter";
+type SetupWizardStep = "type" | "book" | "start" | "finish" | "testament" | "startPoint" | "confirm";
+
+// The step sequence branches by plan type: one_book drops testament/
+// start-point in favor of a single book-picker (#189 grilling, Q2 — always
+// starts at chapter 1); random_chapter drops the finish-date step entirely
+// (its length is always the full shuffle, #189 grilling, Q6) along with
+// testament/start-point (there's no fixed starting point to choose).
+function stepsForPlanType(planType: BiblePlanTypeChoice | null): SetupWizardStep[] {
+  if (planType === "one_book") return ["type", "book", "start", "finish", "confirm"];
+  if (planType === "random_chapter") return ["type", "start", "confirm"];
+  return ["type", "start", "finish", "testament", "startPoint", "confirm"];
+}
+
 function BiblePlanSetupModal({ data, onClose, onCreated }: {
   data: BiblePlanResponse; onClose: () => void; onCreated: () => void;
 }) {
@@ -7276,11 +7295,7 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
     return ymd(d);
   }
   const [step, setStep] = useState(0);
-  // Only one plan type exists in Phase 1 (#189 adds the rest) — still its
-  // own explicit first pick, not silently assumed, so the flow reads as
-  // "choose a plan, then configure it" rather than opening straight into
-  // date pickers with no sense of what's being set up.
-  const [planType, setPlanType] = useState<"whole_bible" | null>(null);
+  const [planType, setPlanType] = useState<BiblePlanTypeChoice | null>(null);
   const [startDate, setStartDate] = useState(today);
   // Preselected a year out (#187 follow-up) rather than left empty — most
   // people picking this plan type mean "in about a year," and the preset
@@ -7298,8 +7313,22 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
   const [customStart, setCustomStart] = useState(false);
   const [startBook, setStartBook] = useState("");
   const [startChapter, setStartChapter] = useState<number | "">("");
+  // #189 Phase 3 — One Book's own book choice, kept separate from
+  // whole_bible's optional custom-start-point `startBook` above so the two
+  // plan types' state can't cross-contaminate if the user flips between
+  // them on the type step.
+  const [oneBookChoice, setOneBookChoice] = useState("");
   const [creating, setCreating] = useState(false);
   const { error: createError, flash: flashCreateError } = useTapError();
+
+  const oneBookInfo = data.books.find(b => b.name === oneBookChoice);
+  // #189 Phase 3 — no per-book verse count exists, so this scales the same
+  // flat whole-Bible verses/chapters ratio the pace picker already uses,
+  // same estimate-not-real-data tradeoff as APPROX_TOTAL_VERSES itself.
+  const totalChaptersForPace = planType === "one_book" ? (oneBookInfo?.chapters ?? 0) : data.totalChapters;
+  const totalVersesForPace = planType === "one_book"
+    ? Math.round((data.approxTotalVerses / data.totalChapters) * (oneBookInfo?.chapters ?? 0))
+    : data.approxTotalVerses;
 
   function applyPace(value: string, unit: "chapters" | "verses") {
     setSelectedPreset(null);
@@ -7307,7 +7336,7 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
     setPaceUnit(unit);
     const n = Number(value);
     if (!value || !(n > 0)) return;
-    const totalUnits = unit === "chapters" ? data.totalChapters : data.approxTotalVerses;
+    const totalUnits = unit === "chapters" ? totalChaptersForPace : totalVersesForPace;
     const days = Math.max(1, Math.ceil(totalUnits / n));
     const finish = new Date(startDate);
     finish.setDate(finish.getDate() + days - 1);
@@ -7323,7 +7352,7 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
   const totalDays = startDate && finishDate
     ? Math.max(1, Math.round((new Date(finishDate).getTime() - new Date(startDate).getTime()) / 86400000) + 1)
     : null;
-  const versesPerDay = totalDays ? Math.round(data.approxTotalVerses / totalDays) : null;
+  const versesPerDay = totalDays ? Math.round(totalVersesForPace / totalDays) : null;
   const effectiveStartBook = testamentFirst ? (customStart && startBook ? startBook : (testamentFirst === "old" ? "Genesis" : "Matthew")) : "";
   const effectiveStartChapter = customStart ? (startChapter || 1) : 1;
   const startBookInfo = data.books.find(b => b.name === effectiveStartBook);
@@ -7332,18 +7361,31 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
   // re-asked here at the end — one confirmation, at the point the decision
   // is actually made, not two.
 
-  const steps = ["type", "start", "finish", "testament", "startPoint", "confirm"] as const;
+  // #189 Phase 3 — random_chapter always runs the full shuffle (1189 days,
+  // #189 grilling Q6); data.totalChapters IS that same constant (TOTAL_
+  // CHAPTERS) from the server, so no separate field is needed for it.
+  const randomChapterEndDate = addToDate(startDate, Math.ceil((data.totalChapters / 30.44)));
+
+  const steps = stepsForPlanType(planType);
+  const stepName = steps[step]!;
 
   async function create() {
     setCreating(true);
     try {
+      const body: Record<string, unknown> = { planType, startDate };
+      if (planType === "one_book") {
+        body.startBook = oneBookChoice;
+        body.totalDays = totalDays;
+      } else if (planType === "whole_bible") {
+        body.testamentFirst = testamentFirst;
+        body.totalDays = totalDays;
+        if (customStart) { body.startBook = startBook; body.startChapter = startChapter; }
+      }
+      // random_chapter needs nothing else — the server fixes totalDays and
+      // generates its own shuffle seed.
       const r = await apiFetch(`${API}/bible-plan`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          startDate, totalDays, testamentFirst,
-          startBook: customStart ? startBook : undefined,
-          startChapter: customStart ? startChapter : undefined,
-        }),
+        body: JSON.stringify(body),
       });
       if (r.ok) onCreated();
       else flashCreateError("Couldn't create the plan — try again");
@@ -7356,16 +7398,20 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
     create();
   }
 
-  const canAdvance = [
-    Boolean(planType),
-    Boolean(startDate),
-    // #187 follow-up — no minimum plan length beyond "at least 1 day";
-    // a two-week or one-month plan is exactly as valid as a year-long one.
-    Boolean(finishDate) && (totalDays ?? 0) >= 1,
-    Boolean(testamentFirst),
-    !customStart || (Boolean(startBook) && typeof startChapter === "number" && startChapter >= 1 && (startBookInfo ? startChapter <= startBookInfo.chapters : false)),
-    true,
-  ][step];
+  function canAdvanceFor(name: SetupWizardStep): boolean {
+    switch (name) {
+      case "type": return Boolean(planType);
+      case "book": return Boolean(oneBookChoice);
+      case "start": return Boolean(startDate);
+      // #187 follow-up — no minimum plan length beyond "at least 1 day";
+      // a two-week or one-month plan is exactly as valid as a year-long one.
+      case "finish": return Boolean(finishDate) && (totalDays ?? 0) >= 1;
+      case "testament": return Boolean(testamentFirst);
+      case "startPoint": return !customStart || (Boolean(startBook) && typeof startChapter === "number" && startChapter >= 1 && (startBookInfo ? startChapter <= startBookInfo.chapters : false));
+      case "confirm": return true;
+    }
+  }
+  const canAdvance = canAdvanceFor(stepName);
 
   return (
     <div style={M.overlay}>
@@ -7387,24 +7433,46 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
       >
         <div style={M.track}><div style={{ ...M.fill, width: ((step + 1) / steps.length * 100) + "%" }} /></div>
 
-        {step === 0 && (
+        {stepName === "type" && (
           <div style={E.fieldGroup}>
             <div style={M.q}>What kind of plan?</div>
             <button style={{ ...E.chip, display: "block", width: "100%", textAlign: "left", ...(planType === "whole_bible" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setPlanType("whole_bible")}>
               📖 Read the whole Bible
             </button>
-            <div style={{ ...S.prioSub, marginTop: 8 }}>More plan types (one book, a random daily reading, curated themes) are coming later.</div>
+            <button style={{ ...E.chip, display: "block", width: "100%", textAlign: "left", marginTop: 8, ...(planType === "one_book" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setPlanType("one_book")}>
+              📗 Read one book
+            </button>
+            <button style={{ ...E.chip, display: "block", width: "100%", textAlign: "left", marginTop: 8, ...(planType === "random_chapter" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setPlanType("random_chapter")}>
+              🎲 Random chapter each day
+            </button>
+            <div style={{ ...S.prioSub, marginTop: 8 }}>Curated topical plans (Men's Topics) are coming later.</div>
           </div>
         )}
 
-        {step === 1 && (
+        {stepName === "book" && (
+          <div style={E.fieldGroup}>
+            <div style={M.q}>Which book?</div>
+            <select style={{ ...M.input, marginTop: 4 }} value={oneBookChoice} onChange={e => setOneBookChoice(e.target.value)}>
+              <option value="">Select a book…</option>
+              {data.books.map(b => <option key={b.name} value={b.name}>{b.name} ({b.chapters} chapters)</option>)}
+            </select>
+            <div style={{ ...S.prioSub, marginTop: 8 }}>Always starts at chapter 1.</div>
+          </div>
+        )}
+
+        {stepName === "start" && (
           <div style={E.fieldGroup}>
             <div style={M.q}>When do you want to start?</div>
             <input type="date" style={M.input} value={startDate} onChange={e => setStartDate(e.target.value)} />
+            {planType === "random_chapter" && (
+              <div style={{ ...S.prioSub, marginTop: 8 }}>
+                One random chapter a day, no repeats until you've read the whole Bible — about {randomChapterEndDate}, {data.totalChapters} days total.
+              </div>
+            )}
           </div>
         )}
 
-        {step === 2 && (
+        {stepName === "finish" && (
           <div style={E.fieldGroup}>
             <div style={M.q}>When do you want to finish?</div>
             <input type="date" style={M.input} value={finishDate} min={startDate} onChange={e => { setSelectedPreset(null); setPaceValue(""); setFinishDate(e.target.value); }} />
@@ -7433,7 +7501,7 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
           </div>
         )}
 
-        {step === 3 && (
+        {stepName === "testament" && (
           <div style={E.fieldGroup}>
             <div style={M.q}>Old or New Testament first?</div>
             <div style={E.chipRow}>
@@ -7444,7 +7512,7 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
           </div>
         )}
 
-        {step === 4 && testamentFirst && (
+        {stepName === "startPoint" && testamentFirst && (
           <div style={E.fieldGroup}>
             <div style={M.q}>Where do you want to start?</div>
             {!customStart ? (
@@ -7475,13 +7543,31 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
           </div>
         )}
 
-        {step === 5 && testamentFirst && (
+        {stepName === "confirm" && (
           <div style={E.fieldGroup}>
             <div style={M.q}>Ready to start?</div>
             <div style={S.card}>
-              <div style={S.prioSub}>{startDate} → {finishDate} ({totalDays} days)</div>
-              <div style={S.prioSub}>{testamentFirst === "old" ? "Old Testament" : "New Testament"} first, starting {effectiveStartBook} {effectiveStartChapter}</div>
-              {versesPerDay && <div style={S.prioSub}>About {versesPerDay} verses a day</div>}
+              {planType === "whole_bible" && testamentFirst && (
+                <>
+                  <div style={S.prioSub}>{startDate} → {finishDate} ({totalDays} days)</div>
+                  <div style={S.prioSub}>{testamentFirst === "old" ? "Old Testament" : "New Testament"} first, starting {effectiveStartBook} {effectiveStartChapter}</div>
+                  {versesPerDay && <div style={S.prioSub}>About {versesPerDay} verses a day</div>}
+                </>
+              )}
+              {planType === "one_book" && (
+                <>
+                  <div style={S.prioSub}>{startDate} → {finishDate} ({totalDays} days)</div>
+                  <div style={S.prioSub}>Reading through {oneBookChoice}</div>
+                  {versesPerDay && <div style={S.prioSub}>About {versesPerDay} verses a day</div>}
+                </>
+              )}
+              {planType === "random_chapter" && (
+                <>
+                  <div style={S.prioSub}>Starting {startDate}</div>
+                  <div style={S.prioSub}>One random chapter a day, no repeats until you've read the whole Bible</div>
+                  <div style={S.prioSub}>{data.totalChapters} days — about {randomChapterEndDate}</div>
+                </>
+              )}
             </div>
             <TapError message={createError} />
           </div>

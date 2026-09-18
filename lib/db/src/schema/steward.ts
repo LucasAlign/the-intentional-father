@@ -516,14 +516,24 @@ export const bibleReadingPlans = pgTable("bible_reading_plans", {
   id: serial("id").primaryKey(),
   userId: text("user_id").notNull(),
   slot: text("slot").notNull(), // "current" | "previous"
-  // Only "whole_bible" exists in Phase 1 — One Book/Random/Themes (#189)
-  // will add their own values here rather than needing a new table.
+  // "whole_bible" | "one_book" | "random_chapter" (#189 Phase 3; Themes
+  // deferred — no value for it yet). One_book/random_chapter reuse the
+  // same testamentFirst/startBook/startChapter columns below with
+  // per-type, mostly-unused placeholder values (#189 grilling, Q3) rather
+  // than adding new columns or making them nullable — cheaper than the
+  // schema churn, and buildOrderedList (bibleCanon.ts) is what actually
+  // branches on planType to decide whether those columns mean anything.
   planType: text("plan_type").notNull().default("whole_bible"),
-  testamentFirst: text("testament_first").notNull(), // "old" | "new"
-  startBook: text("start_book").notNull(),
-  startChapter: integer("start_chapter").notNull(),
+  testamentFirst: text("testament_first").notNull(), // "old" | "new" — unused for one_book/random_chapter
+  startBook: text("start_book").notNull(), // the chosen book for one_book; unused (placeholder) for random_chapter
+  startChapter: integer("start_chapter").notNull(), // always 1 for one_book/random_chapter
   startDate: text("start_date").notNull(),
   totalDays: integer("total_days").notNull(),
+  // #189 grilling, Q7 — random_chapter's shuffled reading order is
+  // regenerated deterministically from this seed every time it's needed
+  // (bibleCanon.ts's shuffledChapterList), never persisted as a 1189-row
+  // sequence. Null for every other plan type.
+  randomSeed: integer("random_seed"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

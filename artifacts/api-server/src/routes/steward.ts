@@ -18,7 +18,7 @@ import { reminderEmailAddRateLimit, reminderEmailVerifyRateLimit } from "../midd
 import { generateEmailLoginCode, hashEmailLoginCode, EMAIL_CODE_TTL_MS, EMAIL_CODE_MAX_ATTEMPTS } from "../lib/auth";
 import { sendReminderEmailVerificationCode } from "../lib/email";
 import { getTribeIntentionText } from "../lib/tribeIntention";
-import { BIBLE_BOOKS, TOTAL_CHAPTERS, APPROX_TOTAL_VERSES, orderedChapterList, chaptersForDay, formatReading, dayIndexForDate, buildPlanView, defaultStartBook, isValidBook, AHEAD_WINDOW_DAYS, type Testament } from "../lib/bibleCanon";
+import { BIBLE_BOOKS, TOTAL_CHAPTERS, APPROX_TOTAL_VERSES, orderedChapterList, buildOrderedList, chaptersForDay, chaptersForBook, formatReading, dayIndexForDate, buildPlanView, defaultStartBook, isValidBook, isValidPlanType, RANDOM_CHAPTER_TOTAL_DAYS, AHEAD_WINDOW_DAYS, type Testament, type PlanType } from "../lib/bibleCanon";
 import { MENS_TOPICS, isValidTopicId, topicTitle } from "../lib/mensTopics";
 
 const MAX_PULSE_NOTE_LENGTH = 500;
@@ -419,25 +419,65 @@ router.get('/bible-plan', async (req: Request, res: Response) => {
 // returned a non-null `previous`.
 router.post('/bible-plan', async (req: Request, res: Response) => {
   try {
-    const { startDate, totalDays, testamentFirst, startBook, startChapter } = req.body as {
-      startDate?: unknown; totalDays?: unknown; testamentFirst?: unknown; startBook?: unknown; startChapter?: unknown;
+    const { startDate, totalDays, testamentFirst, startBook, startChapter, planType } = req.body as {
+      startDate?: unknown; totalDays?: unknown; testamentFirst?: unknown; startBook?: unknown; startChapter?: unknown; planType?: unknown;
     };
     if (typeof startDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
       res.status(400).json({ error: 'A valid start date (YYYY-MM-DD) is required' }); return;
     }
-    if (testamentFirst !== 'old' && testamentFirst !== 'new') {
-      res.status(400).json({ error: 'testamentFirst must be "old" or "new"' }); return;
+    // #189 Phase 3 — three buildable plan types now (Themes deferred, see
+    // #189 grilling Q9). Each resolves its own testamentFirst/startBook/
+    // startChapter/totalDays/randomSeed — the columns are shared (#189
+    // grilling, Q3) but what they mean, and which ones the client is even
+    // asked for, differs per type.
+    const resolvedPlanType: PlanType = isValidPlanType(planType) ? planType : 'whole_bible';
+
+    let testament: Testament;
+    let resolvedStartBook: string;
+    let resolvedStartChapter: number;
+    let days: number;
+    let randomSeed: number | null = null;
+
+    if (resolvedPlanType === 'one_book') {
+      // #189 grilling, Q2 — always starts at chapter 1, no custom start
+      // point; picking the book already fully specifies where to start.
+      if (typeof startBook !== 'string' || !isValidBook(startBook)) {
+        res.status(400).json({ error: 'A valid book is required' }); return;
+      }
+      resolvedStartBook = startBook;
+      resolvedStartChapter = 1;
+      testament = BIBLE_BOOKS.find((b) => b.name === startBook)!.testament;
+      const bookDays = Number(totalDays);
+      if (!Number.isInteger(bookDays) || bookDays < 1 || bookDays > MAX_BIBLE_PLAN_DAYS) {
+        res.status(400).json({ error: `totalDays must be between 1 and ${MAX_BIBLE_PLAN_DAYS}` }); return;
+      }
+      days = bookDays;
+    } else if (resolvedPlanType === 'random_chapter') {
+      // #189 grilling, Q6/Q7 — always the full shuffle (fixed length, no
+      // client-provided totalDays), seeded once here and never touched
+      // again; testamentFirst/startBook/startChapter are unused
+      // placeholders for this plan type.
+      testament = 'old';
+      resolvedStartBook = defaultStartBook('old');
+      resolvedStartChapter = 1;
+      days = RANDOM_CHAPTER_TOTAL_DAYS;
+      randomSeed = Math.floor(Math.random() * 0x7fffffff);
+    } else {
+      if (testamentFirst !== 'old' && testamentFirst !== 'new') {
+        res.status(400).json({ error: 'testamentFirst must be "old" or "new"' }); return;
+      }
+      testament = testamentFirst;
+      resolvedStartBook = typeof startBook === 'string' && startBook.trim() ? startBook.trim() : defaultStartBook(testament);
+      if (!isValidBook(resolvedStartBook)) {
+        res.status(400).json({ error: 'Unknown starting book' }); return;
+      }
+      resolvedStartChapter = Number.isInteger(startChapter) && (startChapter as number) > 0 ? (startChapter as number) : 1;
+      const wholeDays = Number(totalDays);
+      if (!Number.isInteger(wholeDays) || wholeDays < 1 || wholeDays > MAX_BIBLE_PLAN_DAYS) {
+        res.status(400).json({ error: `totalDays must be between 1 and ${MAX_BIBLE_PLAN_DAYS}` }); return;
+      }
+      days = wholeDays;
     }
-    const testament: Testament = testamentFirst;
-    const days = Number(totalDays);
-    if (!Number.isInteger(days) || days < 1 || days > MAX_BIBLE_PLAN_DAYS) {
-      res.status(400).json({ error: `totalDays must be between 1 and ${MAX_BIBLE_PLAN_DAYS}` }); return;
-    }
-    const resolvedStartBook = typeof startBook === 'string' && startBook.trim() ? startBook.trim() : defaultStartBook(testament);
-    if (!isValidBook(resolvedStartBook)) {
-      res.status(400).json({ error: 'Unknown starting book' }); return;
-    }
-    const resolvedStartChapter = Number.isInteger(startChapter) && (startChapter as number) > 0 ? (startChapter as number) : 1;
 
     const existing = await db.select().from(bibleReadingPlans).where(eq(bibleReadingPlans.userId, req.user!.id));
     const existingCurrent = existing.find((r) => r.slot === 'current');
@@ -451,9 +491,9 @@ router.post('/bible-plan', async (req: Request, res: Response) => {
     }
 
     const [row] = await db.insert(bibleReadingPlans).values({
-      userId: req.user!.id, slot: 'current', planType: 'whole_bible',
+      userId: req.user!.id, slot: 'current', planType: resolvedPlanType,
       testamentFirst: testament, startBook: resolvedStartBook, startChapter: resolvedStartChapter,
-      startDate, totalDays: days,
+      startDate, totalDays: days, randomSeed,
     }).returning();
 
     res.json(await serializeBiblePlan(row!, new Date().toISOString().slice(0, 10), new Set()));
@@ -636,7 +676,7 @@ router.get('/bible-plan/:id/days', async (req: Request, res: Response) => {
     const limit = Number.isInteger(limitParam) && limitParam > 0 ? Math.min(limitParam, 100) : BIBLE_PLAN_DAY_LOG_PAGE_SIZE;
     const endAt = Math.max(0, startAt - limit + 1);
 
-    const orderedList = orderedChapterList(plan.testamentFirst as Testament, plan.startBook, plan.startChapter);
+    const orderedList = buildOrderedList({ ...plan, testamentFirst: plan.testamentFirst as Testament });
     const startDateObj = new Date(plan.startDate);
     const items: { dayIndex: number; date: string; reading: string; completed: boolean; favorited: boolean; note: string }[] = [];
     for (let i = startAt; i >= endAt; i--) {
@@ -2335,7 +2375,7 @@ router.get('/coming-up', async (req: Request, res: Response) => {
       const completions = await db.select({ dayIndex: bibleReadingPlanCompletions.dayIndex }).from(bibleReadingPlanCompletions)
         .where(and(eq(bibleReadingPlanCompletions.planId, currentBiblePlan.id), eq(bibleReadingPlanCompletions.userId, req.user!.id)));
       const completedSet = new Set(completions.map((c) => c.dayIndex));
-      const orderedList = orderedChapterList(currentBiblePlan.testamentFirst as Testament, currentBiblePlan.startBook, currentBiblePlan.startChapter);
+      const orderedList = buildOrderedList({ ...currentBiblePlan, testamentFirst: currentBiblePlan.testamentFirst as Testament });
       const firstDayIndex = Math.max(0, dayIndexForDate(currentBiblePlan.startDate, rangeStart));
       const lastDayIndex = Math.min(currentBiblePlan.totalDays - 1, dayIndexForDate(currentBiblePlan.startDate, rangeEnd));
       const startDateObj = new Date(currentBiblePlan.startDate);
