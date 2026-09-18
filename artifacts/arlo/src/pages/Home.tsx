@@ -6689,6 +6689,13 @@ function BiblePlanManageModal({ data, onClose, onSwitched, onStartNew }: {
 }) {
   const [switching, setSwitching] = useState(false);
   const { error: switchError, flash: flashSwitchError } = useTapError();
+  // Direct, permanent delete per slot — no soft-delete tier, same
+  // low-stakes treatment My Verses gets. Gated behind its own inline
+  // Yes/Cancel per card rather than a single shared confirm, since Current
+  // and Previous can each be deleted independently.
+  const [confirmDeleteSlot, setConfirmDeleteSlot] = useState<"current" | "previous" | null>(null);
+  const [deletingSlot, setDeletingSlot] = useState<"current" | "previous" | null>(null);
+  const { error: deleteError, flash: flashDeleteError } = useTapError();
 
   async function switchPlan() {
     setSwitching(true);
@@ -6700,9 +6707,51 @@ function BiblePlanManageModal({ data, onClose, onSwitched, onStartNew }: {
     finally { setSwitching(false); }
   }
 
+  async function deletePlan(plan: BiblePlan) {
+    setDeletingSlot(plan.slot);
+    try {
+      const r = await apiFetch(`${API}/bible-plan/${plan.id}`, { method: "DELETE" });
+      if (r.ok) {
+        onSwitched();
+        setConfirmDeleteSlot(null);
+        // Nothing left to manage once the only plan is gone.
+        if (plan.slot === "current" && !data.previous) onClose();
+        if (plan.slot === "previous" && !data.current) onClose();
+      } else flashDeleteError("Couldn't delete — try again");
+    } catch { flashDeleteError("Couldn't reach the server."); }
+    finally { setDeletingSlot(null); }
+  }
+
   function summarize(plan: BiblePlan): string {
     const testament = plan.testamentFirst === "old" ? "Old Testament" : "New Testament";
     return `${testament} first, starting ${plan.startBook} ${plan.startChapter} — ${plan.progressPct}% through, ${plan.streak}-day streak`;
+  }
+
+  function renderPlanCard(plan: BiblePlan, label: string) {
+    return (
+      <div style={{ ...S.card, marginTop: label === "PREVIOUS" ? 10 : 0 }}>
+        <div style={S.eyebrow}><h3 style={{ margin: 0, font: "inherit", color: "inherit" }}>{label}</h3></div>
+        <div style={{ ...S.prioTitle, marginTop: 6 }}>{summarize(plan)}</div>
+        {plan.slot === "previous" && (
+          <button style={{ ...M.next, marginTop: 10 }} disabled={switching} onClick={switchPlan}>
+            {switching ? "Switching…" : "Switch to this plan"}
+          </button>
+        )}
+        {confirmDeleteSlot === plan.slot ? (
+          <div style={{ marginTop: 10 }}>
+            <div style={{ ...S.prioSub, color: C.brassSoft, marginBottom: 8 }}>Delete this plan for good? This can't be undone.</div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button style={S.sphereWizBtn} onClick={() => setConfirmDeleteSlot(null)}>Cancel</button>
+              <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnDanger, display: "inline-block", margin: 0 }} disabled={deletingSlot === plan.slot} onClick={() => deletePlan(plan)}>
+                {deletingSlot === plan.slot ? "Deleting…" : "Yes, delete permanently"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button style={{ ...S.prioLogLink, marginTop: 10, color: "#C87060" }} onClick={() => setConfirmDeleteSlot(plan.slot)}>Delete this plan</button>
+        )}
+      </div>
+    );
   }
 
   return (
@@ -6717,22 +6766,10 @@ function BiblePlanManageModal({ data, onClose, onSwitched, onStartNew }: {
           </>
         )}
       >
-        {data.current && (
-          <div style={S.card}>
-            <div style={S.eyebrow}><h3 style={{ margin: 0, font: "inherit", color: "inherit" }}>CURRENT</h3></div>
-            <div style={{ ...S.prioTitle, marginTop: 6 }}>{summarize(data.current)}</div>
-          </div>
-        )}
-        {data.previous && (
-          <div style={{ ...S.card, marginTop: 10 }}>
-            <div style={S.eyebrow}><h3 style={{ margin: 0, font: "inherit", color: "inherit" }}>PREVIOUS</h3></div>
-            <div style={{ ...S.prioTitle, marginTop: 6 }}>{summarize(data.previous)}</div>
-            <button style={{ ...M.next, marginTop: 10 }} disabled={switching} onClick={switchPlan}>
-              {switching ? "Switching…" : "Switch to this plan"}
-            </button>
-          </div>
-        )}
+        {data.current && renderPlanCard(data.current, "CURRENT")}
+        {data.previous && renderPlanCard(data.previous, "PREVIOUS")}
         <TapError message={switchError} />
+        <TapError message={deleteError} />
         <div style={{ ...S.prioSub, marginTop: 14 }}>
           Starting a new plan keeps your current one as "previous" — but if a previous plan already exists, it will be replaced and lost.
         </div>

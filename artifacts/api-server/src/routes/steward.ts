@@ -457,6 +457,30 @@ router.post('/bible-plan/switch', async (req: Request, res: Response) => {
   }
 });
 
+// DELETE /api/bible-plan/:id — permanent, no soft-delete tier (a plan's own
+// gate is the client's confirm dialog, same low-stakes treatment My Verses
+// gets rather than Jobs/Relationships' heavier soft-delete+Reopen pattern).
+// Cascades to the plan's completions. Deleting "current" while a "previous"
+// exists promotes previous to current, so a direct delete never leaves the
+// user without a visible plan when one is still there to show.
+router.delete('/bible-plan/:id', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id as string, 10);
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    const [plan] = await db.select().from(bibleReadingPlans).where(and(eq(bibleReadingPlans.id, id), eq(bibleReadingPlans.userId, req.user!.id))).limit(1);
+    if (!plan) { res.status(404).json({ error: 'Plan not found' }); return; }
+    await db.delete(bibleReadingPlans).where(and(eq(bibleReadingPlans.id, id), eq(bibleReadingPlans.userId, req.user!.id)));
+    if (plan.slot === 'current') {
+      const [previous] = await db.select().from(bibleReadingPlans).where(and(eq(bibleReadingPlans.userId, req.user!.id), eq(bibleReadingPlans.slot, 'previous'))).limit(1);
+      if (previous) await db.update(bibleReadingPlans).set({ slot: 'current' }).where(eq(bibleReadingPlans.id, previous.id));
+    }
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error deleting bible reading plan');
+    res.status(500).json({ error: 'Failed to delete plan' });
+  }
+});
+
 // POST /api/bible-plan/:id/complete — marks one specific plan-day done.
 // Idempotent (unique on planId+dayIndex) so a double-tap is harmless.
 router.post('/bible-plan/:id/complete', async (req: Request, res: Response) => {
