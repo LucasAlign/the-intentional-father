@@ -74,6 +74,17 @@ interface ProfileData {
 interface VerseEntry { ref: string; text: string; favorited: boolean; custom?: boolean; id?: number; }
 interface VerseHistoryEntry extends VerseEntry { date: string; }
 interface MyVerse { id: number; ref: string; text: string; favorited: boolean; }
+// #181 Phase 1 — Bible Reading Plan.
+interface BiblePlanBacklogEntry { dayIndex: number; reading: string; }
+interface BiblePlan {
+  id: number; slot: "current" | "previous"; planType: string;
+  testamentFirst: "old" | "new"; startBook: string; startChapter: number;
+  startDate: string; totalDays: number;
+  streak: number; progressPct: number; isPlanComplete: boolean;
+  backlog: BiblePlanBacklogEntry[];
+}
+interface BibleBookInfo { name: string; testament: "old" | "new"; chapters: number; }
+interface BiblePlanResponse { current: BiblePlan | null; previous: BiblePlan | null; books: BibleBookInfo[]; totalChapters: number; approxTotalVerses: number; }
 // #93 — "account" for the pinned, always-verified login email, or a
 // reminder_emails row id (as a string) for anything the user's added.
 interface ReminderEmailEntry { id: string; email: string; verified: boolean; active: boolean; removable: boolean; pending: boolean; }
@@ -1673,6 +1684,30 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
     if (!ok) flashVerseFavError("Couldn't save — try again");
   }
 
+  // #181 Phase 1 — Bible Reading Plan. Self-contained (fetch/state/modals
+  // all local to Today), same pattern Sphere() and other tab components
+  // already use, rather than threading yet another prop bundle through
+  // Home() for a feature scoped entirely to this one card.
+  const [biblePlanData, setBiblePlanData] = useState<BiblePlanResponse | null>(null);
+  const [planSetupOpen, setPlanSetupOpen] = useState(false);
+  const [planManageOpen, setPlanManageOpen] = useState(false);
+  const [completingDayIndex, setCompletingDayIndex] = useState<number | null>(null);
+  const { error: planError, flash: flashPlanError } = useTapError();
+  const refreshBiblePlan = useCallback(() => {
+    getJson(`${API}/bible-plan`, null).then(d => setBiblePlanData(isRecord(d) ? d as unknown as BiblePlanResponse : null));
+  }, []);
+  useEffect(() => { refreshBiblePlan(); }, [refreshBiblePlan]);
+
+  async function completeReadingDay(planId: number, dayIndex: number) {
+    setCompletingDayIndex(dayIndex);
+    try {
+      const r = await apiFetch(`${API}/bible-plan/${planId}/complete`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dayIndex }) });
+      if (r.ok) refreshBiblePlan();
+      else flashPlanError("Couldn't save — try again");
+    } catch { flashPlanError("Couldn't reach the server."); }
+    finally { setCompletingDayIndex(null); }
+  }
+
   const hr = new Date().getHours();
   const greeting = `Good ${hr < 12 ? "morning" : hr < 18 ? "afternoon" : "evening"}${name ? `, ${name}` : ""}.`;
   const openTasks = tasks.filter(t => !deletingIds.includes(t.id));
@@ -1795,6 +1830,11 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
           <div style={{ display: "flex", gap: 10 }}>
             <button style={S.prioLogLink} onClick={onOpenVerseHistory}>History ›</button>
             <button style={S.prioLogLink} onClick={onOpenVerseFavorites}>Favorites ›</button>
+            {/* #181 Phase 1 — a plan or two already exist → open the small
+                Manage sheet (switch/start-new); nothing yet → straight into
+                setup. Phase 2 folds this + History/Favorites into one
+                "More ›" menu — deliberately not built here. */}
+            <button style={S.prioLogLink} onClick={() => (biblePlanData?.current || biblePlanData?.previous) ? setPlanManageOpen(true) : setPlanSetupOpen(true)}>Plan ›</button>
           </div>
         </div>
         <div style={S.verseText}>{verse?.text || "…"}</div>
@@ -1814,7 +1854,55 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
           </div>
         )}
         <TapError message={verseFavError} />
+        {biblePlanData?.current && (
+          <div style={S.readingPlanBox}>
+            {biblePlanData.current.isPlanComplete ? (
+              <div style={S.prioSub}>You finished your reading plan — nice work. Start a new one from "Plan ›".</div>
+            ) : (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+                  <div style={S.readingPlanLabel}>
+                    {biblePlanData.current.backlog.length > 1 ? "Catch up on your reading" : "Today's reading"}
+                  </div>
+                  {biblePlanData.current.streak > 0 && <div style={S.readingPlanStreak}>🔥 {biblePlanData.current.streak}-day streak</div>}
+                </div>
+                {biblePlanData.current.backlog.length === 0 ? (
+                  <div style={S.prioSub}>All caught up — nothing due today.</div>
+                ) : biblePlanData.current.backlog.map(entry => (
+                  <div key={entry.dayIndex} style={S.readingPlanRow}>
+                    <div style={{ flex: 1 }}>{entry.reading}</div>
+                    <button
+                      style={S.readingPlanCompleteBtn}
+                      disabled={completingDayIndex === entry.dayIndex}
+                      onClick={() => completeReadingDay(biblePlanData.current!.id, entry.dayIndex)}
+                    >
+                      {completingDayIndex === entry.dayIndex ? "…" : "Mark complete"}
+                    </button>
+                  </div>
+                ))}
+                <div style={S.track}><div style={{ ...S.trackFill, width: biblePlanData.current.progressPct + "%", background: C.brass }} /></div>
+                <div style={{ ...S.prioSub, marginTop: 4 }}>{biblePlanData.current.progressPct}% through the plan</div>
+              </>
+            )}
+            <TapError message={planError} />
+          </div>
+        )}
       </div>
+      {planSetupOpen && biblePlanData && (
+        <BiblePlanSetupModal
+          data={biblePlanData}
+          onClose={() => setPlanSetupOpen(false)}
+          onCreated={() => { setPlanSetupOpen(false); setPlanManageOpen(false); refreshBiblePlan(); }}
+        />
+      )}
+      {planManageOpen && biblePlanData && (
+        <BiblePlanManageModal
+          data={biblePlanData}
+          onClose={() => setPlanManageOpen(false)}
+          onSwitched={refreshBiblePlan}
+          onStartNew={() => { setPlanManageOpen(false); setPlanSetupOpen(true); }}
+        />
+      )}
 
       <div style={S.cardCentered}>
         <div style={{ ...S.prioHeadRow, width: "100%" }}>
@@ -4198,6 +4286,9 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, commits, relations
   const [hideCommitments, toggleCommitments] = useWeekVisibilityToggle("commitments");
   const [hideExternal, toggleExternal] = useWeekVisibilityToggle("external");
   const [hideJobs, toggleJobs] = useWeekVisibilityToggle("jobs");
+  // #181 Phase 1 — fourth independent toggle, same pattern as the three
+  // above (tag: "Reading Plan" from GET /coming-up).
+  const [hideReadingPlan, toggleReadingPlan] = useWeekVisibilityToggle("readingPlan");
   // #128 — expandable commitment rows, in place (no tab switch): Home
   // already loads `commits`/`relationships` for the Tribe tab, so the same
   // CommitEditModal can just be reused here too, rather than building a
@@ -4211,7 +4302,7 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, commits, relations
   const [editingCommit, setEditingCommit] = useState<Commit | null>(null);
   const [editingJob, setEditingJob] = useState<Job | null>(null);
   const visibleEvents = events.filter(e =>
-    !(hideCommitments && e.tag === "Commitment") && !(hideExternal && e.tag === "Google Calendar") && !(hideJobs && e.tag === "Job"));
+    !(hideCommitments && e.tag === "Commitment") && !(hideExternal && e.tag === "Google Calendar") && !(hideJobs && e.tag === "Job") && !(hideReadingPlan && e.tag === "Reading Plan"));
   const calendarEvents = [...visibleEvents].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
   const scrollFade = useBottomScrollFade<HTMLDivElement>();
 
@@ -4421,6 +4512,14 @@ function WeekView({ events, jobs, pursuits, calendarAccounts, commits, relations
               aria-label={`Jobs ${hideJobs ? "hidden" : "shown"} — tap to toggle`}
             >
               Jobs
+            </button>
+            <button
+              style={{ ...E.chip, ...(hideReadingPlan ? { opacity: 0.5 } : { borderColor: C.brass, color: C.brass }) }}
+              onClick={toggleReadingPlan}
+              aria-pressed={!hideReadingPlan}
+              aria-label={`Reading plan ${hideReadingPlan ? "hidden" : "shown"} — tap to toggle`}
+            >
+              Reading
             </button>
           </div>
           <CalendarGhostCompass />
@@ -6581,6 +6680,201 @@ function VerseFavoritesModal({ onClose, onToggleFavorite }: { onClose: () => voi
   );
 }
 
+// #181 Phase 1 — Manage screen, reached from "Plan ›" once 1+ plans exist.
+// Deliberately small — Phase 2's "More" menu is where a fuller Reading
+// Plan section (history, notes, day favorites) eventually lives; this is
+// just enough to switch slots or start over.
+function BiblePlanManageModal({ data, onClose, onSwitched, onStartNew }: {
+  data: BiblePlanResponse; onClose: () => void; onSwitched: () => void; onStartNew: () => void;
+}) {
+  const [switching, setSwitching] = useState(false);
+  const { error: switchError, flash: flashSwitchError } = useTapError();
+
+  async function switchPlan() {
+    setSwitching(true);
+    try {
+      const r = await apiFetch(`${API}/bible-plan/switch`, { method: "POST" });
+      if (r.ok) { onSwitched(); onClose(); }
+      else flashSwitchError("Couldn't switch — try again");
+    } catch { flashSwitchError("Couldn't reach the server."); }
+    finally { setSwitching(false); }
+  }
+
+  function summarize(plan: BiblePlan): string {
+    const testament = plan.testamentFirst === "old" ? "Old Testament" : "New Testament";
+    return `${testament} first, starting ${plan.startBook} ${plan.startChapter} — ${plan.progressPct}% through, ${plan.streak}-day streak`;
+  }
+
+  return (
+    <div style={M.overlay}>
+      <ModalSheet title="Reading Plan" onClose={onClose}>
+        {data.current && (
+          <div style={S.card}>
+            <div style={S.eyebrow}><h3 style={{ margin: 0, font: "inherit", color: "inherit" }}>CURRENT</h3></div>
+            <div style={{ ...S.prioTitle, marginTop: 6 }}>{summarize(data.current)}</div>
+          </div>
+        )}
+        {data.previous && (
+          <div style={{ ...S.card, marginTop: 10 }}>
+            <div style={S.eyebrow}><h3 style={{ margin: 0, font: "inherit", color: "inherit" }}>PREVIOUS</h3></div>
+            <div style={{ ...S.prioTitle, marginTop: 6 }}>{summarize(data.previous)}</div>
+            <button style={{ ...M.next, marginTop: 10 }} disabled={switching} onClick={switchPlan}>
+              {switching ? "Switching…" : "Switch to this plan"}
+            </button>
+          </div>
+        )}
+        <TapError message={switchError} />
+        <div style={{ ...S.prioSub, marginTop: 14 }}>
+          Starting a new plan keeps your current one as "previous" — but if a previous plan already exists, it will be replaced and lost.
+        </div>
+        <button style={{ ...M.next, marginTop: 10 }} onClick={onStartNew}>Start a new plan</button>
+        <button style={M.cancel} onClick={onClose}>Close</button>
+      </ModalSheet>
+    </div>
+  );
+}
+
+// #181 Phase 1 — the guided setup flow, reusing this app's existing
+// stepped-wizard shell (same shape JobModal's creation wizard and
+// SphereWalkthroughModal already use) rather than inventing a new one.
+function BiblePlanSetupModal({ data, onClose, onCreated }: {
+  data: BiblePlanResponse; onClose: () => void; onCreated: () => void;
+}) {
+  const today = ymd(new Date());
+  const [step, setStep] = useState(0);
+  const [startDate, setStartDate] = useState(today);
+  const [finishDate, setFinishDate] = useState("");
+  const [testamentFirst, setTestamentFirst] = useState<"old" | "new" | null>(null);
+  const [customStart, setCustomStart] = useState(false);
+  const [startBook, setStartBook] = useState("");
+  const [startChapter, setStartChapter] = useState(1);
+  const [creating, setCreating] = useState(false);
+  const { error: createError, flash: flashCreateError } = useTapError();
+
+  const totalDays = startDate && finishDate
+    ? Math.max(1, Math.round((new Date(finishDate).getTime() - new Date(startDate).getTime()) / 86400000) + 1)
+    : null;
+  const versesPerDay = totalDays ? Math.round(data.approxTotalVerses / totalDays) : null;
+  const effectiveStartBook = testamentFirst ? (customStart && startBook ? startBook : (testamentFirst === "old" ? "Genesis" : "Matthew")) : "";
+  const effectiveStartChapter = customStart ? startChapter : 1;
+  const startBookInfo = data.books.find(b => b.name === effectiveStartBook);
+  const wouldEvictPrevious = Boolean(data.current && data.previous);
+
+  const steps = ["start", "finish", "testament", "startPoint", "confirm"] as const;
+
+  async function create() {
+    setCreating(true);
+    try {
+      const r = await apiFetch(`${API}/bible-plan`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          startDate, totalDays, testamentFirst,
+          startBook: customStart ? startBook : undefined,
+          startChapter: customStart ? startChapter : undefined,
+        }),
+      });
+      if (r.ok) onCreated();
+      else flashCreateError("Couldn't create the plan — try again");
+    } catch { flashCreateError("Couldn't reach the server."); }
+    finally { setCreating(false); }
+  }
+
+  const canAdvance = [
+    Boolean(startDate),
+    Boolean(finishDate) && (totalDays ?? 0) >= 1,
+    Boolean(testamentFirst),
+    !customStart || (Boolean(startBook) && startChapter >= 1 && (startBookInfo ? startChapter <= startBookInfo.chapters : false)),
+    true,
+  ][step];
+
+  return (
+    <div style={M.overlay}>
+      <ModalSheet title="Bible Reading Plan" headExtra={<div style={S.prioSub}>{step + 1} / {steps.length}</div>} onClose={onClose}>
+        <div style={M.track}><div style={{ ...M.fill, width: ((step + 1) / steps.length * 100) + "%" }} /></div>
+
+        {step === 0 && (
+          <div style={E.fieldGroup}>
+            <div style={M.q}>When do you want to start?</div>
+            <input type="date" style={M.input} value={startDate} onChange={e => setStartDate(e.target.value)} />
+          </div>
+        )}
+
+        {step === 1 && (
+          <div style={E.fieldGroup}>
+            <div style={M.q}>When do you want to finish?</div>
+            <input type="date" style={M.input} value={finishDate} min={startDate} onChange={e => setFinishDate(e.target.value)} />
+            {totalDays && versesPerDay && (
+              <div style={{ ...S.prioSub, marginTop: 8 }}>{totalDays} days — about {versesPerDay} verses a day to finish on time.</div>
+            )}
+          </div>
+        )}
+
+        {step === 2 && (
+          <div style={E.fieldGroup}>
+            <div style={M.q}>Old or New Testament first?</div>
+            <div style={E.chipRow}>
+              <button style={{ ...E.chip, ...(testamentFirst === "old" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setTestamentFirst("old")}>Old Testament</button>
+              <button style={{ ...E.chip, ...(testamentFirst === "new" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => setTestamentFirst("new")}>New Testament</button>
+            </div>
+            <div style={{ ...S.prioSub, marginTop: 8 }}>You'll read straight through every book in that testament, in order, then the other testament.</div>
+          </div>
+        )}
+
+        {step === 3 && testamentFirst && (
+          <div style={E.fieldGroup}>
+            <div style={M.q}>Where do you want to start?</div>
+            {!customStart ? (
+              <>
+                <div style={S.prioSub}>Default: {testamentFirst === "old" ? "Genesis 1" : "Matthew 1"}</div>
+                <button style={{ ...S.prioLogLink, marginTop: 8 }} onClick={() => { setCustomStart(true); setStartBook(testamentFirst === "old" ? "Genesis" : "Matthew"); }}>Pick a different starting point ›</button>
+              </>
+            ) : (
+              <>
+                <select style={M.input} value={startBook} onChange={e => { setStartBook(e.target.value); setStartChapter(1); }}>
+                  {data.books.filter(b => b.testament === testamentFirst).map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
+                </select>
+                <input
+                  type="number" style={{ ...M.input, marginTop: 8 }} min={1} max={startBookInfo?.chapters ?? 1}
+                  value={startChapter} onChange={e => setStartChapter(Number(e.target.value))}
+                  placeholder={`Chapter (1-${startBookInfo?.chapters ?? "?"})`}
+                />
+                <button style={{ ...S.prioLogLink, marginTop: 8 }} onClick={() => setCustomStart(false)}>Use the default instead</button>
+              </>
+            )}
+          </div>
+        )}
+
+        {step === 4 && testamentFirst && (
+          <div style={E.fieldGroup}>
+            <div style={M.q}>Ready to start?</div>
+            <div style={S.card}>
+              <div style={S.prioSub}>{startDate} → {finishDate} ({totalDays} days)</div>
+              <div style={S.prioSub}>{testamentFirst === "old" ? "Old Testament" : "New Testament"} first, starting {effectiveStartBook} {effectiveStartChapter}</div>
+              {versesPerDay && <div style={S.prioSub}>About {versesPerDay} verses a day</div>}
+            </div>
+            {wouldEvictPrevious && (
+              <div style={{ ...S.prioSub, color: C.brassSoft, marginTop: 10 }}>
+                Starting this plan will replace your saved previous plan, which will be lost for good.
+              </div>
+            )}
+            <TapError message={createError} />
+          </div>
+        )}
+
+        <div style={S.sphereWizNav}>
+          <button style={{ ...S.sphereWizBtn, ...(step === 0 ? { opacity: 0.3, pointerEvents: "none" } : {}) }} onClick={() => setStep(s => s - 1)}>‹ Back</button>
+          {step < steps.length - 1 ? (
+            <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnPrimary, ...(!canAdvance ? { opacity: 0.3 } : {}) }} disabled={!canAdvance} onClick={() => setStep(s => s + 1)}>Next ›</button>
+          ) : (
+            <button style={{ ...S.sphereWizBtn, ...S.sphereWizBtnPrimary }} disabled={creating} onClick={create}>{creating ? "Creating…" : "Create plan ✓"}</button>
+          )}
+        </div>
+        <button style={{ ...S.sphereWizBtn, marginTop: 10, width: "100%" }} onClick={onClose}>Cancel</button>
+      </ModalSheet>
+    </div>
+  );
+}
+
 // ── Auth gate ───────────────────────────────────────────────────────────────────
 type EmailLoginStartResult = { ok: true } | { ok: false; error: string };
 type EmailLoginVerifyResult = { ok: true; pendingApproval: boolean } | { ok: false; error: string };
@@ -6853,6 +7147,14 @@ const S: Record<string, CSSProperties> = {
   verseText: { fontSize: 18, lineHeight: 1.6, color: C.parchment, marginBottom: 14, textAlign: "center" },
   verseRef: { fontSize: 11, letterSpacing: "0.12em", color: C.brassSoft },
   verseStarBtn: { background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 16, lineHeight: 1, display: "flex", alignItems: "center" },
+  // #181 Phase 1 — the inline reading-plan section that appears within the
+  // Verse of the Day card once a plan is active (no separate screen, per
+  // #187's grilling).
+  readingPlanBox: { marginTop: 14, paddingTop: 14, borderTop: "1px dashed rgba(210,190,130,0.18)" },
+  readingPlanLabel: { fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: C.parchmentLow },
+  readingPlanStreak: { fontSize: 12, color: C.brassSoft, fontWeight: 700 },
+  readingPlanRow: { display: "flex", alignItems: "center", gap: 10, marginBottom: 8, fontSize: 14, color: C.parchmentMid },
+  readingPlanCompleteBtn: { flexShrink: 0, background: "none", border: `1px solid ${C.brass}`, color: C.brass, borderRadius: 16, fontSize: 12, fontWeight: 700, padding: "5px 12px", cursor: "pointer", fontFamily: F, whiteSpace: "nowrap" },
   intent: { fontSize: 15, lineHeight: 1.7, color: C.parchment, textAlign: "center" },
   intentInput: { width: "100%", background: "none", border: "none", outline: "none", resize: "none", fontFamily: F, fontSize: 15, lineHeight: 1.7, color: C.parchment, textAlign: "center" },
   empty: { fontSize: 14, color: C.parchmentDim, textAlign: "center", padding: "6px 0" },

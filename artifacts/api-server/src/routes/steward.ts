@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { db, withUserSession } from "@workspace/db";
-import { journalEntries, chatMessages, tasks, taskCompletions, commits, commitRelationshipTargets, type Commit, jobs, jobTasks, jobPeople, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit, verseFavorites, customVerses, sphereChecks, reminderEmails } from "@workspace/db";
+import { journalEntries, chatMessages, tasks, taskCompletions, commits, commitRelationshipTargets, type Commit, jobs, jobTasks, jobPeople, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit, verseFavorites, customVerses, sphereChecks, reminderEmails, bibleReadingPlans, bibleReadingPlanCompletions, type BibleReadingPlan } from "@workspace/db";
 import { eq, desc, asc, gte, lte, and, ne, isNull, isNotNull, inArray, notInArray, sql } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
 import { normalizeProfileData, isToneVoice, DEFAULT_TONE_VOICE, type ProfileData, type ToneVoice } from "../lib/profile";
@@ -18,6 +18,7 @@ import { reminderEmailAddRateLimit, reminderEmailVerifyRateLimit } from "../midd
 import { generateEmailLoginCode, hashEmailLoginCode, EMAIL_CODE_TTL_MS, EMAIL_CODE_MAX_ATTEMPTS } from "../lib/auth";
 import { sendReminderEmailVerificationCode } from "../lib/email";
 import { getTribeIntentionText } from "../lib/tribeIntention";
+import { BIBLE_BOOKS, TOTAL_CHAPTERS, APPROX_TOTAL_VERSES, orderedChapterList, buildPlanView, defaultStartBook, isValidBook, type Testament } from "../lib/bibleCanon";
 
 const MAX_PULSE_NOTE_LENGTH = 500;
 const MAX_SPHERE_NOTE_LENGTH = 500;
@@ -343,6 +344,155 @@ router.delete('/my-verses/:id', async (req: Request, res: Response) => {
   } catch (err) {
     req.log?.error({ err }, 'Error deleting custom verse');
     res.status(500).json({ error: 'Failed to delete verse' });
+  }
+});
+
+// #181 Phase 1 — Bible Reading Plan.
+const MAX_BIBLE_PLAN_DAYS = 3650; // ~10 years, a sanity ceiling, not a real limit
+
+function serializeBiblePlan(plan: BibleReadingPlan, today: string, completedDayIndexes: Set<number>) {
+  const view = buildPlanView({ ...plan, testamentFirst: plan.testamentFirst as Testament }, completedDayIndexes, today);
+  return {
+    id: plan.id, slot: plan.slot, planType: plan.planType,
+    testamentFirst: plan.testamentFirst, startBook: plan.startBook, startChapter: plan.startChapter,
+    startDate: plan.startDate, totalDays: plan.totalDays,
+    streak: view.streak, progressPct: view.progressPct, isPlanComplete: view.isPlanComplete,
+    backlog: view.backlog,
+  };
+}
+
+async function completedDayIndexesFor(userId: string, planId: number): Promise<Set<number>> {
+  const rows = await db.select({ dayIndex: bibleReadingPlanCompletions.dayIndex }).from(bibleReadingPlanCompletions)
+    .where(and(eq(bibleReadingPlanCompletions.planId, planId), eq(bibleReadingPlanCompletions.userId, userId)));
+  return new Set(rows.map((r) => r.dayIndex));
+}
+
+// GET /api/bible-plan — { current, previous }, either null. Both plan
+// slots are returned pre-computed (streak/progress/backlog) so the client
+// never needs the canon data or the assignment math itself.
+router.get('/bible-plan', async (req: Request, res: Response) => {
+  try {
+    const rows = await db.select().from(bibleReadingPlans).where(eq(bibleReadingPlans.userId, req.user!.id));
+    const current = rows.find((r) => r.slot === 'current') ?? null;
+    const previous = rows.find((r) => r.slot === 'previous') ?? null;
+    const today = new Date().toISOString().slice(0, 10);
+    res.json({
+      current: current ? serializeBiblePlan(current, today, await completedDayIndexesFor(req.user!.id, current.id)) : null,
+      previous: previous ? serializeBiblePlan(previous, today, await completedDayIndexesFor(req.user!.id, previous.id)) : null,
+      books: BIBLE_BOOKS.map((b) => ({ name: b.name, testament: b.testament, chapters: b.chapters })),
+      totalChapters: TOTAL_CHAPTERS, approxTotalVerses: APPROX_TOTAL_VERSES,
+    });
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching bible reading plan');
+    res.status(500).json({ error: 'Failed to fetch reading plan' });
+  }
+});
+
+// POST /api/bible-plan — creates a new plan as "current". If a "current"
+// already exists it slides into "previous"; if a "previous" already
+// existed, it's evicted (deleted, cascading its completions) — the
+// two-slot rolling buffer from #187's grilling. The client is expected to
+// have shown the eviction warning before calling this when GET already
+// returned a non-null `previous`.
+router.post('/bible-plan', async (req: Request, res: Response) => {
+  try {
+    const { startDate, totalDays, testamentFirst, startBook, startChapter } = req.body as {
+      startDate?: unknown; totalDays?: unknown; testamentFirst?: unknown; startBook?: unknown; startChapter?: unknown;
+    };
+    if (typeof startDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
+      res.status(400).json({ error: 'A valid start date (YYYY-MM-DD) is required' }); return;
+    }
+    if (testamentFirst !== 'old' && testamentFirst !== 'new') {
+      res.status(400).json({ error: 'testamentFirst must be "old" or "new"' }); return;
+    }
+    const testament: Testament = testamentFirst;
+    const days = Number(totalDays);
+    if (!Number.isInteger(days) || days < 1 || days > MAX_BIBLE_PLAN_DAYS) {
+      res.status(400).json({ error: `totalDays must be between 1 and ${MAX_BIBLE_PLAN_DAYS}` }); return;
+    }
+    const resolvedStartBook = typeof startBook === 'string' && startBook.trim() ? startBook.trim() : defaultStartBook(testament);
+    if (!isValidBook(resolvedStartBook)) {
+      res.status(400).json({ error: 'Unknown starting book' }); return;
+    }
+    const resolvedStartChapter = Number.isInteger(startChapter) && (startChapter as number) > 0 ? (startChapter as number) : 1;
+
+    const existing = await db.select().from(bibleReadingPlans).where(eq(bibleReadingPlans.userId, req.user!.id));
+    const existingCurrent = existing.find((r) => r.slot === 'current');
+    const existingPrevious = existing.find((r) => r.slot === 'previous');
+
+    if (existingPrevious) {
+      await db.delete(bibleReadingPlans).where(and(eq(bibleReadingPlans.id, existingPrevious.id), eq(bibleReadingPlans.userId, req.user!.id)));
+    }
+    if (existingCurrent) {
+      await db.update(bibleReadingPlans).set({ slot: 'previous' }).where(and(eq(bibleReadingPlans.id, existingCurrent.id), eq(bibleReadingPlans.userId, req.user!.id)));
+    }
+
+    const [row] = await db.insert(bibleReadingPlans).values({
+      userId: req.user!.id, slot: 'current', planType: 'whole_bible',
+      testamentFirst: testament, startBook: resolvedStartBook, startChapter: resolvedStartChapter,
+      startDate, totalDays: days,
+    }).returning();
+
+    res.json(serializeBiblePlan(row!, new Date().toISOString().slice(0, 10), new Set()));
+  } catch (err) {
+    req.log?.error({ err }, 'Error creating bible reading plan');
+    res.status(500).json({ error: 'Failed to create reading plan' });
+  }
+});
+
+// POST /api/bible-plan/switch — swaps which of the two slots is "current".
+// Neither plan is lost by switching, only by a third plan being created.
+router.post('/bible-plan/switch', async (req: Request, res: Response) => {
+  try {
+    const rows = await db.select().from(bibleReadingPlans).where(eq(bibleReadingPlans.userId, req.user!.id));
+    const current = rows.find((r) => r.slot === 'current');
+    const previous = rows.find((r) => r.slot === 'previous');
+    if (!current || !previous) { res.status(400).json({ error: 'No previous plan to switch to' }); return; }
+    await db.update(bibleReadingPlans).set({ slot: 'previous' }).where(eq(bibleReadingPlans.id, current.id));
+    await db.update(bibleReadingPlans).set({ slot: 'current' }).where(eq(bibleReadingPlans.id, previous.id));
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error switching bible reading plan');
+    res.status(500).json({ error: 'Failed to switch plan' });
+  }
+});
+
+// POST /api/bible-plan/:id/complete — marks one specific plan-day done.
+// Idempotent (unique on planId+dayIndex) so a double-tap is harmless.
+router.post('/bible-plan/:id/complete', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id as string, 10);
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    const { dayIndex } = req.body as { dayIndex?: unknown };
+    if (!Number.isInteger(dayIndex) || (dayIndex as number) < 0) { res.status(400).json({ error: 'dayIndex must be a non-negative integer' }); return; }
+    const [plan] = await db.select().from(bibleReadingPlans).where(and(eq(bibleReadingPlans.id, id), eq(bibleReadingPlans.userId, req.user!.id))).limit(1);
+    if (!plan) { res.status(404).json({ error: 'Plan not found' }); return; }
+    if ((dayIndex as number) >= plan.totalDays) { res.status(400).json({ error: 'dayIndex is beyond the plan length' }); return; }
+    await db.insert(bibleReadingPlanCompletions)
+      .values({ userId: req.user!.id, planId: id, dayIndex: dayIndex as number })
+      .onConflictDoNothing({ target: [bibleReadingPlanCompletions.planId, bibleReadingPlanCompletions.dayIndex] });
+    res.json(serializeBiblePlan(plan, new Date().toISOString().slice(0, 10), await completedDayIndexesFor(req.user!.id, id)));
+  } catch (err) {
+    req.log?.error({ err }, 'Error completing bible reading plan day');
+    res.status(500).json({ error: 'Failed to mark day complete' });
+  }
+});
+
+// DELETE /api/bible-plan/:id/complete/:dayIndex — undo an accidental tap.
+router.delete('/bible-plan/:id/complete/:dayIndex', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id as string, 10);
+    const dayIndex = parseInt(req.params.dayIndex as string, 10);
+    if (isNaN(id) || isNaN(dayIndex)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    const [plan] = await db.select().from(bibleReadingPlans).where(and(eq(bibleReadingPlans.id, id), eq(bibleReadingPlans.userId, req.user!.id))).limit(1);
+    if (!plan) { res.status(404).json({ error: 'Plan not found' }); return; }
+    await db.delete(bibleReadingPlanCompletions).where(and(
+      eq(bibleReadingPlanCompletions.planId, id), eq(bibleReadingPlanCompletions.dayIndex, dayIndex), eq(bibleReadingPlanCompletions.userId, req.user!.id),
+    ));
+    res.json(serializeBiblePlan(plan, new Date().toISOString().slice(0, 10), await completedDayIndexesFor(req.user!.id, id)));
+  } catch (err) {
+    req.log?.error({ err }, 'Error un-completing bible reading plan day');
+    res.status(500).json({ error: 'Failed to undo completion' });
   }
 });
 
@@ -1904,7 +2054,41 @@ router.get('/coming-up', async (req: Request, res: Response) => {
       kind: 'work',
     }));
 
-    res.json([...rows, ...calendarRows, ...commitRows, ...jobRows].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time)));
+    // #181 Phase 1 — the "current" plan's not-yet-completed days that fall
+    // within this range, tag: "Reading Plan" giving the Calendar tab a
+    // fourth independent visibility toggle, same pattern as Commitment/Job
+    // above. Only "current" (never "previous") surfaces here — a plan
+    // you've switched away from shouldn't clutter the calendar.
+    const [currentBiblePlan] = await db.select().from(bibleReadingPlans)
+      .where(and(eq(bibleReadingPlans.userId, req.user!.id), eq(bibleReadingPlans.slot, 'current'))).limit(1);
+    let readingPlanRows: CalendarEvent[] = [];
+    if (currentBiblePlan) {
+      const completions = await db.select({ dayIndex: bibleReadingPlanCompletions.dayIndex }).from(bibleReadingPlanCompletions)
+        .where(and(eq(bibleReadingPlanCompletions.planId, currentBiblePlan.id), eq(bibleReadingPlanCompletions.userId, req.user!.id)));
+      const view = buildPlanView(
+        { ...currentBiblePlan, testamentFirst: currentBiblePlan.testamentFirst as Testament },
+        new Set(completions.map((c) => c.dayIndex)),
+        new Date().toISOString().slice(0, 10),
+      );
+      readingPlanRows = view.backlog
+        .map((entry) => {
+          const date = new Date(currentBiblePlan.startDate);
+          date.setUTCDate(date.getUTCDate() + entry.dayIndex);
+          return { date: date.toISOString().slice(0, 10), entry };
+        })
+        .filter((x) => x.date >= rangeStart && x.date <= rangeEnd)
+        .map(({ date, entry }): CalendarEvent => ({
+          id: -(3_000_000 + entry.dayIndex),
+          date,
+          time: 'All day',
+          title: entry.reading,
+          sub: 'Bible reading plan',
+          tag: 'Reading Plan',
+          kind: 'reading-plan',
+        }));
+    }
+
+    res.json([...rows, ...calendarRows, ...commitRows, ...jobRows, ...readingPlanRows].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time)));
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch coming up' });
   }

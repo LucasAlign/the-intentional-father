@@ -1,8 +1,9 @@
 import { and, desc, eq, gte, inArray, lt, ne } from "drizzle-orm";
-import { db, journalEntries, tasks, taskCompletions, pulseChecks, commits, commitRelationshipTargets, relationships, type Relationship, sphereChecks, jobs, pursuits } from "@workspace/db";
+import { db, journalEntries, tasks, taskCompletions, pulseChecks, commits, commitRelationshipTargets, relationships, type Relationship, sphereChecks, jobs, pursuits, bibleReadingPlans, bibleReadingPlanCompletions } from "@workspace/db";
 import { isSlipping, type RecurrencePeriod } from "./priorityPeriods";
 import { PULSE_STATE_LABEL, type PulseState } from "./pulseCheck";
 import { SPHERE_CATEGORIES, SPHERE_CATEGORY_LABEL, SPHERE_STATE_LABEL, getWeekStart, summarizeFlaggedSphereAnswers, type SphereCategory, type SphereState } from "./sphere";
+import { buildPlanView, type Testament } from "./bibleCanon";
 
 export const RELATIONSHIP_CATEGORY_LABEL: Record<string, string> = { spouse: "Spouse", child: "Child", family: "Family", friend: "Friend", other: "Other" };
 function relationshipLabel(r: Pick<Relationship, "name" | "type" | "category">): string {
@@ -59,7 +60,7 @@ export async function buildTodayContext(userId: string, today: string): Promise<
   earliestTrendDate.setUTCDate(earliestTrendDate.getUTCDate() - SPHERE_TREND_WEEKS * 7);
   const earliestTrendWeekStart = getWeekStart(earliestTrendDate);
 
-  const [recentJournal, latestIntention, openTasks, todayPulse, openCommits, thisWeekSphere, priorSphereWeeks, openJobs] = await Promise.all([
+  const [recentJournal, latestIntention, openTasks, todayPulse, openCommits, thisWeekSphere, priorSphereWeeks, openJobs, currentBiblePlanRows] = await Promise.all([
     db.select().from(journalEntries).where(eq(journalEntries.userId, userId)).orderBy(desc(journalEntries.date)).limit(3),
     // Marriage Intention persists until changed (#94) — a separate query
     // since recentJournal above is capped at 3 *dates*, which could miss an
@@ -81,6 +82,7 @@ export async function buildTodayContext(userId: string, today: string): Promise<
     // nulls last) rather than in the query, same as resolveCommitWhoLabels'
     // approach to shaping elsewhere in this file.
     db.select().from(jobs).where(and(eq(jobs.userId, userId), eq(jobs.deleted, false), eq(jobs.completed, false))),
+    db.select().from(bibleReadingPlans).where(and(eq(bibleReadingPlans.userId, userId), eq(bibleReadingPlans.slot, 'current'))).limit(1),
   ]);
 
   let context = '';
@@ -241,6 +243,32 @@ export async function buildTodayContext(userId: string, today: string): Promise<
       const forClient = j.clientName ? ` for ${j.clientName}` : '';
       context += `- ${j.name}${pursuitName ? ` (${pursuitName})` : ''}${forClient}${status ? ' ' + status : ''}${note}\n`;
     });
+    context += '\n';
+  }
+
+  // #181 Phase 1 — a short, restrained note, same tone-restraint pattern
+  // as the Pulse Check/Sphere/Tribe-intention proactive-notice guidelines
+  // elsewhere in this prompt: just enough for Steward to reference it
+  // naturally, never the literal chapter list every single turn.
+  const currentBiblePlan = currentBiblePlanRows[0];
+  if (currentBiblePlan) {
+    const completions = await db.select({ dayIndex: bibleReadingPlanCompletions.dayIndex }).from(bibleReadingPlanCompletions)
+      .where(and(eq(bibleReadingPlanCompletions.planId, currentBiblePlan.id), eq(bibleReadingPlanCompletions.userId, userId)));
+    const view = buildPlanView(
+      { ...currentBiblePlan, testamentFirst: currentBiblePlan.testamentFirst as Testament },
+      new Set(completions.map((c) => c.dayIndex)),
+      today,
+    );
+    context += '## Bible reading plan:\n';
+    if (view.isPlanComplete) {
+      context += `- Finished their Bible reading plan — worth acknowledging if it comes up.\n`;
+    } else if (view.backlog.length === 0) {
+      context += `- On track, ${view.progressPct}% through, ${view.streak}-day streak.\n`;
+    } else if (view.backlog.length === 1) {
+      context += `- ${view.progressPct}% through, today's reading not yet done.\n`;
+    } else {
+      context += `- ${view.progressPct}% through, ${view.backlog.length} days behind (streak reset) — encourage catching up, don't nag.\n`;
+    }
     context += '\n';
   }
 

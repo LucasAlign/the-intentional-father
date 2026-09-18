@@ -503,6 +503,52 @@ export const insertCustomVerseSchema = createInsertSchema(customVerses).omit({ i
 export type InsertCustomVerse = z.infer<typeof insertCustomVerseSchema>;
 export type CustomVerse = typeof customVerses.$inferSelect;
 
+// #181 Phase 1 — Bible Reading Plan. Two slots per user ("current" and
+// "previous", enforced in the API layer, not the schema) rather than a
+// strict single-active-plan model — starting a new plan slides "current"
+// into "previous", evicting (with a warning) whatever was there before.
+// Only the fixed setup parameters live here; the actual day-by-day
+// reading assignment is always computed on the fly (lib/bibleCanon.ts)
+// from these four values plus a day index, never pre-materialized —
+// same "don't pre-write what's cheaply derivable" call as everywhere
+// else in this schema that could have gone the other way.
+export const bibleReadingPlans = pgTable("bible_reading_plans", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  slot: text("slot").notNull(), // "current" | "previous"
+  // Only "whole_bible" exists in Phase 1 — One Book/Random/Themes (#189)
+  // will add their own values here rather than needing a new table.
+  planType: text("plan_type").notNull().default("whole_bible"),
+  testamentFirst: text("testament_first").notNull(), // "old" | "new"
+  startBook: text("start_book").notNull(),
+  startChapter: integer("start_chapter").notNull(),
+  startDate: text("start_date").notNull(),
+  totalDays: integer("total_days").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertBibleReadingPlanSchema = createInsertSchema(bibleReadingPlans).omit({ id: true, createdAt: true });
+export type InsertBibleReadingPlan = z.infer<typeof insertBibleReadingPlanSchema>;
+export type BibleReadingPlan = typeof bibleReadingPlans.$inferSelect;
+
+// Sparse completion log — only the plan-days actually marked done, same
+// shape as taskCompletions (Priorities). `dayIndex` is the plan's own
+// 0-based day number (not a calendar date), since catch-up means a
+// specific missed day gets completed on some later calendar date.
+export const bibleReadingPlanCompletions = pgTable("bible_reading_plan_completions", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  planId: integer("plan_id").notNull().references(() => bibleReadingPlans.id, { onDelete: "cascade" }),
+  dayIndex: integer("day_index").notNull(),
+  completedAt: timestamp("completed_at").defaultNow().notNull(),
+}, (table) => [
+  unique("bible_plan_completions_plan_day_unique").on(table.planId, table.dayIndex),
+]);
+
+export const insertBibleReadingPlanCompletionSchema = createInsertSchema(bibleReadingPlanCompletions).omit({ id: true, completedAt: true });
+export type InsertBibleReadingPlanCompletion = z.infer<typeof insertBibleReadingPlanCompletionSchema>;
+export type BibleReadingPlanCompletion = typeof bibleReadingPlanCompletions.$inferSelect;
+
 // #137 — Tribe's auto-generated "Today's Intention" card. One row per
 // user/date/relationship: an OpenAI-generated line about whoever is
 // currently the Tribe tab's primary person (starred-first, else top of
