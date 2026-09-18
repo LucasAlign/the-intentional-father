@@ -1078,7 +1078,7 @@ export default function Home() {
 
   return (
     <HintsContext.Provider value={{ enabled: profile?.hintsEnabled === true, dismissed: profile?.dismissedHints ?? [], dismiss: dismissHint }}>
-    <div style={R.root}>
+    <div className="app-root" style={R.root}>
       {/* #165 follow-up — .modalSheet's max-height is set here rather than
           inline (M.sheet) specifically so it can use the classic two-
           declaration fallback: a browser/WebKit build without `dvh`
@@ -6924,7 +6924,7 @@ function AuthGate({
   }
 
   return (
-    <div style={R.root}>
+    <div className="app-root" style={R.root}>
       <div style={R.woodLayer} />
       <div style={R.ambient} />
       {/* <main>, not <div> (#41 — axe's "region" rule: all page content
@@ -7086,7 +7086,9 @@ const G: Record<string, CSSProperties> = {
 const R: Record<string, CSSProperties> = {
   // 100dvh (#37) — 100vh doesn't account for mobile browser toolbars
   // showing/hiding, which clips or letterboxes the layout as they animate.
-  root: { width: "100%", maxWidth: 440, margin: "0 auto", height: "100dvh", display: "flex", flexDirection: "column", fontFamily: F, color: C.parchment, position: "relative", overflow: "hidden", background: C.ink },
+  // height lives in the .app-root CSS class (index.css) instead of here —
+  // see the comment there for why (#165 follow-up).
+  root: { width: "100%", maxWidth: 440, margin: "0 auto", display: "flex", flexDirection: "column", fontFamily: F, color: C.parchment, position: "relative", overflow: "hidden", background: C.ink },
   woodLayer: { position: "fixed", inset: 0, zIndex: 0, backgroundImage: `url(${WOOD})`, backgroundSize: "cover", backgroundPosition: "center", backgroundRepeat: "no-repeat" },
   ambient: { position: "fixed", inset: 0, zIndex: 1, background: "radial-gradient(120% 80% at 50% 0%, rgba(40,36,20,0.25) 0%, rgba(8,10,5,0.45) 70%, rgba(4,5,2,0.7) 100%)" },
   // Safe-area padding (#37) added on top of the existing baseline so the

@@ -37,6 +37,20 @@ body {
   min-height: 100vh;
 }
 
+/* #165 follow-up — the app's own root container (Home.tsx's R.root) needs
+   this same vh-then-dvh fallback the modal sheet already got: a plain
+   inline `height: "100dvh"` style object can't express "ignore this if
+   unsupported," so on a WebKit build without dvh support the whole app
+   root was silently falling back to `height: auto` instead of filling the
+   viewport — collapsing the flex layout that pins the bottom nav bar to
+   the true screen bottom, which is a very plausible reason a modal's
+   sticky footer could still end up visually behind the nav bar even after
+   the modal sheet's own dvh fallback was fixed. */
+.app-root {
+  height: 100vh;
+  height: 100dvh;
+}
+
 button {
   font-family: inherit;
   cursor: pointer;
