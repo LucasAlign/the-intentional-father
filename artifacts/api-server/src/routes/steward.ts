@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { db, withUserSession } from "@workspace/db";
-import { journalEntries, chatMessages, tasks, taskCompletions, commits, commitRelationshipTargets, type Commit, jobs, jobTasks, jobPeople, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit, verseFavorites, customVerses, sphereChecks, reminderEmails, bibleReadingPlans, bibleReadingPlanCompletions, type BibleReadingPlan } from "@workspace/db";
+import { journalEntries, chatMessages, tasks, taskCompletions, commits, commitRelationshipTargets, type Commit, jobs, jobTasks, jobPeople, comingUp, profile as profileTable, pulseChecks, relationships, type Relationship, pursuits, type Pursuit, verseFavorites, customVerses, sphereChecks, reminderEmails, bibleReadingPlans, bibleReadingPlanCompletions, bibleReadingPlanFavorites, bibleReadingPlanNotes, mensTopicFavorites, type BibleReadingPlan } from "@workspace/db";
 import { eq, desc, asc, gte, lte, and, ne, isNull, isNotNull, inArray, notInArray, sql } from "drizzle-orm";
 import { fetchGoogleCalendarEventsForUser, type CalendarEvent } from "./googleCalendar";
 import { normalizeProfileData, isToneVoice, DEFAULT_TONE_VOICE, type ProfileData, type ToneVoice } from "../lib/profile";
@@ -19,6 +19,7 @@ import { generateEmailLoginCode, hashEmailLoginCode, EMAIL_CODE_TTL_MS, EMAIL_CO
 import { sendReminderEmailVerificationCode } from "../lib/email";
 import { getTribeIntentionText } from "../lib/tribeIntention";
 import { BIBLE_BOOKS, TOTAL_CHAPTERS, APPROX_TOTAL_VERSES, orderedChapterList, chaptersForDay, formatReading, dayIndexForDate, buildPlanView, defaultStartBook, isValidBook, AHEAD_WINDOW_DAYS, type Testament } from "../lib/bibleCanon";
+import { MENS_TOPICS, isValidTopicId, topicTitle } from "../lib/mensTopics";
 
 const MAX_PULSE_NOTE_LENGTH = 500;
 const MAX_SPHERE_NOTE_LENGTH = 500;
@@ -197,22 +198,31 @@ router.get('/verse/history', async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/verse-favorites — bank favorites + favorited custom verses (#96),
-// merged newest-favorited-first. Custom entries carry their `id` so the
-// client knows to un-favorite them via PATCH /my-verses/:id rather than
-// DELETE /verse-favorites (which only ever addresses the bank's ref space).
+// GET /api/verse-favorites — bank favorites + favorited custom verses (#96)
+// + reading-plan-day favorites + Men's Topic favorites (#188, merged into
+// this same list per #188 grilling Q7 rather than split lists), newest-
+// favorited-first. `source` tags which table an entry came from so the
+// client can render the right badge and dispatch removal correctly; `custom`
+// is kept alongside it since existing client code already keys off it.
+// Custom-verse entries carry their `id` (PATCH /my-verses/:id to unfavorite);
+// Men's Topic entries carry `topicId` (DELETE /mens-topics/:id/favorite);
+// bank and reading-plan entries unfavorite by `ref` via their own DELETE.
 router.get('/verse-favorites', async (req: Request, res: Response) => {
   try {
-    const [bankRows, customRows] = await Promise.all([
+    const [bankRows, customRows, planFavRows, topicFavRows] = await Promise.all([
       db.select().from(verseFavorites).where(eq(verseFavorites.userId, req.user!.id)),
       db.select().from(customVerses).where(and(eq(customVerses.userId, req.user!.id), eq(customVerses.favorited, true))),
+      db.select().from(bibleReadingPlanFavorites).where(eq(bibleReadingPlanFavorites.userId, req.user!.id)),
+      db.select().from(mensTopicFavorites).where(eq(mensTopicFavorites.userId, req.user!.id)),
     ]);
     const merged = [
-      ...bankRows.map((r) => ({ ref: r.verseRef, text: verseTextForRef(r.verseRef) ?? '', custom: false as const, id: null as number | null, createdAt: r.createdAt })),
-      ...customRows.map((r) => ({ ref: r.ref, text: r.text, custom: true as const, id: r.id, createdAt: r.createdAt })),
+      ...bankRows.map((r) => ({ ref: r.verseRef, text: verseTextForRef(r.verseRef) ?? '', custom: false as const, id: null as number | null, topicId: null as string | null, source: 'bank' as const, createdAt: r.createdAt })),
+      ...customRows.map((r) => ({ ref: r.ref, text: r.text, custom: true as const, id: r.id, topicId: null as string | null, source: 'custom' as const, createdAt: r.createdAt })),
+      ...planFavRows.map((r) => ({ ref: r.ref, text: '', custom: false as const, id: null as number | null, topicId: null as string | null, source: 'reading_plan' as const, createdAt: r.createdAt })),
+      ...topicFavRows.map((r) => ({ ref: topicTitle(r.topicId) ?? r.topicId, text: MENS_TOPICS.find((t) => t.id === r.topicId)?.description ?? '', custom: false as const, id: null as number | null, topicId: r.topicId as string | null, source: 'mens_topic' as const, createdAt: r.createdAt })),
     ];
     merged.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-    res.json(merged.map(({ ref, text, custom, id }) => ({ ref, text, custom, id })));
+    res.json(merged.map(({ ref, text, custom, id, topicId, source }) => ({ ref, text, custom, id, topicId, source })));
   } catch (err) {
     req.log?.error({ err }, 'Error fetching verse favorites');
     res.status(500).json({ error: 'Failed to fetch favorites' });
@@ -350,16 +360,26 @@ router.delete('/my-verses/:id', async (req: Request, res: Response) => {
 // #181 Phase 1 — Bible Reading Plan.
 const MAX_BIBLE_PLAN_DAYS = 3650; // ~10 years, a sanity ceiling, not a real limit
 
-function serializeBiblePlan(plan: BibleReadingPlan, today: string, completedDayIndexes: Set<number>) {
+// #188 — today's note (if any) rides along on every serialized plan so the
+// Today card can show its restrained one-line display without a second
+// round trip. Async only for this lookup; everything else here stays the
+// same pure computation it always was.
+async function serializeBiblePlan(plan: BibleReadingPlan, today: string, completedDayIndexes: Set<number>) {
   const view = buildPlanView({ ...plan, testamentFirst: plan.testamentFirst as Testament }, completedDayIndexes, today);
+  const [noteRow] = await db.select({ note: bibleReadingPlanNotes.note }).from(bibleReadingPlanNotes)
+    .where(and(eq(bibleReadingPlanNotes.planId, plan.id), eq(bibleReadingPlanNotes.dayIndex, view.currentDayIndex))).limit(1);
+  const [favoriteRow] = view.todayReading
+    ? await db.select({ ref: bibleReadingPlanFavorites.ref }).from(bibleReadingPlanFavorites)
+        .where(and(eq(bibleReadingPlanFavorites.userId, plan.userId), eq(bibleReadingPlanFavorites.ref, view.todayReading))).limit(1)
+    : [undefined];
   return {
     id: plan.id, slot: plan.slot, planType: plan.planType,
     testamentFirst: plan.testamentFirst, startBook: plan.startBook, startChapter: plan.startChapter,
     startDate: plan.startDate, totalDays: plan.totalDays,
     streak: view.streak, progressPct: view.progressPct, isPlanComplete: view.isPlanComplete,
-    backlog: view.backlog,
+    backlog: view.backlog, currentDayIndex: view.currentDayIndex,
     todayReading: view.todayReading, nextDueDayIndex: view.nextDueDayIndex, nextDueDate: view.nextDueDate,
-    ahead: view.ahead,
+    ahead: view.ahead, todayNote: noteRow?.note ?? '', todayFavorited: Boolean(favoriteRow),
   };
 }
 
@@ -379,8 +399,8 @@ router.get('/bible-plan', async (req: Request, res: Response) => {
     const previous = rows.find((r) => r.slot === 'previous') ?? null;
     const today = new Date().toISOString().slice(0, 10);
     res.json({
-      current: current ? serializeBiblePlan(current, today, await completedDayIndexesFor(req.user!.id, current.id)) : null,
-      previous: previous ? serializeBiblePlan(previous, today, await completedDayIndexesFor(req.user!.id, previous.id)) : null,
+      current: current ? await serializeBiblePlan(current, today, await completedDayIndexesFor(req.user!.id, current.id)) : null,
+      previous: previous ? await serializeBiblePlan(previous, today, await completedDayIndexesFor(req.user!.id, previous.id)) : null,
       books: BIBLE_BOOKS.map((b) => ({ name: b.name, testament: b.testament, chapters: b.chapters })),
       totalChapters: TOTAL_CHAPTERS, approxTotalVerses: APPROX_TOTAL_VERSES,
     });
@@ -435,7 +455,7 @@ router.post('/bible-plan', async (req: Request, res: Response) => {
       startDate, totalDays: days,
     }).returning();
 
-    res.json(serializeBiblePlan(row!, new Date().toISOString().slice(0, 10), new Set()));
+    res.json(await serializeBiblePlan(row!, new Date().toISOString().slice(0, 10), new Set()));
   } catch (err) {
     req.log?.error({ err }, 'Error creating bible reading plan');
     res.status(500).json({ error: 'Failed to create reading plan' });
@@ -497,7 +517,7 @@ router.post('/bible-plan/:id/complete', async (req: Request, res: Response) => {
     await db.insert(bibleReadingPlanCompletions)
       .values({ userId: req.user!.id, planId: id, dayIndex: dayIndex as number })
       .onConflictDoNothing({ target: [bibleReadingPlanCompletions.planId, bibleReadingPlanCompletions.dayIndex] });
-    res.json(serializeBiblePlan(plan, new Date().toISOString().slice(0, 10), await completedDayIndexesFor(req.user!.id, id)));
+    res.json(await serializeBiblePlan(plan, new Date().toISOString().slice(0, 10), await completedDayIndexesFor(req.user!.id, id)));
   } catch (err) {
     req.log?.error({ err }, 'Error completing bible reading plan day');
     res.status(500).json({ error: 'Failed to mark day complete' });
@@ -515,7 +535,7 @@ router.delete('/bible-plan/:id/complete/:dayIndex', async (req: Request, res: Re
     await db.delete(bibleReadingPlanCompletions).where(and(
       eq(bibleReadingPlanCompletions.planId, id), eq(bibleReadingPlanCompletions.dayIndex, dayIndex), eq(bibleReadingPlanCompletions.userId, req.user!.id),
     ));
-    res.json(serializeBiblePlan(plan, new Date().toISOString().slice(0, 10), await completedDayIndexesFor(req.user!.id, id)));
+    res.json(await serializeBiblePlan(plan, new Date().toISOString().slice(0, 10), await completedDayIndexesFor(req.user!.id, id)));
   } catch (err) {
     req.log?.error({ err }, 'Error un-completing bible reading plan day');
     res.status(500).json({ error: 'Failed to undo completion' });
@@ -547,7 +567,7 @@ router.post('/bible-plan/:id/complete-batch', async (req: Request, res: Response
     await db.insert(bibleReadingPlanCompletions)
       .values(dayIndexes.map((dayIndex) => ({ userId: req.user!.id, planId: id, dayIndex })))
       .onConflictDoNothing({ target: [bibleReadingPlanCompletions.planId, bibleReadingPlanCompletions.dayIndex] });
-    res.json(serializeBiblePlan(plan, new Date().toISOString().slice(0, 10), await completedDayIndexesFor(req.user!.id, id)));
+    res.json(await serializeBiblePlan(plan, new Date().toISOString().slice(0, 10), await completedDayIndexesFor(req.user!.id, id)));
   } catch (err) {
     req.log?.error({ err }, 'Error batch-completing bible reading plan days');
     res.status(500).json({ error: 'Failed to mark days complete' });
@@ -568,10 +588,169 @@ router.post('/bible-plan/:id/uncomplete-batch', async (req: Request, res: Respon
     await db.delete(bibleReadingPlanCompletions).where(and(
       eq(bibleReadingPlanCompletions.planId, id), inArray(bibleReadingPlanCompletions.dayIndex, dayIndexes), eq(bibleReadingPlanCompletions.userId, req.user!.id),
     ));
-    res.json(serializeBiblePlan(plan, new Date().toISOString().slice(0, 10), await completedDayIndexesFor(req.user!.id, id)));
+    res.json(await serializeBiblePlan(plan, new Date().toISOString().slice(0, 10), await completedDayIndexesFor(req.user!.id, id)));
   } catch (err) {
     req.log?.error({ err }, 'Error batch-un-completing bible reading plan days');
     res.status(500).json({ error: 'Failed to undo completions' });
+  }
+});
+
+const MAX_BIBLE_PLAN_REF_LENGTH = 200; // generous — the longest real grouped reading is well under this
+const BIBLE_PLAN_DAY_LOG_PAGE_SIZE = 30; // #188 grilling, Q16
+
+// GET /api/bible-plan/:id/days?before=<dayIndex>&limit=<n> — #188's
+// day-by-day reading log (the "look back on any past day" browsing
+// surface), paginated newest-first. The range tops out at whichever is
+// higher: today (currentDayIndex) or the highest already-completed day —
+// covers a day read ahead on via Catch Up becoming loggable immediately,
+// without waiting for its calendar date (#188 grilling, Q14).
+router.get('/bible-plan/:id/days', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id as string, 10);
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    const [plan] = await db.select().from(bibleReadingPlans).where(and(eq(bibleReadingPlans.id, id), eq(bibleReadingPlans.userId, req.user!.id))).limit(1);
+    if (!plan) { res.status(404).json({ error: 'Plan not found' }); return; }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const rawDayIndex = dayIndexForDate(plan.startDate, today);
+    const currentDayIndex = Math.max(0, Math.min(rawDayIndex, plan.totalDays - 1));
+
+    const [completedRows, favoriteRows, noteRows] = await Promise.all([
+      db.select({ dayIndex: bibleReadingPlanCompletions.dayIndex }).from(bibleReadingPlanCompletions)
+        .where(and(eq(bibleReadingPlanCompletions.planId, id), eq(bibleReadingPlanCompletions.userId, req.user!.id))),
+      db.select({ ref: bibleReadingPlanFavorites.ref }).from(bibleReadingPlanFavorites).where(eq(bibleReadingPlanFavorites.userId, req.user!.id)),
+      db.select({ dayIndex: bibleReadingPlanNotes.dayIndex, note: bibleReadingPlanNotes.note }).from(bibleReadingPlanNotes)
+        .where(and(eq(bibleReadingPlanNotes.planId, id), eq(bibleReadingPlanNotes.userId, req.user!.id))),
+    ]);
+    const completedSet = new Set(completedRows.map((r) => r.dayIndex));
+    const favoritedRefs = new Set(favoriteRows.map((r) => r.ref));
+    const notesByDay = new Map(noteRows.filter((r) => r.note).map((r) => [r.dayIndex, r.note]));
+
+    const maxCompleted = completedRows.reduce((max, r) => Math.max(max, r.dayIndex), -1);
+    const logMaxDayIndex = Math.max(currentDayIndex, maxCompleted);
+
+    const beforeParam = typeof req.query.before === 'string' ? parseInt(req.query.before, 10) : NaN;
+    const startAt = Number.isInteger(beforeParam) ? Math.min(beforeParam - 1, logMaxDayIndex) : logMaxDayIndex;
+    const limitParam = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : NaN;
+    const limit = Number.isInteger(limitParam) && limitParam > 0 ? Math.min(limitParam, 100) : BIBLE_PLAN_DAY_LOG_PAGE_SIZE;
+    const endAt = Math.max(0, startAt - limit + 1);
+
+    const orderedList = orderedChapterList(plan.testamentFirst as Testament, plan.startBook, plan.startChapter);
+    const startDateObj = new Date(plan.startDate);
+    const items: { dayIndex: number; date: string; reading: string; completed: boolean; favorited: boolean; note: string }[] = [];
+    for (let i = startAt; i >= endAt; i--) {
+      const reading = formatReading(chaptersForDay(i, plan.totalDays, orderedList));
+      if (!reading) continue;
+      const d = new Date(startDateObj);
+      d.setUTCDate(d.getUTCDate() + i);
+      items.push({
+        dayIndex: i, date: d.toISOString().slice(0, 10), reading,
+        completed: completedSet.has(i), favorited: favoritedRefs.has(reading), note: notesByDay.get(i) ?? '',
+      });
+    }
+    res.json({ items, nextBefore: endAt > 0 ? endAt : null });
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching bible reading plan day log');
+    res.status(500).json({ error: 'Failed to fetch reading log' });
+  }
+});
+
+// POST /api/bible-plan/day-favorites — favoriting a reading-plan day saves
+// its grouped reference (e.g. "Genesis 1-3") only, decoupled from any
+// specific plan/day (#188 grilling, Q4) — merges into the unified
+// GET /verse-favorites list below, tagged "reading_plan".
+router.post('/bible-plan/day-favorites', async (req: Request, res: Response) => {
+  try {
+    const { ref } = req.body as { ref?: unknown };
+    if (typeof ref !== 'string' || !ref.trim() || ref.length > MAX_BIBLE_PLAN_REF_LENGTH) {
+      res.status(400).json({ error: 'A valid reading reference is required' }); return;
+    }
+    await db.insert(bibleReadingPlanFavorites).values({ userId: req.user!.id, ref }).onConflictDoNothing();
+    res.json({ ref });
+  } catch (err) {
+    req.log?.error({ err }, 'Error adding reading plan day favorite');
+    res.status(500).json({ error: 'Failed to add favorite' });
+  }
+});
+
+// DELETE /api/bible-plan/day-favorites — ref in the body, same reasoning
+// as DELETE /verse-favorites (a grouped reference like "Genesis 50; Exodus
+// 1" isn't a clean path segment).
+router.delete('/bible-plan/day-favorites', async (req: Request, res: Response) => {
+  try {
+    const { ref } = req.body as { ref?: unknown };
+    if (typeof ref !== 'string') { res.status(400).json({ error: 'Invalid reading reference' }); return; }
+    await db.delete(bibleReadingPlanFavorites).where(and(eq(bibleReadingPlanFavorites.userId, req.user!.id), eq(bibleReadingPlanFavorites.ref, ref)));
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error removing reading plan day favorite');
+    res.status(500).json({ error: 'Failed to remove favorite' });
+  }
+});
+
+const MAX_BIBLE_PLAN_NOTE_LENGTH = 2000;
+
+// POST /api/bible-plan/:id/notes — upserts a day's note (#188 grilling,
+// Q4/Q13): scoped to (planId, dayIndex), freely editable, save-on-blur from
+// the client. An empty string is stored as "no note" (never deleted, same
+// convention journal_entries already uses for reflect/commit_text) so a
+// day's note row is stable to look up rather than sometimes-present.
+router.post('/bible-plan/:id/notes', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id as string, 10);
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    const { dayIndex, note } = req.body as { dayIndex?: unknown; note?: unknown };
+    if (!Number.isInteger(dayIndex) || (dayIndex as number) < 0) { res.status(400).json({ error: 'dayIndex must be a non-negative integer' }); return; }
+    if (typeof note !== 'string' || note.length > MAX_BIBLE_PLAN_NOTE_LENGTH) { res.status(400).json({ error: 'Invalid note' }); return; }
+    const [plan] = await db.select().from(bibleReadingPlans).where(and(eq(bibleReadingPlans.id, id), eq(bibleReadingPlans.userId, req.user!.id))).limit(1);
+    if (!plan) { res.status(404).json({ error: 'Plan not found' }); return; }
+    await db.insert(bibleReadingPlanNotes)
+      .values({ userId: req.user!.id, planId: id, dayIndex: dayIndex as number, note })
+      .onConflictDoUpdate({ target: [bibleReadingPlanNotes.planId, bibleReadingPlanNotes.dayIndex], set: { note, updatedAt: new Date() } });
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error saving bible reading plan note');
+    res.status(500).json({ error: 'Failed to save note' });
+  }
+});
+
+// GET /api/mens-topics — the fixed browsable topic list (#188 Phase 2) plus
+// which ones this user has favorited. No verse/chapter references yet —
+// that curation is #189 Phase 3's job once a Themes plan type needs it.
+router.get('/mens-topics', async (req: Request, res: Response) => {
+  try {
+    const rows = await db.select({ topicId: mensTopicFavorites.topicId }).from(mensTopicFavorites).where(eq(mensTopicFavorites.userId, req.user!.id));
+    res.json({ topics: MENS_TOPICS, favoritedIds: rows.map((r) => r.topicId) });
+  } catch (err) {
+    req.log?.error({ err }, 'Error fetching mens topics');
+    res.status(500).json({ error: 'Failed to fetch topics' });
+  }
+});
+
+// POST /api/mens-topics/:id/favorite — topic-level favoriting only (#188
+// grilling, Q5) — no per-reference favoriting until #189 curates real
+// content to point at.
+router.post('/mens-topics/:id/favorite', async (req: Request, res: Response) => {
+  try {
+    const topicId = req.params.id as string;
+    if (!isValidTopicId(topicId)) { res.status(400).json({ error: 'Unknown topic' }); return; }
+    await db.insert(mensTopicFavorites).values({ userId: req.user!.id, topicId }).onConflictDoNothing();
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error adding mens topic favorite');
+    res.status(500).json({ error: 'Failed to add favorite' });
+  }
+});
+
+// DELETE /api/mens-topics/:id/favorite
+router.delete('/mens-topics/:id/favorite', async (req: Request, res: Response) => {
+  try {
+    const topicId = req.params.id as string;
+    await db.delete(mensTopicFavorites).where(and(eq(mensTopicFavorites.userId, req.user!.id), eq(mensTopicFavorites.topicId, topicId)));
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, 'Error removing mens topic favorite');
+    res.status(500).json({ error: 'Failed to remove favorite' });
   }
 });
 

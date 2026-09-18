@@ -29,6 +29,12 @@ const RLS_TABLES = [
   "commits", "jobs", "coming_up", "google_calendar_connections", "profile",
   "pulse_checks", "relationships", "pursuits", "commit_relationship_targets",
   "verse_favorites", "sphere_checks",
+  // #188 — added alongside bible_reading_plans/bible_reading_plan_completions
+  // (#187), which were never added to this list when they shipped. Only
+  // closing that gap for this feature area here, not auditing every other
+  // per-user table added since this list was last touched.
+  "bible_reading_plans", "bible_reading_plan_completions",
+  "bible_reading_plan_favorites", "bible_reading_plan_notes", "mens_topic_favorites",
 ];
 
 // Guarded per-table: this bootstrap's own CREATE TABLE statements below

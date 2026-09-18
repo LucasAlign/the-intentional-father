@@ -549,6 +549,64 @@ export const insertBibleReadingPlanCompletionSchema = createInsertSchema(bibleRe
 export type InsertBibleReadingPlanCompletion = z.infer<typeof insertBibleReadingPlanCompletionSchema>;
 export type BibleReadingPlanCompletion = typeof bibleReadingPlanCompletions.$inferSelect;
 
+// #188 — favoriting a reading-plan day saves the book/chapter *reference*
+// only (e.g. "Genesis 1-3"), never verse text, same no-text constraint the
+// whole feature has throughout. Deliberately decoupled from any specific
+// plan/day (unlike bibleReadingPlanNotes below) — keyed on the reference
+// itself, matching verseFavorites — because "I love this passage" doesn't
+// stop being true if the plan that surfaced it is later deleted or evicted
+// by the two-slot rolling buffer. Merges into the same unified Favorites
+// list bank/custom favorites already appear in, tagged distinctly.
+export const bibleReadingPlanFavorites = pgTable("bible_reading_plan_favorites", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  ref: text("ref").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  unique("bible_plan_favorites_user_ref_unique").on(table.userId, table.ref),
+]);
+
+export const insertBibleReadingPlanFavoriteSchema = createInsertSchema(bibleReadingPlanFavorites).omit({ id: true, createdAt: true });
+export type InsertBibleReadingPlanFavorite = z.infer<typeof insertBibleReadingPlanFavoriteSchema>;
+export type BibleReadingPlanFavorite = typeof bibleReadingPlanFavorites.$inferSelect;
+
+// #188 — a free-text note per reading day. Unlike favorites above, notes
+// stay scoped to (planId, dayIndex): a note is commentary on a specific
+// day of a specific plan's journey ("this hit hard on day 40"), and
+// re-attaching it to some unrelated future plan that happens to land on
+// the same book/chapter would misattribute it. Cascades with the plan.
+export const bibleReadingPlanNotes = pgTable("bible_reading_plan_notes", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  planId: integer("plan_id").notNull().references(() => bibleReadingPlans.id, { onDelete: "cascade" }),
+  dayIndex: integer("day_index").notNull(),
+  note: text("note").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  unique("bible_plan_notes_plan_day_unique").on(table.planId, table.dayIndex),
+]);
+
+export const insertBibleReadingPlanNoteSchema = createInsertSchema(bibleReadingPlanNotes).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertBibleReadingPlanNote = z.infer<typeof insertBibleReadingPlanNoteSchema>;
+export type BibleReadingPlanNote = typeof bibleReadingPlanNotes.$inferSelect;
+
+// #188 — favoriting one of the fixed "Men's Topics" (lib/mensTopics.ts,
+// content-only, no DB table for the topics themselves since the list is
+// static). topicId is that list's stable string slug, not a numeric FK.
+export const mensTopicFavorites = pgTable("mens_topic_favorites", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  topicId: text("topic_id").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  unique("mens_topic_favorites_user_topic_unique").on(table.userId, table.topicId),
+]);
+
+export const insertMensTopicFavoriteSchema = createInsertSchema(mensTopicFavorites).omit({ id: true, createdAt: true });
+export type InsertMensTopicFavorite = z.infer<typeof insertMensTopicFavoriteSchema>;
+export type MensTopicFavorite = typeof mensTopicFavorites.$inferSelect;
+
 // #137 — Tribe's auto-generated "Today's Intention" card. One row per
 // user/date/relationship: an OpenAI-generated line about whoever is
 // currently the Tribe tab's primary person (starred-first, else top of

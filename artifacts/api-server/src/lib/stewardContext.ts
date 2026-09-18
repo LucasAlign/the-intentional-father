@@ -1,5 +1,5 @@
 import { and, desc, eq, gte, inArray, lt, ne } from "drizzle-orm";
-import { db, journalEntries, tasks, taskCompletions, pulseChecks, commits, commitRelationshipTargets, relationships, type Relationship, sphereChecks, jobs, pursuits, bibleReadingPlans, bibleReadingPlanCompletions } from "@workspace/db";
+import { db, journalEntries, tasks, taskCompletions, pulseChecks, commits, commitRelationshipTargets, relationships, type Relationship, sphereChecks, jobs, pursuits, bibleReadingPlans, bibleReadingPlanCompletions, bibleReadingPlanNotes } from "@workspace/db";
 import { isSlipping, type RecurrencePeriod } from "./priorityPeriods";
 import { PULSE_STATE_LABEL, type PulseState } from "./pulseCheck";
 import { SPHERE_CATEGORIES, SPHERE_CATEGORY_LABEL, SPHERE_STATE_LABEL, getWeekStart, summarizeFlaggedSphereAnswers, type SphereCategory, type SphereState } from "./sphere";
@@ -268,6 +268,14 @@ export async function buildTodayContext(userId: string, today: string): Promise<
       context += `- ${view.progressPct}% through, today's reading not yet done.\n`;
     } else {
       context += `- ${view.progressPct}% through, ${view.backlog.length} days behind (streak reset) — encourage catching up, don't nag.\n`;
+    }
+    // #188 grilling, Q9 — today's reading-plan note (if any) is exactly the
+    // kind of signal this proactive-notice pattern already exists to pick
+    // up on, same as Sphere's flagged walkthrough answers.
+    const [todayNoteRow] = await db.select({ note: bibleReadingPlanNotes.note }).from(bibleReadingPlanNotes)
+      .where(and(eq(bibleReadingPlanNotes.planId, currentBiblePlan.id), eq(bibleReadingPlanNotes.dayIndex, view.currentDayIndex))).limit(1);
+    if (todayNoteRow?.note) {
+      context += `- Their note on today's reading: "${todayNoteRow.note}"\n`;
     }
     context += '\n';
   }

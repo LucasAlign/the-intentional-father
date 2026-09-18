@@ -83,12 +83,22 @@ interface BiblePlan {
   testamentFirst: "old" | "new"; startBook: string; startChapter: number;
   startDate: string; totalDays: number;
   streak: number; progressPct: number; isPlanComplete: boolean;
-  backlog: BiblePlanBacklogEntry[];
+  backlog: BiblePlanBacklogEntry[]; currentDayIndex: number;
   todayReading: string; nextDueDayIndex: number | null; nextDueDate: string | null;
-  ahead: BiblePlanAheadEntry[];
+  ahead: BiblePlanAheadEntry[]; todayNote: string; todayFavorited: boolean;
 }
 interface BibleBookInfo { name: string; testament: "old" | "new"; chapters: number; }
 interface BiblePlanResponse { current: BiblePlan | null; previous: BiblePlan | null; books: BibleBookInfo[]; totalChapters: number; approxTotalVerses: number; }
+// #188 — Men's Topics (browsable, favoritable; no per-reference content yet).
+interface MensTopic { id: string; title: string; description: string; }
+// #188 — one page of the Reading Plan's day-by-day browsing log.
+interface BiblePlanDayLogEntry { dayIndex: number; date: string; reading: string; completed: boolean; favorited: boolean; note: string; }
+// #188 — the unified Favorites list now merges four sources (bank, My
+// Verses, reading-plan-day, Men's Topic — #188 grilling Q7); `source` tags
+// which one so removal dispatches to the right endpoint, and `topicId`
+// carries the extra key a Men's Topic entry needs for that dispatch.
+type FavoriteSource = "bank" | "custom" | "reading_plan" | "mens_topic";
+type ToggleFavoriteFn = (ref: string, favorite: boolean, customId?: number, source?: FavoriteSource, topicId?: string) => Promise<boolean>;
 // #93 — "account" for the pinned, always-verified login email, or a
 // reminder_emails row id (as a string) for anything the user's added.
 interface ReminderEmailEntry { id: string; email: string; verified: boolean; active: boolean; removable: boolean; pending: boolean; }
@@ -929,11 +939,22 @@ export default function Home() {
     return getJson(`${API}/profile`, null).then((d) => { if (isRecord(d) && isRecord(d.data)) setProfile(d.data as unknown as ProfileData); });
   }, []);
 
-  async function toggleVerseFavorite(ref: string, favorite: boolean, customId?: number): Promise<boolean> {
+  const toggleVerseFavorite: ToggleFavoriteFn = async (ref, favorite, customId, source, topicId) => {
     try {
-      // A custom verse's favorited flag lives on its own row, not the
-      // bank's verse-favorites table (see #96) — different endpoint.
-      const res = customId
+      // #188 — four distinct favorite tables now share this one toggle:
+      // a custom verse's flag lives on its own row (#96); a Men's Topic
+      // favorite keys on topicId, not ref; a reading-plan-day favorite has
+      // its own table (decoupled from any specific plan, #188 grilling
+      // Q4); anything else falls through to the bank's own table.
+      const res = source === "mens_topic" && topicId
+        ? await apiFetch(`${API}/mens-topics/${topicId}/favorite`, { method: favorite ? "POST" : "DELETE" })
+        : source === "reading_plan"
+        ? await apiFetch(`${API}/bible-plan/day-favorites`, {
+            method: favorite ? "POST" : "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ref }),
+          })
+        : customId
         ? await apiFetch(`${API}/my-verses/${customId}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -949,7 +970,7 @@ export default function Home() {
     } catch {
       return false;
     }
-  }
+  };
 
   const refreshTasks = useCallback(() => {
     return getList<Task>(`${API}/tasks?today=${ymd(new Date())}`).then(setTasks);
@@ -1653,7 +1674,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   onOpenPriority: (t: Task) => void; onViewCompleted: () => void;
   pulseChecks: PulseCheckEntry[]; onSavePulseCheck: (category: PulseCategory, state: PulseState, note: string) => Promise<boolean>;
   onOpenJournalHistory: () => void; onOpenIntentionHistory: () => void;
-  onToggleVerseFavorite: (ref: string, favorite: boolean, customId?: number) => Promise<boolean>; onOpenVerseHistory: () => void; onOpenVerseFavorites: () => void;
+  onToggleVerseFavorite: ToggleFavoriteFn; onOpenVerseHistory: () => void; onOpenVerseFavorites: () => void;
   hasChatMessages: boolean;
 }) {
   const [intent, setIntent] = useState(journal.commit_text);
@@ -1705,6 +1726,12 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   const [planManageOpen, setPlanManageOpen] = useState(false);
   const [catchUpOpen, setCatchUpOpen] = useState(false);
   const [completingDayIndex, setCompletingDayIndex] = useState<number | null>(null);
+  // #188 — the "More" menu and its two brand-new rows' own modals. Verse
+  // History/Favorites stay lifted at Home() (onOpenVerseHistory/
+  // onOpenVerseFavorites props, unchanged); Reading Plan/Men's Topics are
+  // scoped entirely to Today() like the rest of this feature already is.
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const [mensTopicsOpen, setMensTopicsOpen] = useState(false);
   const { error: planError, flash: flashPlanError } = useTapError();
   const refreshBiblePlan = useCallback(() => {
     getJson(`${API}/bible-plan`, null).then(d => setBiblePlanData(isRecord(d) ? d as unknown as BiblePlanResponse : null));
@@ -1841,13 +1868,10 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
         <div style={{ ...S.prioHeadRow, width: "100%", marginBottom: 12 }}>
           <div style={{ ...S.eyebrow, marginBottom: 0 }}><Icon name="book" /><h2 style={S.eyeText}>VERSE OF THE DAY</h2></div>
           <div style={{ display: "flex", gap: 10 }}>
-            <button style={S.prioLogLink} onClick={onOpenVerseHistory}>History ›</button>
-            <button style={S.prioLogLink} onClick={onOpenVerseFavorites}>Favorites ›</button>
-            {/* #181 Phase 1 — a plan or two already exist → open the small
-                Manage sheet (switch/start-new); nothing yet → straight into
-                setup. Phase 2 folds this + History/Favorites into one
-                "More ›" menu — deliberately not built here. */}
-            <button style={S.prioLogLink} onClick={() => (biblePlanData?.current || biblePlanData?.previous) ? setPlanManageOpen(true) : setPlanSetupOpen(true)}>Plan ›</button>
+            {/* #188 — History/Favorites/Plan folded into one "More ›" entry
+                point (#188 grilling, Q1) — one mental model instead of
+                three separate doors into overlapping content. */}
+            <button style={S.prioLogLink} onClick={() => setMoreMenuOpen(true)}>More ›</button>
           </div>
         </div>
         <div style={S.verseText}>{verse?.text || "…"}</div>
@@ -1881,6 +1905,12 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
                   const plan = biblePlanData.current!;
                   const todayStr = ymd(new Date());
                   const nextDueLater = Boolean(plan.nextDueDate && plan.nextDueDate > todayStr);
+                  // #188 follow-up — the card shows only the single oldest
+                  // overdue day, regardless of how far behind the plan is;
+                  // the rest of the backlog lives in Read Ahead / Catch Up,
+                  // reached via the count line below rather than listed
+                  // here one row per day.
+                  const nextDue = plan.backlog[0];
                   return (
                     <>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
@@ -1895,22 +1925,33 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
                           <button style={S.prioLogLink} onClick={() => setCatchUpOpen(true)}>Read ahead ›</button>
                         </div>
                       </div>
-                      {plan.backlog.length === 0 ? (
+                      {/* #188 — today's note, if any, is a restrained
+                          read-only line on the card; it's written/edited
+                          from Read Ahead / Catch Up, not here. */}
+                      {plan.todayNote && <div style={{ ...S.prioSub, marginBottom: 6, fontStyle: "italic" }}>"{plan.todayNote}"</div>}
+                      {!nextDue ? (
                         <div style={S.prioSub}>
                           {nextDueLater ? "Nothing due today — you're ahead of schedule." : "All caught up — nothing due today."}
                         </div>
-                      ) : plan.backlog.map(entry => (
-                        <div key={entry.dayIndex} style={S.readingPlanRow}>
-                          <div style={{ flex: 1 }}>{entry.reading}</div>
-                          <button
-                            style={S.readingPlanCompleteBtn}
-                            disabled={completingDayIndex === entry.dayIndex}
-                            onClick={() => completeReadingDay(plan.id, entry.dayIndex)}
-                          >
-                            {completingDayIndex === entry.dayIndex ? "…" : "Mark complete"}
-                          </button>
-                        </div>
-                      ))}
+                      ) : (
+                        <>
+                          <div style={S.readingPlanRow}>
+                            <div style={{ flex: 1 }}>{nextDue.reading}</div>
+                            <button
+                              style={S.readingPlanCompleteBtn}
+                              disabled={completingDayIndex === nextDue.dayIndex}
+                              onClick={() => completeReadingDay(plan.id, nextDue.dayIndex)}
+                            >
+                              {completingDayIndex === nextDue.dayIndex ? "…" : "Mark complete"}
+                            </button>
+                          </div>
+                          {plan.backlog.length > 1 && (
+                            <div style={{ ...S.prioSub, marginTop: 4 }}>
+                              +{plan.backlog.length - 1} more day{plan.backlog.length - 1 === 1 ? "" : "s"} to catch up — <button style={S.readingPlanNextDueLink} onClick={() => setCatchUpOpen(true)}>Catch up ›</button>
+                            </div>
+                          )}
+                        </>
+                      )}
                     </>
                   );
                 })()}
@@ -1944,6 +1985,20 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
           onSaved={refreshBiblePlan}
         />
       )}
+      {moreMenuOpen && (
+        <MoreMenuModal
+          onClose={() => setMoreMenuOpen(false)}
+          onOpenVerseHistory={() => { setMoreMenuOpen(false); onOpenVerseHistory(); }}
+          onOpenVerseFavorites={() => { setMoreMenuOpen(false); onOpenVerseFavorites(); }}
+          onOpenReadingPlan={() => {
+            setMoreMenuOpen(false);
+            if (biblePlanData?.current || biblePlanData?.previous) setPlanManageOpen(true);
+            else setPlanSetupOpen(true);
+          }}
+          onOpenMensTopics={() => { setMoreMenuOpen(false); setMensTopicsOpen(true); }}
+        />
+      )}
+      {mensTopicsOpen && <MensTopicsModal onClose={() => setMensTopicsOpen(false)} />}
 
       <div style={S.cardCentered}>
         <div style={{ ...S.prioHeadRow, width: "100%" }}>
@@ -6471,7 +6526,7 @@ function IntentionTransferModal({ queue, relationships, onDone, onCommitSaved, o
 // than logged; see lib/verses.ts's getVerseHistoryForUser. #96 adds a
 // separate "My Verses" section below it — not date-based, a straight list
 // of the user's own saved verses with Edit/Delete.
-function VerseHistoryModal({ onClose, onToggleFavorite }: { onClose: () => void; onToggleFavorite: (ref: string, favorite: boolean, customId?: number) => Promise<boolean> }) {
+function VerseHistoryModal({ onClose, onToggleFavorite }: { onClose: () => void; onToggleFavorite: ToggleFavoriteFn }) {
   const [entries, setEntries] = useState<VerseHistoryEntry[] | null>(null);
   const [togglingRef, setTogglingRef] = useState<string | null>(null);
 
@@ -6620,8 +6675,21 @@ function MyVersesSection() {
   );
 }
 
-function VerseFavoritesModal({ onClose, onToggleFavorite }: { onClose: () => void; onToggleFavorite: (ref: string, favorite: boolean, customId?: number) => Promise<boolean> }) {
-  const [entries, setEntries] = useState<{ ref: string; text: string; custom: boolean; id: number | null }[] | null>(null);
+interface FavoriteEntry { ref: string; text: string; custom: boolean; id: number | null; topicId: string | null; source: FavoriteSource; }
+
+// #188 — the badge shown per entry so a reading-plan favorite or a Men's
+// Topic favorite is never confused with a vetted bank verse or My Verses
+// entry, same "never merged indistinguishably" requirement #96's "MY
+// VERSE" tag already set the precedent for.
+function favoriteSourceTag(source: FavoriteSource): string | null {
+  if (source === "custom") return "MY VERSE";
+  if (source === "reading_plan") return "FROM YOUR READING PLAN";
+  if (source === "mens_topic") return "MEN'S TOPIC";
+  return null;
+}
+
+function VerseFavoritesModal({ onClose, onToggleFavorite }: { onClose: () => void; onToggleFavorite: ToggleFavoriteFn }) {
+  const [entries, setEntries] = useState<FavoriteEntry[] | null>(null);
   const [removingRef, setRemovingRef] = useState<string | null>(null);
   const { error: removeError, flash: flashRemoveError } = useTapError();
 
@@ -6633,14 +6701,19 @@ function VerseFavoritesModal({ onClose, onToggleFavorite }: { onClose: () => voi
   const { error: addError, flash: flashAddError } = useTapError();
 
   const load = useCallback(() => {
-    getList<{ ref: string; text: string; custom: boolean; id: number | null }>(`${API}/verse-favorites`).then(setEntries);
+    getList<FavoriteEntry>(`${API}/verse-favorites`).then(setEntries);
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  async function remove(entry: { ref: string; custom: boolean; id: number | null }) {
+  async function remove(entry: FavoriteEntry) {
     if (removingRef) return;
     setRemovingRef(entry.ref);
-    const ok = await onToggleFavorite(entry.ref, false, entry.custom && entry.id ? entry.id : undefined);
+    const ok = await onToggleFavorite(
+      entry.ref, false,
+      entry.custom && entry.id ? entry.id : undefined,
+      entry.source,
+      entry.topicId ?? undefined,
+    );
     if (ok) setEntries(list => list && list.filter(e => e.ref !== entry.ref));
     else flashRemoveError("Couldn't save — try again");
     setRemovingRef(null);
@@ -6673,20 +6746,23 @@ function VerseFavoritesModal({ onClose, onToggleFavorite }: { onClose: () => voi
     <div style={M.overlay}>
       <ModalSheet title="Favorite Verses" onClose={onClose}>
         <div>
-          {(entries ?? []).map(entry => (
-            <div key={entry.ref} style={S.card}>
-              <div style={S.prioHeadRow}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <div style={S.verseRef}>{entry.ref.toUpperCase()}</div>
-                  {entry.custom && <span style={{ ...S.upTag, ...S.myVerseTag }}>MY VERSE</span>}
+          {(entries ?? []).map(entry => {
+            const tag = favoriteSourceTag(entry.source);
+            return (
+              <div key={entry.ref} style={S.card}>
+                <div style={S.prioHeadRow}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={S.verseRef}>{entry.ref.toUpperCase()}</div>
+                    {tag && <span style={{ ...S.upTag, ...S.myVerseTag }}>{tag}</span>}
+                  </div>
+                  <button style={S.verseStarBtn} onClick={() => remove(entry)} disabled={removingRef === entry.ref} aria-label="Remove from favorites" aria-pressed={true}>
+                    <span style={{ color: C.brass }}>★</span>
+                  </button>
                 </div>
-                <button style={S.verseStarBtn} onClick={() => remove(entry)} disabled={removingRef === entry.ref} aria-label="Remove from favorites" aria-pressed={true}>
-                  <span style={{ color: C.brass }}>★</span>
-                </button>
+                {entry.text && <div style={{ ...S.prioTitle, marginTop: 6 }}>{entry.text}</div>}
               </div>
-              <div style={{ ...S.prioTitle, marginTop: 6 }}>{entry.text}</div>
-            </div>
-          ))}
+            );
+          })}
           {entries && entries.length === 0 && <div style={S.empty}>No favorites yet — tap the star on Verse of the Day to save one.</div>}
         </div>
         <TapError message={removeError} />
@@ -6721,10 +6797,85 @@ function VerseFavoritesModal({ onClose, onToggleFavorite }: { onClose: () => voi
   );
 }
 
+// #188 — "More": the single entry point folding History/Favorites/My
+// Verses/Reading Plan/Men's Topics into one list-style menu (#188 grilling,
+// Q1) — a small menu screen you tap rows into, matching ProfileMenu's own
+// row-button styling rather than Work's compact "⋯" overflow dropdown.
+function MoreMenuModal({ onClose, onOpenVerseHistory, onOpenVerseFavorites, onOpenReadingPlan, onOpenMensTopics }: {
+  onClose: () => void; onOpenVerseHistory: () => void; onOpenVerseFavorites: () => void;
+  onOpenReadingPlan: () => void; onOpenMensTopics: () => void;
+}) {
+  const rowStyle: CSSProperties = { ...M.next, background: "none", border: "1px solid rgba(210,190,130,0.18)", color: C.parchmentMid, boxShadow: "none" };
+  return (
+    <div style={M.overlay} onClick={onClose}>
+      <ModalSheet title="More" onClose={onClose} sheetOnClick={e => e.stopPropagation()}>
+        <button style={rowStyle} onClick={onOpenVerseHistory}>Verse History</button>
+        <button style={rowStyle} onClick={onOpenVerseFavorites}>Favorite Verses</button>
+        {/* My Verses (#96) lives inside the same History modal (unchanged) —
+            a separate row here for discoverability, per #188's own listing
+            of it as a distinct item, without duplicating that screen. */}
+        <button style={rowStyle} onClick={onOpenVerseHistory}>My Verses</button>
+        <button style={rowStyle} onClick={onOpenReadingPlan}>Reading Plan</button>
+        <button style={rowStyle} onClick={onOpenMensTopics}>Men's Topics</button>
+        <button style={M.cancel} onClick={onClose}>Close</button>
+      </ModalSheet>
+    </div>
+  );
+}
+
+// #188 — browsable/favoritable Men's Topics list, independent of whether
+// the Themes plan type (#189) ships. Topic-level favoriting only (#188
+// grilling, Q5) — no per-reference favoriting until #189 curates real
+// book/chapter/verse content to point at.
+function MensTopicsModal({ onClose }: { onClose: () => void }) {
+  const [data, setData] = useState<{ topics: MensTopic[]; favoritedIds: string[] } | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+  const { error: toggleError, flash: flashToggleError } = useTapError();
+
+  useEffect(() => {
+    getJson(`${API}/mens-topics`, null).then(d => setData(isRecord(d) ? d as unknown as { topics: MensTopic[]; favoritedIds: string[] } : null));
+  }, []);
+
+  async function toggleFavorite(topicId: string, favorited: boolean) {
+    setTogglingId(topicId);
+    try {
+      const r = await apiFetch(`${API}/mens-topics/${topicId}/favorite`, { method: favorited ? "DELETE" : "POST" });
+      if (r.ok) setData(d => d && { ...d, favoritedIds: favorited ? d.favoritedIds.filter(id => id !== topicId) : [...d.favoritedIds, topicId] });
+      else flashToggleError("Couldn't save — try again");
+    } catch { flashToggleError("Couldn't reach the server."); }
+    finally { setTogglingId(null); }
+  }
+
+  return (
+    <div style={M.overlay}>
+      <ModalSheet title="Men's Topics" onClose={onClose}>
+        {(data?.topics ?? []).map(topic => {
+          const favorited = data!.favoritedIds.includes(topic.id);
+          return (
+            <div key={topic.id} style={S.card}>
+              <div style={S.prioHeadRow}>
+                <div style={{ ...S.prioTitle, marginTop: 0 }}>{topic.title}</div>
+                <button
+                  style={S.verseStarBtn} onClick={() => toggleFavorite(topic.id, favorited)} disabled={togglingId === topic.id}
+                  aria-label={favorited ? "Remove from favorites" : "Add to favorites"} aria-pressed={favorited}
+                >
+                  <span style={{ color: favorited ? C.brass : C.parchmentDim }}>★</span>
+                </button>
+              </div>
+              <div style={{ ...S.prioSub, marginTop: 4 }}>{topic.description}</div>
+            </div>
+          );
+        })}
+        <TapError message={toggleError} />
+        <button style={M.cancel} onClick={onClose}>Close</button>
+      </ModalSheet>
+    </div>
+  );
+}
+
 // #181 Phase 1 — Manage screen, reached from "Plan ›" once 1+ plans exist.
-// Deliberately small — Phase 2's "More" menu is where a fuller Reading
-// Plan section (history, notes, day favorites) eventually lives; this is
-// just enough to switch slots or start over.
+// #188 follow-up — now also holds a "View Reading Log" entry per plan card,
+// opening the day-by-day browsing/favorite/note surface.
 function BiblePlanManageModal({ data, onClose, onSwitched, onStartNew }: {
   data: BiblePlanResponse; onClose: () => void; onSwitched: () => void; onStartNew: () => void;
 }) {
@@ -6742,6 +6893,8 @@ function BiblePlanManageModal({ data, onClose, onSwitched, onStartNew }: {
   // setup wizard several screens later.
   const [confirmStartNew, setConfirmStartNew] = useState(false);
   const wouldEvictPrevious = Boolean(data.current && data.previous);
+  // #188 — which plan's day-by-day log is open, if any; null closes it.
+  const [logPlanId, setLogPlanId] = useState<number | null>(null);
 
   function handleStartNewClick() {
     if (wouldEvictPrevious && !confirmStartNew) { setConfirmStartNew(true); return; }
@@ -6788,6 +6941,7 @@ function BiblePlanManageModal({ data, onClose, onSwitched, onStartNew }: {
             {switching ? "Switching…" : "Switch to this plan"}
           </button>
         )}
+        <button style={{ ...S.prioLogLink, marginTop: 10, display: "block" }} onClick={() => setLogPlanId(plan.id)}>View Reading Log ›</button>
         {confirmDeleteSlot === plan.slot ? (
           <div style={{ marginTop: 10 }}>
             <div style={{ ...S.prioSub, color: C.brassSoft, marginBottom: 8 }}>Delete this plan for good? This can't be undone.</div>
@@ -6836,6 +6990,108 @@ function BiblePlanManageModal({ data, onClose, onSwitched, onStartNew }: {
           </div>
         )}
       </ModalSheet>
+      {logPlanId !== null && <BiblePlanDayLogModal planId={logPlanId} onClose={() => setLogPlanId(null)} />}
+    </div>
+  );
+}
+
+// #188 — the day-by-day reading log: "look back on any past day you liked
+// the reading or added a note" (#188 grilling, the Q3 revision). Paginated
+// newest-first, 30 days per page with a "Load more" button (#188 grilling,
+// Q15/Q16) rather than fetch-all — a long-running plan's full history could
+// otherwise be hundreds of rows in one request. Each row is independently
+// favoritable/noteable; the server (not this component) decides which days
+// are in range (today and all past days, plus any already-completed
+// read-ahead day — #188 grilling, Q14).
+function BiblePlanDayLogModal({ planId, onClose }: { planId: number; onClose: () => void }) {
+  const [items, setItems] = useState<BiblePlanDayLogEntry[]>([]);
+  const [nextBefore, setNextBefore] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const { error: loadError, flash: flashLoadError } = useTapError();
+
+  const loadPage = useCallback(async (before: number | null) => {
+    const url = `${API}/bible-plan/${planId}/days` + (before !== null ? `?before=${before}` : '');
+    const d = await getJson(url, null);
+    if (isRecord(d) && Array.isArray(d.items)) {
+      const page = d.items as BiblePlanDayLogEntry[];
+      setItems(prev => before === null ? page : [...prev, ...page]);
+      setNextBefore(typeof d.nextBefore === 'number' ? d.nextBefore : null);
+    } else {
+      flashLoadError("Couldn't load the reading log");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planId]);
+
+  useEffect(() => {
+    setLoading(true);
+    loadPage(null).finally(() => setLoading(false));
+  }, [loadPage]);
+
+  async function loadMore() {
+    if (nextBefore === null || loadingMore) return;
+    setLoadingMore(true);
+    try { await loadPage(nextBefore); }
+    finally { setLoadingMore(false); }
+  }
+
+  async function toggleFavorite(entry: BiblePlanDayLogEntry) {
+    const r = await apiFetch(`${API}/bible-plan/day-favorites`, {
+      method: entry.favorited ? "DELETE" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ref: entry.reading }),
+    });
+    if (r.ok) setItems(prev => prev.map(i => i.dayIndex === entry.dayIndex ? { ...i, favorited: !entry.favorited } : i));
+  }
+
+  async function saveNote(entry: BiblePlanDayLogEntry, note: string) {
+    if (note === entry.note) return;
+    const r = await apiFetch(`${API}/bible-plan/${planId}/notes`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dayIndex: entry.dayIndex, note }),
+    });
+    if (r.ok) setItems(prev => prev.map(i => i.dayIndex === entry.dayIndex ? { ...i, note } : i));
+  }
+
+  return (
+    <div style={M.overlay}>
+      <ModalSheet title="Reading Log" onClose={onClose}>
+        {loading ? (
+          <div style={S.prioSub}>Loading…</div>
+        ) : items.length === 0 ? (
+          <div style={S.empty}>Nothing logged yet — check back once you've started reading.</div>
+        ) : (
+          items.map(entry => (
+            <div key={entry.dayIndex} style={S.card}>
+              <div style={S.prioHeadRow}>
+                <div>
+                  <div style={{ ...S.prioTitle, marginTop: 0 }}>{formatShortDate(entry.date)}{entry.completed ? "" : " (not yet read)"}</div>
+                  <div style={{ ...S.prioSub, marginTop: 2 }}>{entry.reading}</div>
+                </div>
+                <button
+                  style={S.verseStarBtn} onClick={() => toggleFavorite(entry)}
+                  aria-label={entry.favorited ? "Remove from favorites" : "Add to favorites"} aria-pressed={entry.favorited}
+                >
+                  <span style={{ color: entry.favorited ? C.brass : C.parchmentDim }}>★</span>
+                </button>
+              </div>
+              <textarea
+                style={{ ...M.input, marginTop: 8, minHeight: 40 }}
+                placeholder="Add a note…"
+                defaultValue={entry.note}
+                onBlur={e => saveNote(entry, e.target.value)}
+              />
+            </div>
+          ))
+        )}
+        <TapError message={loadError} />
+        {nextBefore !== null && (
+          <button style={{ ...M.next, background: "none", border: "1px solid rgba(210,190,130,0.18)", color: C.parchmentMid, boxShadow: "none" }} disabled={loadingMore} onClick={loadMore}>
+            {loadingMore ? "Loading…" : "Load more"}
+          </button>
+        )}
+        <button style={M.cancel} onClick={onClose}>Close</button>
+      </ModalSheet>
     </div>
   );
 }
@@ -6863,11 +7119,44 @@ function BiblePlanCatchUpModal({ plan, onClose, onSaved }: {
   const [saving, setSaving] = useState(false);
   const { error: saveError, flash: flashSaveError } = useTapError();
 
+  // #188 — favorite/note for TODAY's actual due reading, distinct from the
+  // Behind/Ahead steppers below: this is "annotate what's due right now,"
+  // always available regardless of schedule state.
+  const [todayFavorited, setTodayFavorited] = useState(plan.todayFavorited);
+  const [favoriting, setFavoriting] = useState(false);
+  const [noteValue, setNoteValue] = useState(plan.todayNote);
+  const [noteSaving, setNoteSaving] = useState(false);
+
   const behindTotal = plan.backlog.length;
   const aheadTotal = plan.ahead.length;
 
   function toggleBehind(i: number) { setBehindCount(i < behindCount ? i : i + 1); }
   function toggleAhead(i: number) { setAheadCount(i < aheadCount ? i : i + 1); }
+
+  async function toggleTodayFavorite() {
+    if (!plan.todayReading || favoriting) return;
+    setFavoriting(true);
+    try {
+      const r = await apiFetch(`${API}/bible-plan/day-favorites`, {
+        method: todayFavorited ? "DELETE" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ref: plan.todayReading }),
+      });
+      if (r.ok) { setTodayFavorited(!todayFavorited); onSaved(); }
+    } finally { setFavoriting(false); }
+  }
+
+  async function saveNote() {
+    if (noteValue === plan.todayNote) return; // only write on a real change, same convention journal/intention saves already use
+    setNoteSaving(true);
+    try {
+      const r = await apiFetch(`${API}/bible-plan/${plan.id}/notes`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dayIndex: plan.currentDayIndex, note: noteValue }),
+      });
+      if (r.ok) onSaved();
+    } finally { setNoteSaving(false); }
+  }
 
   async function save() {
     setSaving(true);
@@ -6907,8 +7196,26 @@ function BiblePlanCatchUpModal({ plan, onClose, onSaved }: {
         )}
       >
         <div style={S.readingPlanBox}>
-          <div style={S.readingPlanLabel}>You should be on</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={S.readingPlanLabel}>You should be on</div>
+            {plan.todayReading && (
+              <button
+                style={S.verseStarBtn} onClick={toggleTodayFavorite} disabled={favoriting}
+                aria-label={todayFavorited ? "Remove from favorites" : "Add to favorites"} aria-pressed={todayFavorited}
+              >
+                <span style={{ color: todayFavorited ? C.brass : C.parchmentDim }}>★</span>
+              </button>
+            )}
+          </div>
           <div style={{ ...S.prioTitle, marginTop: 4 }}>{plan.todayReading || "—"}</div>
+          <textarea
+            style={{ ...M.input, marginTop: 8, minHeight: 50 }}
+            placeholder="Add a note about today's reading…"
+            value={noteValue}
+            onChange={e => setNoteValue(e.target.value)}
+            onBlur={saveNote}
+          />
+          {noteSaving && <div style={{ ...S.prioSub, marginTop: 2 }}>Saving…</div>}
         </div>
 
         {behindTotal > 0 && (
