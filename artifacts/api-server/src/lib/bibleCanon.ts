@@ -198,6 +198,18 @@ export interface BacklogEntry {
   reading: string;
 }
 
+// #190 — the "Ahead" section of the Read Ahead / Catch Up modal shows a
+// bounded look forward from today, never the whole remaining plan (which
+// could be 300+ days for a whole-Bible plan).
+export const AHEAD_WINDOW_DAYS = 14;
+
+export interface AheadEntry {
+  dayIndex: number;
+  date: string;
+  reading: string;
+  completed: boolean;
+}
+
 export interface PlanView {
   currentDayIndex: number;
   totalChaptersAssigned: number;
@@ -208,6 +220,22 @@ export interface PlanView {
   // oldest first — shown all at once so catching up on a multi-day gap
   // doesn't require multiple round-trips (#187 grilling, Q15).
   backlog: BacklogEntry[];
+  // #190 — today's actual assigned reading regardless of completion state,
+  // for "what you should be on today" (the modal's top line). Distinct from
+  // backlog, which omits today's entry once it's marked done.
+  todayReading: string;
+  // #190 — the plan's first not-yet-completed day overall. When its date is
+  // after todayStr, the Today card shows "(Next Due: <date>)" instead of
+  // "Today's reading" — the one rule that covers both a plan that hasn't
+  // started yet and a plan the user has read ahead on, with no
+  // special-casing between the two (#190 grilling, Q9). null once the plan
+  // is fully complete (nothing left to be "next due").
+  nextDueDayIndex: number | null;
+  nextDueDate: string | null;
+  // #190 — the next AHEAD_WINDOW_DAYS days beyond today, for the modal's
+  // "Ahead" section; includes completion state so previously-read-ahead
+  // days show as already checked.
+  ahead: AheadEntry[];
 }
 
 export function buildPlanView(
@@ -227,6 +255,29 @@ export function buildPlanView(
     if (reading) backlog.push({ dayIndex: i, reading });
   }
 
+  const todayReading = formatReading(chaptersForDay(currentDayIndex, plan.totalDays, orderedList));
+
+  let nextDueDayIndex: number | null = null;
+  for (let i = 0; i < plan.totalDays; i++) {
+    if (!completedDayIndexes.has(i)) { nextDueDayIndex = i; break; }
+  }
+  const startDateObj = new Date(plan.startDate);
+  const nextDueDate = nextDueDayIndex === null ? null : (() => {
+    const d = new Date(startDateObj);
+    d.setUTCDate(d.getUTCDate() + nextDueDayIndex);
+    return d.toISOString().slice(0, 10);
+  })();
+
+  const ahead: AheadEntry[] = [];
+  const aheadEnd = Math.min(plan.totalDays - 1, currentDayIndex + AHEAD_WINDOW_DAYS);
+  for (let i = currentDayIndex + 1; i <= aheadEnd; i++) {
+    const reading = formatReading(chaptersForDay(i, plan.totalDays, orderedList));
+    if (!reading) continue;
+    const d = new Date(startDateObj);
+    d.setUTCDate(d.getUTCDate() + i);
+    ahead.push({ dayIndex: i, date: d.toISOString().slice(0, 10), reading, completed: completedDayIndexes.has(i) });
+  }
+
   return {
     currentDayIndex,
     totalChaptersAssigned: orderedList.length,
@@ -234,5 +285,9 @@ export function buildPlanView(
     progressPct: Math.round((completedDayIndexes.size / plan.totalDays) * 100),
     isPlanComplete,
     backlog,
+    todayReading,
+    nextDueDayIndex,
+    nextDueDate,
+    ahead,
   };
 }

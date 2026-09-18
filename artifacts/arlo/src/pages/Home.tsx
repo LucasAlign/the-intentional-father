@@ -76,12 +76,16 @@ interface VerseHistoryEntry extends VerseEntry { date: string; }
 interface MyVerse { id: number; ref: string; text: string; favorited: boolean; }
 // #181 Phase 1 — Bible Reading Plan.
 interface BiblePlanBacklogEntry { dayIndex: number; reading: string; }
+// #190 — the next AHEAD_WINDOW_DAYS days beyond today, for Read Ahead / Catch Up's "Ahead" section.
+interface BiblePlanAheadEntry { dayIndex: number; date: string; reading: string; completed: boolean; }
 interface BiblePlan {
   id: number; slot: "current" | "previous"; planType: string;
   testamentFirst: "old" | "new"; startBook: string; startChapter: number;
   startDate: string; totalDays: number;
   streak: number; progressPct: number; isPlanComplete: boolean;
   backlog: BiblePlanBacklogEntry[];
+  todayReading: string; nextDueDayIndex: number | null; nextDueDate: string | null;
+  ahead: BiblePlanAheadEntry[];
 }
 interface BibleBookInfo { name: string; testament: "old" | "new"; chapters: number; }
 interface BiblePlanResponse { current: BiblePlan | null; previous: BiblePlan | null; books: BibleBookInfo[]; totalChapters: number; approxTotalVerses: number; }
@@ -677,6 +681,14 @@ function FirstVisitTip({ id, children }: { id: string; children: ReactNode }) {
 
 // ── Date helpers ───────────────────────────────────────────────────────────────
 const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+// Short display date ("Sep 25") for a server YYYY-MM-DD string — constructed
+// from the parts via the local-timezone Date constructor rather than
+// `new Date(dateStr)` (which parses as UTC midnight and can render a day
+// early in negative-UTC-offset timezones).
+function formatShortDate(dateStr: string): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return new Date(y!, (m ?? 1) - 1, d ?? 1).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
 // Sunday of the local week containing `d`, as YYYY-MM-DD — the Sphere week
 // runs Sunday through Saturday, resetting Saturday night at 11:59pm in
 // whatever timezone the browser is actually in (plain, non-UTC Date methods
@@ -1691,6 +1703,7 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
   const [biblePlanData, setBiblePlanData] = useState<BiblePlanResponse | null>(null);
   const [planSetupOpen, setPlanSetupOpen] = useState(false);
   const [planManageOpen, setPlanManageOpen] = useState(false);
+  const [catchUpOpen, setCatchUpOpen] = useState(false);
   const [completingDayIndex, setCompletingDayIndex] = useState<number | null>(null);
   const { error: planError, flash: flashPlanError } = useTapError();
   const refreshBiblePlan = useCallback(() => {
@@ -1860,26 +1873,47 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
               <div style={S.prioSub}>You finished your reading plan — nice work. Start a new one from "Plan ›".</div>
             ) : (
               <>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
-                  <div style={S.readingPlanLabel}>
-                    {biblePlanData.current.backlog.length > 1 ? "Catch up on your reading" : "Today's reading"}
-                  </div>
-                  {biblePlanData.current.streak > 0 && <div style={S.readingPlanStreak}>🔥 {biblePlanData.current.streak}-day streak</div>}
-                </div>
-                {biblePlanData.current.backlog.length === 0 ? (
-                  <div style={S.prioSub}>All caught up — nothing due today.</div>
-                ) : biblePlanData.current.backlog.map(entry => (
-                  <div key={entry.dayIndex} style={S.readingPlanRow}>
-                    <div style={{ flex: 1 }}>{entry.reading}</div>
-                    <button
-                      style={S.readingPlanCompleteBtn}
-                      disabled={completingDayIndex === entry.dayIndex}
-                      onClick={() => completeReadingDay(biblePlanData.current!.id, entry.dayIndex)}
-                    >
-                      {completingDayIndex === entry.dayIndex ? "…" : "Mark complete"}
-                    </button>
-                  </div>
-                ))}
+                {/* #190 — nextDueDate lands after today whenever the plan
+                    hasn't started yet OR the user has read ahead of
+                    schedule; both cases share this one label/link rather
+                    than special-casing "not started" separately. */}
+                {(() => {
+                  const plan = biblePlanData.current!;
+                  const todayStr = ymd(new Date());
+                  const nextDueLater = Boolean(plan.nextDueDate && plan.nextDueDate > todayStr);
+                  return (
+                    <>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+                        <div style={S.readingPlanLabel}>
+                          {plan.backlog.length > 1 ? "Catch up on your reading" : "Today's reading"}
+                          {nextDueLater && plan.nextDueDate && (
+                            <> (<button style={S.readingPlanNextDueLink} onClick={() => setCatchUpOpen(true)}>Next Due: {formatShortDate(plan.nextDueDate)}</button>)</>
+                          )}
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          {plan.streak > 0 && <div style={S.readingPlanStreak}>🔥 {plan.streak}-day streak</div>}
+                          <button style={S.prioLogLink} onClick={() => setCatchUpOpen(true)}>Read ahead ›</button>
+                        </div>
+                      </div>
+                      {plan.backlog.length === 0 ? (
+                        <div style={S.prioSub}>
+                          {nextDueLater ? "Nothing due today — you're ahead of schedule." : "All caught up — nothing due today."}
+                        </div>
+                      ) : plan.backlog.map(entry => (
+                        <div key={entry.dayIndex} style={S.readingPlanRow}>
+                          <div style={{ flex: 1 }}>{entry.reading}</div>
+                          <button
+                            style={S.readingPlanCompleteBtn}
+                            disabled={completingDayIndex === entry.dayIndex}
+                            onClick={() => completeReadingDay(plan.id, entry.dayIndex)}
+                          >
+                            {completingDayIndex === entry.dayIndex ? "…" : "Mark complete"}
+                          </button>
+                        </div>
+                      ))}
+                    </>
+                  );
+                })()}
                 <div style={S.track}><div style={{ ...S.trackFill, width: biblePlanData.current.progressPct + "%", background: C.brass }} /></div>
                 <div style={{ ...S.prioSub, marginTop: 4 }}>{biblePlanData.current.progressPct}% through the plan</div>
               </>
@@ -1901,6 +1935,13 @@ function Today({ verse, tasks, journal, events, name, profile, relationships, pr
           onClose={() => setPlanManageOpen(false)}
           onSwitched={refreshBiblePlan}
           onStartNew={() => { setPlanManageOpen(false); setPlanSetupOpen(true); }}
+        />
+      )}
+      {catchUpOpen && biblePlanData?.current && (
+        <BiblePlanCatchUpModal
+          plan={biblePlanData.current}
+          onClose={() => setCatchUpOpen(false)}
+          onSaved={refreshBiblePlan}
         />
       )}
 
@@ -6799,6 +6840,117 @@ function BiblePlanManageModal({ data, onClose, onSwitched, onStartNew }: {
   );
 }
 
+// #190 — Read Ahead / Catch Up: bulk-select a contiguous run of Behind
+// and/or Ahead days in one modal, rather than the Today card's one-by-one
+// "Mark complete" rows. Two independent contiguous steppers (#190 grilling,
+// Q12) — checking/unchecking a count of days, not free-form checkboxes —
+// since a gap in either direction isn't meaningful data. No streak-specific
+// logic needed here: computeStreak already derives purely from which days
+// are completed, so saving Behind days here fixes the streak the same way
+// completing them one at a time already did.
+function BiblePlanCatchUpModal({ plan, onClose, onSaved }: {
+  plan: BiblePlan; onClose: () => void; onSaved: () => void;
+}) {
+  const [behindCount, setBehindCount] = useState(0);
+  // Pre-seed from however many Ahead days are already completed (a prior
+  // read-ahead), so reopening this modal doesn't show a stepper reset to 0
+  // while the server disagrees.
+  const [aheadCount, setAheadCount] = useState(() => {
+    let n = 0;
+    for (const entry of plan.ahead) { if (entry.completed) n++; else break; }
+    return n;
+  });
+  const [saving, setSaving] = useState(false);
+  const { error: saveError, flash: flashSaveError } = useTapError();
+
+  const behindTotal = plan.backlog.length;
+  const aheadTotal = plan.ahead.length;
+
+  function toggleBehind(i: number) { setBehindCount(i < behindCount ? i : i + 1); }
+  function toggleAhead(i: number) { setAheadCount(i < aheadCount ? i : i + 1); }
+
+  async function save() {
+    setSaving(true);
+    try {
+      const toComplete = plan.backlog.slice(0, behindCount).map(e => e.dayIndex);
+      const aheadWant = new Set(plan.ahead.slice(0, aheadCount).map(e => e.dayIndex));
+      for (const entry of plan.ahead) {
+        if (aheadWant.has(entry.dayIndex) && !entry.completed) toComplete.push(entry.dayIndex);
+      }
+      const toUncomplete = plan.ahead.filter(e => e.completed && !aheadWant.has(e.dayIndex)).map(e => e.dayIndex);
+
+      const calls: Promise<Response>[] = [];
+      if (toComplete.length > 0) {
+        calls.push(apiFetch(`${API}/bible-plan/${plan.id}/complete-batch`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dayIndexes: toComplete }) }));
+      }
+      if (toUncomplete.length > 0) {
+        calls.push(apiFetch(`${API}/bible-plan/${plan.id}/uncomplete-batch`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dayIndexes: toUncomplete }) }));
+      }
+      if (calls.length === 0) { onClose(); return; }
+      const results = await Promise.all(calls);
+      if (results.every(r => r.ok)) { onSaved(); onClose(); }
+      else flashSaveError("Couldn't save — try again");
+    } catch { flashSaveError("Couldn't reach the server."); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <div style={M.overlay}>
+      <ModalSheet
+        title="Read Ahead / Catch Up"
+        onClose={onClose}
+        footer={(
+          <>
+            <button style={M.next} disabled={saving} onClick={save}>{saving ? "Saving…" : "Save"}</button>
+            <button style={{ ...M.cancel, marginTop: 8 }} onClick={onClose}>Cancel</button>
+          </>
+        )}
+      >
+        <div style={S.readingPlanBox}>
+          <div style={S.readingPlanLabel}>You should be on</div>
+          <div style={{ ...S.prioTitle, marginTop: 4 }}>{plan.todayReading || "—"}</div>
+        </div>
+
+        {behindTotal > 0 && (
+          <div style={{ marginTop: 18 }}>
+            <div style={S.readingPlanLabel}>Behind — {behindTotal} day{behindTotal === 1 ? "" : "s"} to catch up</div>
+            <div style={{ ...S.prioSub, marginTop: 4 }}>Checking a day also checks everything before it.</div>
+            <div style={{ marginTop: 8 }}>
+              {plan.backlog.map((entry, i) => (
+                <label key={entry.dayIndex} style={S.readingPlanRow}>
+                  <input type="checkbox" checked={i < behindCount} onChange={() => toggleBehind(i)} />
+                  <div style={{ flex: 1 }}>{entry.reading}</div>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {aheadTotal > 0 && (
+          <div style={{ marginTop: 18 }}>
+            <div style={S.readingPlanLabel}>Ahead — next {aheadTotal} day{aheadTotal === 1 ? "" : "s"}</div>
+            <div style={{ ...S.prioSub, marginTop: 4 }}>Check off any you've already read ahead on.</div>
+            <div style={{ marginTop: 8 }}>
+              {plan.ahead.map((entry, i) => (
+                <label key={entry.dayIndex} style={S.readingPlanRow}>
+                  <input type="checkbox" checked={i < aheadCount} onChange={() => toggleAhead(i)} />
+                  <div style={{ flex: 1 }}>{formatShortDate(entry.date)} — {entry.reading}</div>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {behindTotal === 0 && aheadTotal === 0 && (
+          <div style={{ ...S.prioSub, marginTop: 14 }}>Nothing to catch up on or read ahead into right now.</div>
+        )}
+
+        <TapError message={saveError} />
+      </ModalSheet>
+    </div>
+  );
+}
+
 // #181 Phase 1 — the guided setup flow, reusing this app's existing
 // stepped-wizard shell (same shape JobModal's creation wizard and
 // SphereWalkthroughModal already use) rather than inventing a new one.
@@ -7309,6 +7461,10 @@ const S: Record<string, CSSProperties> = {
   readingPlanStreak: { fontSize: 12, color: C.brassSoft, fontWeight: 700 },
   readingPlanRow: { display: "flex", alignItems: "center", gap: 10, marginBottom: 8, fontSize: 14, color: C.parchmentMid },
   readingPlanCompleteBtn: { flexShrink: 0, background: "none", border: `1px solid ${C.brass}`, color: C.brass, borderRadius: 16, fontSize: 12, fontWeight: 700, padding: "5px 12px", cursor: "pointer", fontFamily: F, whiteSpace: "nowrap" },
+  // #190 — the clickable date inside "Today's reading (Next Due: <date>)";
+  // styled as an inline text link, not a button-shaped chip, since it reads
+  // as part of the label sentence.
+  readingPlanNextDueLink: { background: "none", border: "none", padding: 0, color: C.brassSoft, fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", textDecoration: "underline", cursor: "pointer", fontFamily: F },
   intent: { fontSize: 15, lineHeight: 1.7, color: C.parchment, textAlign: "center" },
   intentInput: { width: "100%", background: "none", border: "none", outline: "none", resize: "none", fontFamily: F, fontSize: 15, lineHeight: 1.7, color: C.parchment, textAlign: "center" },
   empty: { fontSize: 14, color: C.parchmentDim, textAlign: "center", padding: "6px 0" },

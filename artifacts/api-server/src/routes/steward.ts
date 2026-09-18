@@ -18,7 +18,7 @@ import { reminderEmailAddRateLimit, reminderEmailVerifyRateLimit } from "../midd
 import { generateEmailLoginCode, hashEmailLoginCode, EMAIL_CODE_TTL_MS, EMAIL_CODE_MAX_ATTEMPTS } from "../lib/auth";
 import { sendReminderEmailVerificationCode } from "../lib/email";
 import { getTribeIntentionText } from "../lib/tribeIntention";
-import { BIBLE_BOOKS, TOTAL_CHAPTERS, APPROX_TOTAL_VERSES, orderedChapterList, chaptersForDay, formatReading, dayIndexForDate, buildPlanView, defaultStartBook, isValidBook, type Testament } from "../lib/bibleCanon";
+import { BIBLE_BOOKS, TOTAL_CHAPTERS, APPROX_TOTAL_VERSES, orderedChapterList, chaptersForDay, formatReading, dayIndexForDate, buildPlanView, defaultStartBook, isValidBook, AHEAD_WINDOW_DAYS, type Testament } from "../lib/bibleCanon";
 
 const MAX_PULSE_NOTE_LENGTH = 500;
 const MAX_SPHERE_NOTE_LENGTH = 500;
@@ -358,6 +358,8 @@ function serializeBiblePlan(plan: BibleReadingPlan, today: string, completedDayI
     startDate: plan.startDate, totalDays: plan.totalDays,
     streak: view.streak, progressPct: view.progressPct, isPlanComplete: view.isPlanComplete,
     backlog: view.backlog,
+    todayReading: view.todayReading, nextDueDayIndex: view.nextDueDayIndex, nextDueDate: view.nextDueDate,
+    ahead: view.ahead,
   };
 }
 
@@ -517,6 +519,59 @@ router.delete('/bible-plan/:id/complete/:dayIndex', async (req: Request, res: Re
   } catch (err) {
     req.log?.error({ err }, 'Error un-completing bible reading plan day');
     res.status(500).json({ error: 'Failed to undo completion' });
+  }
+});
+
+const MAX_BATCH_DAYS = AHEAD_WINDOW_DAYS + MAX_BIBLE_PLAN_DAYS; // generous ceiling, not a real limit — backlog can span the whole plan
+
+function parseDayIndexes(body: unknown): number[] | null {
+  const { dayIndexes } = (body ?? {}) as { dayIndexes?: unknown };
+  if (!Array.isArray(dayIndexes) || dayIndexes.length === 0 || dayIndexes.length > MAX_BATCH_DAYS) return null;
+  if (!dayIndexes.every((d) => Number.isInteger(d) && d >= 0)) return null;
+  return dayIndexes as number[];
+}
+
+// POST /api/bible-plan/:id/complete-batch — #190's Read Ahead / Catch Up
+// modal marks a contiguous run of days (behind or ahead) in one call rather
+// than looping the single-day endpoint. Idempotent per-day like the single
+// endpoint (onConflictDoNothing).
+router.post('/bible-plan/:id/complete-batch', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id as string, 10);
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    const dayIndexes = parseDayIndexes(req.body);
+    if (!dayIndexes) { res.status(400).json({ error: 'dayIndexes must be a non-empty array of non-negative integers' }); return; }
+    const [plan] = await db.select().from(bibleReadingPlans).where(and(eq(bibleReadingPlans.id, id), eq(bibleReadingPlans.userId, req.user!.id))).limit(1);
+    if (!plan) { res.status(404).json({ error: 'Plan not found' }); return; }
+    if (dayIndexes.some((d) => d >= plan.totalDays)) { res.status(400).json({ error: 'dayIndex is beyond the plan length' }); return; }
+    await db.insert(bibleReadingPlanCompletions)
+      .values(dayIndexes.map((dayIndex) => ({ userId: req.user!.id, planId: id, dayIndex })))
+      .onConflictDoNothing({ target: [bibleReadingPlanCompletions.planId, bibleReadingPlanCompletions.dayIndex] });
+    res.json(serializeBiblePlan(plan, new Date().toISOString().slice(0, 10), await completedDayIndexesFor(req.user!.id, id)));
+  } catch (err) {
+    req.log?.error({ err }, 'Error batch-completing bible reading plan days');
+    res.status(500).json({ error: 'Failed to mark days complete' });
+  }
+});
+
+// POST /api/bible-plan/:id/uncomplete-batch — mirrors complete-batch for
+// undoing a run of days (e.g. pulling back a read-ahead selection). A plain
+// DELETE with a body is awkward across clients/proxies, hence POST here too.
+router.post('/bible-plan/:id/uncomplete-batch', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id as string, 10);
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return; }
+    const dayIndexes = parseDayIndexes(req.body);
+    if (!dayIndexes) { res.status(400).json({ error: 'dayIndexes must be a non-empty array of non-negative integers' }); return; }
+    const [plan] = await db.select().from(bibleReadingPlans).where(and(eq(bibleReadingPlans.id, id), eq(bibleReadingPlans.userId, req.user!.id))).limit(1);
+    if (!plan) { res.status(404).json({ error: 'Plan not found' }); return; }
+    await db.delete(bibleReadingPlanCompletions).where(and(
+      eq(bibleReadingPlanCompletions.planId, id), inArray(bibleReadingPlanCompletions.dayIndex, dayIndexes), eq(bibleReadingPlanCompletions.userId, req.user!.id),
+    ));
+    res.json(serializeBiblePlan(plan, new Date().toISOString().slice(0, 10), await completedDayIndexesFor(req.user!.id, id)));
+  } catch (err) {
+    req.log?.error({ err }, 'Error batch-un-completing bible reading plan days');
+    res.status(500).json({ error: 'Failed to undo completions' });
   }
 });
 
