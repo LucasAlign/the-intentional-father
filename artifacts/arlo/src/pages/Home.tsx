@@ -7305,10 +7305,10 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
   const [paceUnit, setPaceUnit] = useState<"chapters" | "verses">("chapters");
   // #187 follow-up — the finish-date step offers two mutually exclusive
   // ways to land on a totalDays: a preset duration button, or a set pace
-  // (chapters/verses per day). Tracking which preset (by month offset) is
-  // active, separately from paceUnit, is what lets picking one visibly
-  // clear the other's highlight instead of both looking "selected" at once.
-  const [selectedPreset, setSelectedPreset] = useState<number | null>(null);
+  // (chapters/verses per day). Tracking which preset key is active,
+  // separately from paceUnit, is what lets picking one visibly clear the
+  // other's highlight instead of both looking "selected" at once.
+  const [selectedPreset, setSelectedPreset] = useState<"1w" | "1m" | "3m" | "6m" | null>(null);
   const [testamentFirst, setTestamentFirst] = useState<"old" | "new" | null>(null);
   const [customStart, setCustomStart] = useState(false);
   const [startBook, setStartBook] = useState("");
@@ -7343,9 +7343,16 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
     setFinishDate(ymd(finish));
   }
 
-  function applyPreset(months: number) {
-    setSelectedPreset(months);
+  function applyPreset(key: "1w" | "1m" | "3m" | "6m") {
+    setSelectedPreset(key);
     setPaceValue("");
+    if (key === "1w") {
+      const d = new Date(startDate);
+      d.setDate(d.getDate() + 7);
+      setFinishDate(ymd(d));
+      return;
+    }
+    const months = key === "1m" ? 1 : key === "3m" ? 3 : 6;
     setFinishDate(addToDate(startDate, months));
   }
 
@@ -7477,10 +7484,10 @@ function BiblePlanSetupModal({ data, onClose, onCreated }: {
             <div style={M.q}>When do you want to finish?</div>
             <input type="date" style={M.input} value={finishDate} min={startDate} onChange={e => { setSelectedPreset(null); setPaceValue(""); setFinishDate(e.target.value); }} />
             <div style={{ ...E.chipRow, marginTop: 8 }}>
-              <button style={{ ...E.chip, ...(selectedPreset === 6 ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => applyPreset(6)}>6 months</button>
-              <button style={{ ...E.chip, ...(selectedPreset === 12 ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => applyPreset(12)}>1 year</button>
-              <button style={{ ...E.chip, ...(selectedPreset === 18 ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => applyPreset(18)}>1.5 years</button>
-              <button style={{ ...E.chip, ...(selectedPreset === 24 ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => applyPreset(24)}>2 years</button>
+              <button style={{ ...E.chip, ...(selectedPreset === "1w" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => applyPreset("1w")}>1 week</button>
+              <button style={{ ...E.chip, ...(selectedPreset === "1m" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => applyPreset("1m")}>1 month</button>
+              <button style={{ ...E.chip, ...(selectedPreset === "3m" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => applyPreset("3m")}>3 months</button>
+              <button style={{ ...E.chip, ...(selectedPreset === "6m" ? { borderColor: C.brass, color: C.brass } : {}) }} onClick={() => applyPreset("6m")}>6 months</button>
             </div>
             {totalDays && versesPerDay && (
               <div style={{ ...S.prioSub, marginTop: 8 }}>{totalDays} days — about {versesPerDay} verses a day to finish on time.</div>
